@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77", "wheel", "Cython>=3.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "myapp"
+version = "0.9.1"
+description = "PyStand2 example application"
+requires-python = ">=3.13,<3.14"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pstand]
+python = "3.13"
+entry = "myapp"
+
+[tool.pstand.cython]
+include = ["myapp.core.*", "myapp.services.*", "myapp.models.*"]
+exclude = ["myapp.config", "myapp.logging"]
+
+[tool.pstand.windows]
+architectures = ["x86_64", "arm64"]
+
+[tool.pstand.macos]
+architectures = ["arm64", "x86_64"]
+
+[tool.pstand.linux]
+architectures = ["x86_64", "arm64"]

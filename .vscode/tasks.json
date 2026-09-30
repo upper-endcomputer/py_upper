@@ -1,0 +1,26 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "pystand: doctor",
+            "type": "shell",
+            "command": "python",
+            "args": ["tools/build.py", "doctor"],
+            "problemMatcher": []
+        },
+        {
+            "label": "pystand: build",
+            "type": "shell",
+            "command": "python",
+            "args": ["tools/build.py", "build"],
+            "problemMatcher": []
+        },
+        {
+            "label": "pystand: run",
+            "type": "shell",
+            "command": "python",
+            "args": ["tools/build.py", "run"],
+            "problemMatcher": []
+        }
+    ]
+}

@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: MyApp",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "myapp",
+            "cwd": "${workspaceFolder}/app",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "PyStand2: Build",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/build.py",
+            "cwd": "${workspaceFolder}",
+            "args": ["build"],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
