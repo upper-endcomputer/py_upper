@@ -29,7 +29,7 @@ def build_launcher(target: Target):
             cmd += [f"-DCMAKE_OSX_DEPLOYMENT_TARGET={tc.deployment_target}"]
     subprocess.run(cmd, check=True, env=env)
     subprocess.run(["cmake", "--build", str(b), "--config", "Release"], check=True, env=env)
-    exe = b / ("PyStand.exe" if target.os == "windows" else "PyStand")
+    exe = b / ("PyUpper.exe" if target.os == "windows" else "PyUpper")
     if not exe.exists() and (b / "Release" / exe.name).exists():
         exe = b / "Release" / exe.name
     if not exe.exists():

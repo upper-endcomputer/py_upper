@@ -33,9 +33,9 @@ def selected_sources() -> list[Path]:
     include = cfg.get("include", [])
     exclude = cfg.get("exclude", [])
     out = []
-    for p in (APP / "src" / "myapp").rglob("*.py"):
+    for p in (APP / "src").rglob("*.py"):
         mod = module_name(p)
-        if mod in {"myapp", "myapp.__main__", "myapp.main"}:
+        if mod in {"main"}:
             continue
         if any(fnmatch.fnmatch(mod, pat) for pat in include) and not any(fnmatch.fnmatch(mod, pat) for pat in exclude):
             out.append(p)
@@ -100,7 +100,7 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
         c_sources.append(c)
 
     ext_names = [module_name(s) for s in sources]
-    setup = APP / "_pystand2_target_setup.py"
+    setup = APP / "_py_upper_target_setup.py"
     include = target_python.include_dir
     libdir_arg = repr(str(libdir)) if libdir else "None"
     libraries = repr([python_lib] if python_lib else [])
@@ -123,7 +123,7 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
         "        if TARGET_INCLUDE not in self.include_dirs: self.include_dirs.insert(0, TARGET_INCLUDE)\n"
         "        if TARGET_LIBDIR and TARGET_LIBDIR not in (self.library_dirs or []): self.library_dirs.insert(0, TARGET_LIBDIR)\n"
         "ext=[Extension(name, [src], include_dirs=[TARGET_INCLUDE], library_dirs=[TARGET_LIBDIR] if TARGET_LIBDIR else [], libraries=TARGET_LIBRARIES) for src,name in zip(sources,names)]\n"
-        "setup(name='pystand2-target-native', ext_modules=ext, cmdclass={'build_ext': TargetBuildExt})\n",
+        "setup(name='py-upper-target-native', ext_modules=ext, cmdclass={'build_ext': TargetBuildExt})\n",
         encoding="utf-8",
     )
     build_root = BUILD / "native" / target.key
@@ -173,7 +173,7 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
 
 
 def copy_python_tree(site: Path) -> None:
-    shutil.copytree(APP / "src" / "myapp", site / "myapp", dirs_exist_ok=True)
+    shutil.copytree(APP / "src", site, dirs_exist_ok=True)
 
 
 def remove_cython_source_py(site: Path) -> None:

@@ -55,7 +55,7 @@ def write_lock(target: Target) -> Path:
             "project": load_app_config()["project"]["name"],
             "python": python_version(),
             "runtime_provider": runtime_provider(),
-            "generated_by": "PyStand2",
+            "generated_by": "py_upper",
             "host": {"system": platform.system(), "machine": platform.machine()},
             "targets": {},
         }

@@ -1,4 +1,4 @@
-name: PyStand2 validation
+name: py_upper validation
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Cache PyStand build inputs
+      - name: Cache py_upper build inputs
         uses: actions/cache@v4
         with:
           path: |
@@ -88,7 +88,7 @@ jobs:
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pystand-${{ matrix.target }}
+          name: py-upper-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
           retention-days: 14
@@ -122,7 +122,7 @@ jobs:
           project = tomllib.loads(Path('app/pyproject.toml').read_text(encoding='utf-8'))['project']
           entries = []
           for artifact in sorted(p for p in root.iterdir() if p.is_dir()):
-              target = artifact.name.removeprefix('pystand-')
+              target = artifact.name.removeprefix('py-upper-')
               dist = artifact / 'dist'
               if not dist.exists():
                   dist = artifact
@@ -137,7 +137,7 @@ jobs:
 
           data = {
               'format': 1,
-              'project': 'PyStand2',
+              'project': 'py_upper',
               'version': str(project['version']),
               'targets': entries,
           }
@@ -151,7 +151,7 @@ jobs:
       - name: Upload aggregate validation artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pystand-release-manifest
+          name: py-upper-release-manifest
           path: collected/release-manifest.json
           if-no-files-found: error
           retention-days: 30

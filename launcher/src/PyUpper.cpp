@@ -1,4 +1,4 @@
-#include "PyStand.h"
+#include "PyUpper.h"
 #include <Python.h>
 #include <filesystem>
 #include <iostream>
@@ -65,14 +65,15 @@ std::string py_quote(const std::string& s){std::string r="r'";for(char c:s){if(c
 bool failed(PyStatus s){if(s._type!=0){if(s.err_msg)std::cerr<<"CPython: "<<s.err_msg<<"\n";return true;}return false;}
 }
 
-int PyStand::run(const std::string& exe,const std::vector<std::string>& args){
+int PyUpper::run(const std::string& exe,const std::vector<std::string>& args){
     const auto root=exe_dir(exe);
+    const auto app_stem=fs::path(exe).stem().string();
 #ifdef _WIN32
-    const auto home=root/"runtime"; const auto site=root/"site-packages"; const auto script=root/"MyApp.int";
+    const auto home=root/"runtime"; const auto site=root/"site-packages"; const auto script=root/(app_stem+".int");
 #elif defined(__APPLE__)
-    const auto contents=root.parent_path(); const auto home=contents/"Resources"/"runtime"; const auto site=contents/"Resources"/"site-packages"; const auto script=contents/"Resources"/"MyApp.int";
+    const auto contents=root.parent_path(); const auto home=contents/"Resources"/"runtime"; const auto site=contents/"Resources"/"site-packages"; const auto script=contents/"Resources"/(app_stem+".int");
 #else
-    const auto home=root/"runtime"; const auto site=root/"site-packages"; const auto script=root/"MyApp.int";
+    const auto home=root/"runtime"; const auto site=root/"site-packages"; const auto script=root/(app_stem+".int");
 #endif
     if(!fs::exists(script)){std::cerr<<"Entry script missing: "<<script<<"\n";return 3;}
     auto loaded=load_python(home); if(!loaded.handle){std::cerr<<"Could not load bundled CPython from "<<home<<"\n";return 4;}

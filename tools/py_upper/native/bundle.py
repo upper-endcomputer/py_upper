@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..config import BUILD
+from ..config import BUILD, app_name
 from .deps import Dependency, _system_dependency, dependency_names, resolve_dependency
 from .inspect import verify_arch
 
@@ -20,7 +20,8 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
     queue = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in suffixes]
     # Unix launchers have no extension; the fixed application entrypoint is
     # nevertheless part of the native dependency graph.
-    launcher = root / ("MyApp.exe" if target.os == "windows" else "MyApp")
+    name = app_name()
+    launcher = root / (f"{name}.exe" if target.os == "windows" else name)
     if launcher.is_file():
         queue.append(launcher)
     seen: set[Path] = set()

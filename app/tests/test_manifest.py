@@ -2,8 +2,8 @@ import json
 import sys
 from pathlib import Path
 
-from pstand.config import TARGETS, RuntimeSpec
-from pstand.manifest import build_manifest, canonical_json, manifest_hash, validate_manifest
+from py_upper.config import TARGETS, RuntimeSpec
+from py_upper.manifest import build_manifest, canonical_json, manifest_hash, validate_manifest
 
 
 def test_manifest_is_portable_and_validates(tmp_path):

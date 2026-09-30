@@ -1,21 +1,21 @@
 from __future__ import annotations
 import argparse, os, shutil, subprocess, platform
 
-from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider, runtime_spec, host_description
-from pstand.toolchain import describe_toolchain
-from pstand.runtime_provider import ensure_sdk, sdk_info
-from pstand.python_build import build_python_package
-from pstand.launcher_build import build_launcher
-from pstand.package import package
-from pstand.runtime_provider import ensure_runtime
-from pstand.wheel import resolve_wheels
-from pstand.lock import write_lock, verify_lock
-from pstand.verify import verify
-from pstand.release_artifacts import write_release_manifest
+from py_upper.config import BUILD, DIST, TARGETS, app_name, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider, runtime_spec, host_description
+from py_upper.toolchain import describe_toolchain
+from py_upper.runtime_provider import ensure_sdk, sdk_info
+from py_upper.python_build import build_python_package
+from py_upper.launcher_build import build_launcher
+from py_upper.package import package
+from py_upper.runtime_provider import ensure_runtime
+from py_upper.wheel import resolve_wheels
+from py_upper.lock import write_lock, verify_lock
+from py_upper.verify import verify
+from py_upper.release_artifacts import write_release_manifest
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        description="PyStand2 - build, verify and release a standalone Python application",
+        description="py_upper - build, verify and release a standalone Python application",
         epilog=(
             "Default: build.  Examples: python tools/build.py --target linux-x86_64, "
             "python tools/build.py --run, python tools/build.py --release"
@@ -27,7 +27,7 @@ def main(argv=None):
     action.add_argument("--doctor", action="store_true", help="check the host/target toolchain")
     action.add_argument("--run", dest="run_app", action="store_true", help="build, verify and run (native target only)")
     action.add_argument("--verify", action="store_true", help="verify an existing build")
-    action.add_argument("--lock", action="store_true", help="resolve and write the PyStand build lock")
+    action.add_argument("--lock", action="store_true", help="resolve and write the py_upper build lock")
     action.add_argument("--release", action="store_true", help="build, verify and sign the release")
     action.add_argument("--clean", action="store_true", help="remove build/dist outputs")
     p.add_argument("--target", choices=list(TARGETS), help="target platform; defaults to the current host")
@@ -103,7 +103,8 @@ def main(argv=None):
         rc = verify(t)
         if rc: return rc
         if action_name == "run":
-            exe = out / "MyApp.exe" if t.os == "windows" else out / "MyApp" if t.os == "linux" else out / "Contents/MacOS/MyApp"
+            name = app_name()
+            exe = out / (f"{name}.exe" if t.os == "windows" else name) if t.os != "macos" else out / f"Contents/MacOS/{name}"
             return subprocess.call([str(exe)])
         if action_name == "release":
             rc = release(t, a.identity, a.notary_profile)
@@ -125,16 +126,16 @@ def release(t, identity=None, notary_profile=None):
         cert=os.environ.get("PYSTAND_SIGN_CERT")
         if not tool or not cert:
             raise RuntimeError("Windows release requires signtool and PYSTAND_SIGN_CERT")
-        for p in (DIST/"MyApp").rglob("*"):
+        for p in (DIST/app_name()).rglob("*"):
             if p.is_file() and p.suffix.lower() in {".exe",".dll",".pyd"}:
                 subprocess.run([tool,"sign","/fd","SHA256","/a","/f",cert,str(p)],check=True)
         return 0
-    app=DIST/"MyApp.app"; cs=shutil.which("codesign"); xr=shutil.which("xcrun")
+    app=DIST/f"{app_name()}.app"; cs=shutil.which("codesign"); xr=shutil.which("xcrun")
     ident=identity or os.environ.get("PYSTAND_CODESIGN_IDENTITY")
     if not cs or not xr or not ident:
         raise RuntimeError("macOS release requires codesign/xcrun and --identity")
     nested=[p for p in app.rglob("*") if p.is_file() and p.suffix in {".dylib",".so"}]
-    nested.append(app/"Contents/MacOS/MyApp")
+    nested.append(app/f"Contents/MacOS/{app_name()}")
     for p in nested:
         subprocess.run([cs,"--force","--timestamp","--options","runtime","--sign",ident,str(p)],check=True)
     subprocess.run([cs,"--force","--timestamp","--options","runtime","--sign",ident,str(app)],check=True)

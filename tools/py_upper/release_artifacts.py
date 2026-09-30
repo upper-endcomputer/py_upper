@@ -28,7 +28,7 @@ def write_release_manifest(target: Target, output: Path | None = None) -> Path:
         })
     data = {
         "format": 1,
-        "project": "PyStand2",
+        "project": "py_upper",
         "version": project_version(),
         "target": target.key,
         "target_triple": target.triple,

@@ -2,13 +2,26 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: MyApp",
+      "name": "Python: app/src/main.py",
       "type": "debugpy",
       "request": "launch",
-      "module": "myapp",
+      "program": "${workspaceFolder}/app/src/main.py",
       "cwd": "${workspaceFolder}/app",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/app/src"
+      },
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "py_upper: packaged app",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/build.py",
+      "args": ["--run"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
     }
   ]
 }

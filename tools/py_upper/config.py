@@ -60,8 +60,24 @@ def project_version() -> str:
         raise RuntimeError("[project].version is required")
     return value
 
+def app_config() -> dict:
+    cfg = py_upper_config().get("app", {})
+    return cfg if isinstance(cfg, dict) else {}
+
+def app_name() -> str:
+    value = str(app_config().get("name") or "MyApp").strip()
+    if not value or value in {".", ".."} or any(sep in value for sep in ("/", "\\")):
+        raise RuntimeError("[tool.py_upper.app].name must be a single application name without path separators")
+    return value
+
+def app_identifier() -> str:
+    value = str(app_config().get("identifier") or "com.example.pyupper").strip()
+    if not value:
+        raise RuntimeError("[tool.py_upper.app].identifier must not be empty")
+    return value
+
 def user_agent() -> str:
-    return f"PyStand2/{project_version()}"
+    return f"py_upper/{project_version()}"
 
 def host_target() -> Target:
     system = platform.system()
@@ -87,19 +103,19 @@ def validate_target(name: str | None) -> Target:
         raise SystemExit(f"Unknown target: {name}; available: {', '.join(TARGETS)}")
     return TARGETS[name]
 
-def pstand_config() -> dict:
-    return load_app_config()["tool"].get("pstand", {})
+def py_upper_config() -> dict:
+    return load_app_config()["tool"].get("py_upper", {})
 
 def runtime_config() -> dict:
-    cfg = pstand_config().get("runtime", {})
+    cfg = py_upper_config().get("runtime", {})
     return cfg if isinstance(cfg, dict) else {}
 
 def python_version() -> str:
     cfg = runtime_config()
-    value = cfg.get("python") or pstand_config().get("python") or ""
+    value = cfg.get("python") or py_upper_config().get("python") or ""
     value = str(value)
     if not value:
-        raise RuntimeError("[tool.pstand.runtime].python is required")
+        raise RuntimeError("[tool.py_upper.runtime].python is required")
     return value
 
 def runtime_spec(target: Target) -> RuntimeSpec:
@@ -121,26 +137,26 @@ def runtime_provider() -> str:
 def local_runtime_path(target: Target) -> Path:
     value = runtime_config().get("runtime")
     if not value:
-        raise RuntimeError("[tool.pstand.runtime].runtime is required when provider = 'local'")
+        raise RuntimeError("[tool.py_upper.runtime].runtime is required when provider = 'local'")
     return _expand_target_path(str(value), target)
 
 def local_sdk_path(target: Target) -> Path:
     value = runtime_config().get("sdk")
     if not value:
-        raise RuntimeError("[tool.pstand.runtime].sdk is required when provider = 'local'")
+        raise RuntimeError("[tool.py_upper.runtime].sdk is required when provider = 'local'")
     return _expand_target_path(str(value), target)
 
 def _expand_target_path(value: str, target: Target) -> Path:
     return (ROOT / value.format(target=target.key, os=target.os, arch=target.arch, python=python_version())).resolve()
 
 def pbs_release() -> str:
-    value = pstand_config().get("pbs", {}).get("release")
+    value = py_upper_config().get("pbs", {}).get("release")
     if not value:
-        raise RuntimeError("[tool.pstand.pbs].release is required for reproducible builds")
+        raise RuntimeError("[tool.py_upper.pbs].release is required for reproducible builds")
     return str(value)
 
 def cython_config() -> dict:
-    return pstand_config().get("cython", {})
+    return py_upper_config().get("cython", {})
 
 def target_runtime_dir(target: Target) -> Path:
     if runtime_provider() == "local":

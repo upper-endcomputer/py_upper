@@ -8,9 +8,9 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "myapp"
-version = "0.11.0"
-description = "PyStand2 example application"
+name = "py_upper"
+version = "0.16.1"
+description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 dependencies = []
 
@@ -20,12 +20,16 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pstand]
+[tool.py_upper]
 # Bundled target/runtime Python. This is independent from the Python used to
 # run tools/build.py. Set it to the exact runtime you want to ship.
-entry = "myapp"
+entry = "main.py"
 
-[tool.pstand.runtime]
+[tool.py_upper.app]
+name = "MyApp"
+identifier = "com.example.pyupper"
+
+[tool.py_upper.runtime]
 # Runtime is independent from the Python used to run tools/build.py.
 # provider = "pbs" uses python-build-standalone.
 # provider = "local" lets you supply a prebuilt target runtime + SDK.
@@ -36,18 +40,18 @@ python = "3.13"
 # runtime = "runtimes/{target}/{python}"
 # sdk = "runtimes/{target}/{python}-sdk"
 
-[tool.pstand.pbs]
+[tool.py_upper.pbs]
 release = "20260929"
 
-[tool.pstand.cython]
-include = ["myapp.core.*", "myapp.services.*", "myapp.models.*"]
-exclude = ["myapp.config", "myapp.logging"]
+[tool.py_upper.cython]
+include = ["core.*", "services.*", "models.*"]
+exclude = ["config", "logging"]
 
-[tool.pstand.windows]
+[tool.py_upper.windows]
 architectures = ["x86", "x86_64", "arm64"]
 
-[tool.pstand.macos]
+[tool.py_upper.macos]
 architectures = ["arm64", "x86_64"]
 
-[tool.pstand.linux]
+[tool.py_upper.linux]
 architectures = ["x86_64", "arm64"]

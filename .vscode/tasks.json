@@ -2,14 +2,14 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "PyStand2: build",
+      "label": "py_upper: build",
       "type": "shell",
       "command": "python",
       "args": ["tools/build.py"],
       "problemMatcher": []
     },
     {
-      "label": "PyStand2: run",
+      "label": "py_upper: run packaged app",
       "type": "shell",
       "command": "python",
       "args": ["tools/build.py", "--run"],
