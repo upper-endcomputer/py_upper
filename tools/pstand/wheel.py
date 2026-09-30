@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .config import APP, BUILD, Target, load_app_config, python_version
+from .config import APP, BUILD, Target, load_app_config, python_version, require_local_python
 from .target_python import resolve_target_python
 
 
@@ -62,9 +62,7 @@ def resolve_wheels(target: Target) -> Path:
         (out / "manifest.json").write_text(json.dumps({"target": target.key, "wheels": []}, indent=2), encoding="utf-8")
         return out
 
-    host_python = Path(__file__).resolve().parents[1] / "app" / (".venv/Scripts/python.exe" if __import__("os").name == "nt" else ".venv/bin/python")
-    if not host_python.exists():
-        raise RuntimeError(f"Development venv not found: {host_python}")
+    host_python = require_local_python()
 
     cmd = [str(host_python), "-m", "pip", "download", "--only-binary=:all:", "--no-cache-dir", "-d", str(out)]
     cmd += _pip_args(target)
@@ -87,7 +85,7 @@ def install_wheels(target: Target, site: Path) -> Path:
     wheels = sorted(wheel_dir.glob("*.whl"))
     if not wheels:
         return wheel_dir
-    host_python = Path(__file__).resolve().parents[1] / "app" / (".venv/Scripts/python.exe" if __import__("os").name == "nt" else ".venv/bin/python")
+    host_python = require_local_python()
     cmd = [str(host_python), "-m", "pip", "install", "--no-index", "--no-deps", "--target", str(site)]
     cmd += [str(w) for w in wheels]
     _run(cmd, cwd=APP)

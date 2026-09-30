@@ -95,19 +95,46 @@ Linux `.so` dependencies are read from ELF `DT_NEEDED` entries with `readelf` (o
 
 ## Development
 
+The build system does **not** require `venv`. It accepts any Python 3.13
+interpreter that can provide the build dependencies.
+
+The recommended explicit override is `PYSTAND_PYTHON`. For example:
+
 ```bash
-python -m venv app/.venv
-app/.venv/bin/python -m pip install -U pip
-app/.venv/bin/python -m pip install -e app
+export PYSTAND_PYTHON=/opt/python/3.13/bin/python
+python tools/build.py
 ```
 
-On Windows:
+PowerShell:
 
 ```powershell
-py -3.13 -m venv app\.venv
-app\.venv\Scripts\python.exe -m pip install -U pip
-app\.venv\Scripts\python.exe -m pip install -e app
+$env:PYSTAND_PYTHON = "C:\Python313\python.exe"
+python tools/build.py
 ```
+
+If `PYSTAND_PYTHON` is not set, PyStand2 looks for `app/.venv` first and
+then falls back to the Python interpreter running `tools/build.py`. The
+selected interpreter must be Python 3.13 and needs the build requirements
+from `app/pyproject.toml`.
+
+For VS Code, install the Python, Pylance and CMake Tools extensions. The
+workspace deliberately does not hard-code an interpreter path, so you can
+select a venv, conda environment, pyenv environment, Poetry environment,
+or another discovered Python installation. VS Code's current Python
+Environments workflow discovers common environment managers automatically.
+
+After selecting the interpreter with **Python: Select Interpreter**, these
+commands are sufficient:
+
+```text
+Run Task -> pystand: doctor
+Run Task -> pystand: build
+Run Task -> pystand: run
+```
+
+The Python application source is exposed to IntelliSense through
+`app/src`; installing the application into the selected environment is
+optional for editor navigation.
 
 ## Platform requirements
 
@@ -121,3 +148,10 @@ Cross-target builds are build-only on the host. `--run` requires target == host.
 ## Current validation status
 
 Linux x86_64 has been exercised in this environment at the launcher/CMake level. A full PBS-backed package build could not be completed here because this execution environment currently cannot resolve external network hosts, so PBS download was not falsely reported as tested.
+
+The repository now includes `.github/workflows/validate.yml`, which runs the
+full native build/run workflow on Linux x86_64, Windows x86_64, macOS x86_64,
+and macOS arm64. These CI jobs are the authoritative cross-platform
+validation path; this development environment cannot execute Windows or
+macOS binaries locally. GitHub currently provides Windows 2025 x64 and macOS
+14 arm64 hosted runners, so the workflow uses those supported runner labels.

@@ -1,5 +1,4 @@
 {
-    "python.defaultInterpreterPath": "${workspaceFolder}/app/.venv",
     "python.analysis.extraPaths": [
         "${workspaceFolder}/app/src"
     ],
@@ -7,6 +6,14 @@
     "python.testing.unittestEnabled": false,
     "python.testing.pytestArgs": [
         "${workspaceFolder}/app/tests"
+    ],
+    "python-envs.workspaceSearchPaths": [
+        "./**/.venv",
+        "./**/venv",
+        "./**/.env",
+        "./**/env",
+        "./**/.python",
+        "./**/.conda"
     ],
     "files.exclude": {
         "**/__pycache__": true,

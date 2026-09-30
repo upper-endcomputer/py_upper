@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
 import platform
+import shutil
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,10 +83,38 @@ def pbs_sdk_dir(target: Target) -> Path:
     return CACHE / "pbs-sdk" / target.key / python_version()
 
 def python_executable() -> Path:
-    return APP / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+    """Return the preferred development Python without requiring a venv.
+
+    Priority: explicit PYSTAND_PYTHON, app/.venv, the interpreter running
+    this build tool, then python/python3 on PATH.
+    """
+    explicit = os.environ.get("PYSTAND_PYTHON")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+
+    local = APP / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+    if local.exists():
+        return local
+
+    current = Path(sys.executable).resolve()
+    if current.exists():
+        return current
+
+    for name in ("python", "python3"):
+        found = shutil.which(name)
+        if found:
+            return Path(found).resolve()
+    raise RuntimeError("No development Python found. Set PYSTAND_PYTHON or install Python.")
 
 def require_local_python() -> Path:
     p = python_executable()
     if not p.exists():
-        raise RuntimeError(f"Development venv not found: {p}. Create app/.venv first.")
+        raise RuntimeError(f"Development Python not found: {p}. Set PYSTAND_PYTHON to a valid interpreter.")
+    expected = python_version().split(".")
+    probe = __import__("subprocess").run(
+        [str(p), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if probe != ".".join(expected[:2]):
+        raise RuntimeError(f"Development Python {probe} does not match project Python {'.'.join(expected[:2])}: {p}")
     return p
