@@ -1,3 +1,41 @@
+## 0.17.0
+
+### Problem
+- The 0.16.x build chain accumulated fixes across PBS resolution, Cython, target extension naming, native dependency scanning, packaging permissions, verification, launcher symbol visibility, and third-party dependency handling without one end-to-end contract.
+- Real builds could therefore pass unit tests and fail later during application launch.
+
+### Root cause
+- Target Python/ABI/platform information was duplicated across runtime, wheel, compiler, native, and verification code.
+- Third-party wheel collection, staging, native dependency closure, and runtime smoke were only partially connected.
+- Lock files were coupled to generated manifests instead of being an independent source of reproducible wheel inputs.
+
+### Changes
+- Introduce a unified target contract for runtime ABI, wheel platforms, extension suffixes, and target triples.
+- Add a single PBS asset resolver used by both runtime and full SDK selection; automatic mode uses exact-version metadata and a single tagged release lookup.
+- Add resilient HTTP retries and atomic `.part` downloads.
+- Make third-party dependencies first-class inputs from `[project].dependencies`, resolving target-compatible wheels into staging.
+- Add safe third-party/runtime optimization without modifying the source runtime cache; optional aggressive cleanup and native stripping are configurable.
+- Separate Cython generation from Unix target extension compilation and ensure target headers are used without host Python include leakage.
+- Treat application native libraries under `app/src` as package inputs and resolve their recursive native dependency closure.
+- Make macOS package copying content-only and handle Mach-O identity vs dependency semantics correctly.
+- Replace hardcoded verification of a `core` directory with project-layout-independent checks.
+- Add target-runtime import smoke and launcher smoke before `--run`; smoke imports the entry module plus direct declared third-party imports so optional/lazy application modules are not treated as unconditional dependencies.
+- Detect native binary format before choosing the parser, so Mach-O Python extensions ending in `.so` are handled as Mach-O rather than ELF.
+- Make Linux RPATH rewriting opt-in instead of replacing third-party wheel RPATHs unconditionally.
+- Make third-party import discovery work when `top_level.txt` is absent, and make Windows Python DLL system-dependency handling follow the configured target Python version.
+- Make lock files preserve multiple target entries and make `--locked` independent of a pre-existing wheel manifest.
+- Ignore `runtimes/` as a local runtime cache while keeping application native binaries trackable.
+
+### Verification
+- Local compatibility/unit suite: 43 passed, 1 skipped.
+- Full local Linux end-to-end build/run: passed with a local target runtime, a transitive third-party wheel dependency, application-owned native libraries, launcher smoke, and application execution.
+- Lock/locked round-trip: passed separately on the same end-to-end fixture.
+- `compileall`, `py_upper doctor`, and `git diff --check` passed.
+- Git history and release artifact integrity verified.
+
+### Limitations
+- The current development environment cannot perform real GitHub/PyPI network downloads reliably, so PBS network downloads and macOS/Windows CI execution are not claimed as locally executed. CI remains the authoritative cross-platform integration environment.
+
 ## 0.16.19
 
 - Fix PBS automatic release resolution through a lightweight exact-version metadata index.

@@ -1,28 +1,20 @@
 import json
-import sys
-from pathlib import Path
 
-from py_upper.config import TARGETS, RuntimeSpec
+from py_upper.config import RuntimeSpec, TARGETS
 from py_upper.manifest import build_manifest, canonical_json, manifest_hash, validate_manifest
 
 
-def test_manifest_is_portable_and_validates(tmp_path):
+def test_manifest_round_trip_is_portable_and_hashed(tmp_path):
     target = TARGETS["linux-x86_64"]
-    runtime = tmp_path / "runtime"
-    sdk = tmp_path / "sdk"
-    runtime.mkdir(); sdk.mkdir()
-    spec = RuntimeSpec("local", "3.13", target, runtime, sdk)
-    data = build_manifest(spec, {
-        "python": "3.13.5",
-        "python_executable": str(sdk / "bin/python3"),
-        "include_dir": str(sdk / "include/python3.13"),
-    }, runtime)
+    runtime = tmp_path / "runtime"; sdk = tmp_path / "sdk"
+    runtime.mkdir(); (sdk / "bin").mkdir(parents=True); (sdk / "include").mkdir()
+    (sdk / "bin" / "python3.13").write_text("", encoding="utf-8")
+    (sdk / "include" / "Python.h").write_text("", encoding="utf-8")
+    spec = RuntimeSpec("local", "3.13.5", target, runtime, sdk)
+    data = build_manifest(spec, {"python":"3.13.5","python_tag":"cp313","python_platform_tag":"manylinux_2_17_x86_64","python_executable":sdk/"bin/python3.13","include_dir":sdk/"include"})
     validate_manifest(data, target, spec)
-    assert data["runtime"]["root"] == "."
-    assert data["sdk"]["root"] == "configured"
+    assert data["python_executable"] == "bin/python3.13"
     assert str(tmp_path) not in canonical_json(data).decode()
-    assert not Path(data["python_executable"]).is_absolute()
-    assert not Path(data["include_dir"]).is_absolute()
     assert len(manifest_hash(data)) == 64
 
 

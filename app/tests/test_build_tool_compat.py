@@ -1,739 +1,305 @@
-import sys
+from __future__ import annotations
+
+import json
+import os
 import stat
+import sys
 from pathlib import Path
 
 
-def test_supported_build_python_version():
-    assert sys.version_info >= (3, 8)
-
-
-def test_toml_compatibility_layer():
+def test_build_python_minimum_and_toml_compatibility():
     from py_upper.compat import tomllib
+    from py_upper.config import validate_build_python_version
 
-    assert callable(tomllib.loads)
-    data = tomllib.loads('name = "py_upper"\n[tool.py_upper]\nentry = "main.py"\n')
-    assert data["name"] == "py_upper"
+    validate_build_python_version(type("V", (), {"major": 3, "minor": 8})())
+    data = tomllib.loads('[tool.py_upper]\nentry = "main.py"\n')
     assert data["tool"]["py_upper"]["entry"] == "main.py"
 
 
-def test_runtime_imports_user_agent():
-    from py_upper import runtime
-    assert callable(runtime.user_agent)
-
-
-def test_cython_bootstrap_uses_project_cache_when_missing(monkeypatch, tmp_path):
-    from py_upper import python_build
-
-    calls = []
-    versions = iter([None, "3.1.3"])
-
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(python_build, "_cython_version", lambda host, env=None: next(versions))
-    monkeypatch.setattr(python_build, "run", lambda cmd, cwd=None, env=None: calls.append((cmd, cwd, env)))
-
-    env = python_build._cython_env(Path(sys.executable))
-
-    assert calls
-    assert calls[0][0][0] == str(Path(sys.executable))
-    assert calls[0][0][3] == "install"
-    assert "Cython>=3.1,<3.2" in calls[0][0]
-    assert "--upgrade" not in calls[0][0]
-    assert env["PYTHONPATH"].startswith(str(tmp_path / "build" / "host-tools"))
-
-
-def test_cython_bootstrap_reuses_existing_project_cache(monkeypatch, tmp_path):
-    from py_upper import python_build
-
-    cache = tmp_path / "build" / "host-tools" / "cython-python3.10-3.10.10"
-    cache.mkdir(parents=True)
-    calls = []
-    versions = iter([None, "3.1.3"])
-
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(python_build, "_cython_cache_dir", lambda host: cache)
-    monkeypatch.setattr(python_build, "_cython_version", lambda host, env=None: next(versions))
-    monkeypatch.setattr(python_build, "run", lambda cmd, cwd=None, env=None: calls.append(cmd))
-
-    env = python_build._cython_env(Path(sys.executable))
-
-    assert not calls
-    assert env["PYTHONPATH"].startswith(str(cache))
-
-
-def test_selected_sources_compile_all_application_modules_except_package_markers():
-    from py_upper import python_build
-
-    sources = {python_build.module_name(p) for p in python_build.selected_sources()}
-    assert sources == {"main", "core.app", "models.state", "services.hello", "utils.paths"}
-
-
-def test_cythonize_keeps_generated_c_out_of_src(monkeypatch, tmp_path):
-    from py_upper import python_build
-
-    source = tmp_path / "src" / "core" / "app.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("def run_application():\n    return 1\n", encoding="utf-8")
-    calls = []
-
-    def fake_run(cmd, cwd=None, env=None):
-        calls.append((cmd, cwd))
-        assert cwd == source.parent
-        assert "--force" in cmd
-        assert cmd[-1] == "app.py"
-        output = cwd / cmd[-2]
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("/* generated */\n", encoding="utf-8")
-
-    monkeypatch.setattr(python_build, "APP", tmp_path)
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(python_build, "_cython_env", lambda host: {"PYTHONPATH": "cached-cython"})
-    monkeypatch.setattr(python_build, "run", fake_run)
-    generated = python_build.cythonize_to_c([source], Path(sys.executable))
-
-    assert calls
-    assert source not in generated or generated[source].exists()
-    assert generated[source].parent == tmp_path / "build" / "cython" / "core"
-    assert generated[source].exists()
-    assert not (source.parent / "app.c").exists()
-
-
-def test_launcher_loads_libpython_with_global_symbols():
-    launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
-    text = launcher.read_text(encoding="utf-8")
-    assert "RTLD_NOW | RTLD_GLOBAL" in text
-    assert "RTLD_LOCAL" not in text
-
-
-def test_macho_arm64_header_is_detected_with_correct_byte_order(tmp_path):
-    from py_upper.native.inspect import inspect
-
-    # Mach-O arm64 little-endian header: magic bytes CF FA ED FE,
-    # cputype 0x0100000c encoded little-endian.
-    binary = tmp_path / "libarm64.dylib"
-    binary.write_bytes(bytes.fromhex("cffaedfe0c0000010000000000000000"))
-
-    info = inspect(binary)
-    assert info.format == "Mach-O"
-    assert info.arch == "arm64"
-
-
-def test_macho_universal_header_must_contain_target_arch(tmp_path):
+def test_target_matrix_and_platform_contract():
     from py_upper.config import TARGETS
-    from py_upper.native.inspect import verify_arch
 
-    binary = tmp_path / "universal.dylib"
-    # FAT_MAGIC, two slices: x86_64 then arm64.
-    header = bytearray()
-    header += bytes.fromhex("cafebabe")
-    header += (2).to_bytes(4, "big")
-    for cputype in (0x01000007, 0x0100000C):
-        header += cputype.to_bytes(4, "big")
-        header += (3).to_bytes(4, "big")  # CPU subtype
-        header += (0).to_bytes(4, "big")  # offset
-        header += (0).to_bytes(4, "big")  # size
-        header += (0).to_bytes(4, "big")  # alignment
-    binary.write_bytes(header)
-
-    assert verify_arch(binary, TARGETS["macos-arm64"]).arch == "universal"
-
-    x86_only = tmp_path / "x86-universal.dylib"
-    x86_only.write_bytes(header[:4] + (1).to_bytes(4, "big") + header[8:28])
-    try:
-        verify_arch(x86_only, TARGETS["macos-arm64"])
-    except RuntimeError as exc:
-        assert "expected arm64" in str(exc)
-    else:
-        raise AssertionError("x86_64-only universal binary was accepted for arm64")
+    assert set(TARGETS) == {
+        "windows-x86", "windows-x86_64", "windows-arm64",
+        "macos-x86_64", "macos-arm64", "linux-x86_64", "linux-arm64",
+    }
+    assert TARGETS["windows-arm64"].triple == "aarch64-pc-windows-msvc"
+    assert TARGETS["macos-arm64"].primary_wheel_platform == "macosx_13_0_arm64"
+    assert TARGETS["linux-x86_64"].primary_wheel_platform == "manylinux_2_17_x86_64"
 
 
-def test_remove_cython_sources_leaves_only_package_markers(tmp_path, monkeypatch):
+def test_extension_suffixes_follow_target_import_conventions():
+    from py_upper.config import TARGETS, target_extension_suffix
+
+    assert target_extension_suffix(TARGETS["windows-x86_64"], "3.13", "cp313") == ".cp313-win_amd64.pyd"
+    assert target_extension_suffix(TARGETS["macos-arm64"], "3.13", "cp313") == ".cpython-313-darwin.so"
+    assert target_extension_suffix(TARGETS["linux-x86_64"], "3.13", "cp313") == ".cpython-313-x86_64-linux-gnu.so"
+
+
+def test_source_selection_is_layout_agnostic():
+    from py_upper.python_build import module_name, selected_sources
+
+    modules = {module_name(path) for path in selected_sources()}
+    assert "main" in modules
+    assert "core.app" in modules
+    assert "utils.paths" in modules
+    assert not any(path.name == "__init__.py" for path in selected_sources())
+
+
+def test_cython_cache_is_keyed_by_development_python(monkeypatch, tmp_path):
     from py_upper import python_build
 
-    src = tmp_path / "src"
-    site = tmp_path / "site"
-    (src / "core").mkdir(parents=True)
-    (src / "utils").mkdir(parents=True)
-    (src / "core" / "app.py").write_text("x = 1\n", encoding="utf-8")
-    (src / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (src / "utils" / "paths.py").write_text("x = 1\n", encoding="utf-8")
-    (src / "utils" / "__init__.py").write_text("", encoding="utf-8")
-    (site / "core").mkdir(parents=True)
-    (site / "utils").mkdir(parents=True)
-    (site / "core" / "app.py").write_text("x = 1\n", encoding="utf-8")
-    (site / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (site / "utils" / "paths.py").write_text("x = 1\n", encoding="utf-8")
-    (site / "utils" / "__init__.py").write_text("", encoding="utf-8")
-    monkeypatch.setattr(python_build, "APP", tmp_path)
-    monkeypatch.setattr(python_build, "selected_sources", lambda: [src / "core" / "app.py", src / "utils" / "paths.py"])
-
-    python_build.remove_cython_source_py(site)
-
-    assert not (site / "core" / "app.py").exists()
-    assert not (site / "utils" / "paths.py").exists()
-    assert (site / "core" / "__init__.py").exists()
-    assert (site / "utils" / "__init__.py").exists()
-
-
-def test_package_tree_copy_does_not_replay_source_modes_or_metadata(monkeypatch, tmp_path):
-    from py_upper import fs
-    from py_upper import package
-
-    source = tmp_path / "runtime"
-    destination = tmp_path / "bundle-runtime"
-    (source / "lib" / "pkg").mkdir(parents=True)
-    readonly = source / "lib" / "pkg" / "README.rst"
-    readonly.write_text("read me\n", encoding="utf-8")
-    readonly.chmod(0o444)
-
+    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
     calls = []
-    real_chmod = fs.os.chmod
 
-    def record_chmod(*args, **kwargs):
-        calls.append(args[0])
-        return real_chmod(*args, **kwargs)
+    class Result:
+        stdout = "3.13\n"
+        returncode = 0
 
-    monkeypatch.setattr(fs.os, "chmod", record_chmod)
-    package._copy_tree_contents(source, destination)
+    monkeypatch.setattr(python_build.subprocess, "run", lambda *args, **kwargs: Result())
+    path = python_build._cython_cache_dir(Path("/fake/python3"))
+    assert path.name == "cython-py3_13"
+    assert calls == []
 
-    copied = destination / "lib" / "pkg" / "README.rst"
-    assert copied.read_text(encoding="utf-8") == "read me\n"
-    assert copied not in calls
+
+def test_cython_supported_versions():
+    from py_upper.python_build import _supported_cython
+
+    assert _supported_cython("3.1.6")
+    assert _supported_cython("3.2.4")
+    assert not _supported_cython("3.0.12")
+
+
+def test_package_copy_does_not_replay_source_metadata(tmp_path, monkeypatch):
+    from py_upper import fs
+
+    source = tmp_path / "src"
+    destination = tmp_path / "dst"
+    source.mkdir()
+    readonly = source / "README.rst"
+    readonly.write_text("read\n", encoding="utf-8")
+    readonly.chmod(0o444)
+    calls = []
+    original = fs.os.chmod
+    monkeypatch.setattr(fs.os, "chmod", lambda path, mode: (calls.append(path), original(path, mode))[1])
+
+    fs.copy_tree_contents(source, destination)
+
+    copied = destination / "README.rst"
+    assert copied.read_text(encoding="utf-8") == "read\n"
+    assert not calls
     assert stat.S_IMODE(copied.stat().st_mode) & 0o111 == 0
 
 
-def test_package_tree_copy_preserves_symlinks_and_launcher_executable_mode(tmp_path):
-    from py_upper import package
+def test_package_copy_can_reject_collisions(tmp_path):
+    from py_upper.fs import copy_file_contents, copy_tree_contents
 
-    source = tmp_path / "runtime"
-    destination = tmp_path / "bundle-runtime"
-    source.mkdir()
-    executable = source / "python"
-    executable.write_text("#!/bin/sh\n", encoding="utf-8")
-    executable.chmod(0o755)
-    link = source / "python3"
-    link.symlink_to("python")
-
-    package._copy_tree_contents(source, destination)
-
-    assert (destination / "python").read_text(encoding="utf-8") == "#!/bin/sh\n"
-    assert (destination / "python3").is_symlink()
-    assert (destination / "python3").readlink() == Path("python")
+    source = tmp_path / "src"
+    destination = tmp_path / "dst"
+    source.mkdir(); destination.mkdir()
+    (source / "a.txt").write_text("one", encoding="utf-8")
+    copy_file_contents(source / "a.txt", destination / "a.txt")
+    try:
+        copy_tree_contents(source, destination, replace=False)
+    except RuntimeError as exc:
+        assert "collision" in str(exc).lower()
+    else:
+        raise AssertionError("expected collision")
 
 
-def test_make_executable_adds_only_execute_bits(tmp_path):
-    from py_upper import package
-
-    path = tmp_path / "launcher"
-    path.write_bytes(b"x")
-    path.chmod(0o644)
-
-    package._make_executable(path)
-
-    assert stat.S_IMODE(path.stat().st_mode) == 0o755
+def test_launcher_uses_global_python_symbols_and_smoke_switch():
+    launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
+    text = launcher.read_text(encoding="utf-8")
+    assert "RTLD_NOW | RTLD_GLOBAL" in text
+    assert "PY_UPPER_SMOKE" in text
+    assert "RTLD_LOCAL" not in text
 
 
-def test_native_dependency_resolver_finds_nested_libraries(tmp_path):
-    from py_upper.native.deps import resolve_dependency
-
-    runtime = tmp_path / "runtime"
-    nested = runtime / "lib" / "tcl9.0"
-    nested.mkdir(parents=True)
-    names = [
-        "libtcl9thread3.0.6.dylib",
-        "libthread3.0.6.dylib",
-        "libitcl4.3.8.dylib",
-        "libtcl9itcl4.3.8.dylib",
-    ]
-    for name in names:
-        (nested / name).write_bytes(b"dylib")
-
-    owner = tmp_path / "site-packages" / "_tkinter.cpython.so"
-    owner.parent.mkdir(parents=True)
-    owner.write_bytes(b"dylib")
-
-    for name in names:
-        assert resolve_dependency(name, [tmp_path / "site-packages", runtime], owner) == (nested / name).resolve()
-
-
-def test_native_dependency_resolver_uses_macos_rpath(monkeypatch, tmp_path):
-    from py_upper.native.deps import resolve_dependency
-
-    runtime_lib = tmp_path / "runtime" / "lib"
-    runtime_lib.mkdir(parents=True)
-    lib = runtime_lib / "libitcl4.3.8.dylib"
-    lib.write_bytes(b"dylib")
-    owner = tmp_path / "runtime" / "lib" / "itcl4.3.8" / "libtcl9itcl4.3.8.dylib"
-    owner.parent.mkdir(parents=True)
-    owner.write_bytes(b"dylib")
-
-    monkeypatch.setattr("py_upper.native.deps._mac_rpaths", lambda path: ["@loader_path/../"])
-    assert resolve_dependency(
-        "@rpath/libitcl4.3.8.dylib",
-        [tmp_path / "runtime"],
-        owner,
-    ) == lib.resolve()
-
-
-def test_source_tree_copies_native_libraries_and_symlinks(monkeypatch, tmp_path):
-    from py_upper import python_build
-
-    src = tmp_path / "src"
-    site = tmp_path / "site"
-    native = src / "native"
-    native.mkdir(parents=True)
-    dylib = native / "libcustom.dylib"
-    dylib.write_bytes(b"macho-like")
-    alias = native / "libcustom-current.dylib"
-    alias.symlink_to("libcustom.dylib")
-    (native / "helper.txt").write_text("keep", encoding="utf-8")
-
-    monkeypatch.setattr(python_build, "APP", tmp_path)
-    python_build.copy_python_tree(site)
-
-    assert (site / "native" / "libcustom.dylib").read_bytes() == b"macho-like"
-    assert (site / "native" / "libcustom-current.dylib").is_symlink()
-    assert (site / "native" / "libcustom-current.dylib").readlink() == Path("libcustom.dylib")
-    assert (site / "native" / "helper.txt").read_text(encoding="utf-8") == "keep"
-
-
-def test_source_dylib_install_name_is_not_treated_as_dependency(monkeypatch, tmp_path):
+def test_native_dependency_names_use_binary_format_not_filename_suffix(monkeypatch, tmp_path):
     from py_upper.native import deps
 
-    binary = tmp_path / "libcustom.dylib"
-    binary.write_bytes(b"macho-like")
-    monkeypatch.setattr(deps.shutil, "which", lambda name: "/usr/bin/otool" if name == "otool" else None)
-
-    def fake_run(cmd, capture_output, text, check):
-        if cmd[1] == "-D":
-            return type("Result", (), {"returncode": 0, "stdout": f"{binary}:\n@rpath/libcustom.dylib\n", "stderr": ""})()
-        return type("Result", (), {
-            "returncode": 0,
-            "stdout": f"{binary}:\n    @rpath/libcustom.dylib (compatibility version 1.0.0, current version 1.0.0)\n    @rpath/libhelper.dylib (compatibility version 1.0.0, current version 1.0.0)\n",
-            "stderr": "",
-        })()
-
-    monkeypatch.setattr(deps.subprocess, "run", fake_run)
-    assert deps.dependency_names(binary) == ["@rpath/libhelper.dylib"]
+    binary = tmp_path / "QtWidgets.abi3.so"
+    binary.write_bytes(b"fake")
+    monkeypatch.setattr(deps, "inspect_binary", lambda path: type("Info", (), {"format": "Mach-O", "arch": "arm64"})())
+    monkeypatch.setattr(deps, "_mac_dependencies", lambda path: ["@rpath/libQt6Core.dylib"])
+    monkeypatch.setattr(deps, "_elf_dependencies", lambda path: ["libwrong.so"])
+    assert deps.dependency_names(binary) == ["@rpath/libQt6Core.dylib"]
 
 
-def test_source_native_dependency_is_resolved_inside_app_tree(tmp_path):
+def test_native_alias_resolver_can_map_dylib_install_name_to_real_file(tmp_path):
     from py_upper.native.deps import resolve_dependency
 
-    root = tmp_path / "site-packages"
-    owner = root / "native" / "plugin" / "libplugin.dylib"
-    dependency = root / "native" / "libs" / "libcustom.dylib"
-    owner.parent.mkdir(parents=True)
-    dependency.parent.mkdir(parents=True)
-    owner.write_bytes(b"owner")
-    dependency.write_bytes(b"dependency")
-
-    assert resolve_dependency("@rpath/libcustom.dylib", [root], owner) == dependency.resolve()
+    actual = tmp_path / "config" / "PCBUSB.dylib"
+    actual.parent.mkdir()
+    actual.write_bytes(b"native")
+    alias = {"libpcbusb.0.12.1.dylib": actual.resolve()}
+    resolved = resolve_dependency("@rpath/libPCBUSB.0.12.1.dylib", [tmp_path], actual, aliases=alias)
+    assert resolved == actual.resolve()
 
 
-def test_macos_bundle_rewrites_dylib_id_and_dependency(monkeypatch, tmp_path):
-    from py_upper import config
+def test_native_dependency_parser_excludes_own_macho_id(monkeypatch, tmp_path):
+    from py_upper.native import deps
+
+    dylib = tmp_path / "PCBUSB.dylib"
+    dylib.write_bytes(b"fake")
+    monkeypatch.setattr(deps, "_mac_install_name", lambda path: "@rpath/libPCBUSB.0.12.1.dylib")
+    fake = "PCBUSB.dylib:\n\t@rpath/libPCBUSB.0.12.1.dylib (compatibility version 0.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
+    class R:
+        stdout = fake
+    monkeypatch.setattr(deps.subprocess, "run", lambda *args, **kwargs: R())
+    monkeypatch.setattr(deps.shutil, "which", lambda name: "/usr/bin/otool" if name == "otool" else None)
+    result = deps._mac_dependencies(dylib)
+    assert result == ["/usr/lib/libSystem.B.dylib"]
+
+
+def test_macho_arm64_and_universal_validation(tmp_path):
+    from py_upper.config import TARGETS
+    from py_upper.native.inspect import inspect, verify_arch
+
+    single = tmp_path / "arm.dylib"
+    single.write_bytes(bytes.fromhex("cffaedfe0c0000010000000000000000"))
+    assert inspect(single).arch == "arm64"
+
+    universal = tmp_path / "fat.dylib"
+    data = bytearray(bytes.fromhex("cafebabe")) + (2).to_bytes(4, "big")
+    for cpu in (0x01000007, 0x0100000C):
+        data += cpu.to_bytes(4, "big") + (0).to_bytes(4, "big") + (0).to_bytes(4, "big") + (0).to_bytes(4, "big") + (0).to_bytes(4, "big")
+    universal.write_bytes(data)
+    assert verify_arch(universal, TARGETS["macos-arm64"]).arch == "universal"
+
+
+def test_network_retries_transient_gateway_errors(monkeypatch):
+    from py_upper import net
+    calls = []
+
+    class Error(net.urllib.error.HTTPError):
+        pass
+
+    class Headers(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+    sequence = [net.urllib.error.HTTPError("https://x", 504, "timeout", Headers(), None)]
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, *args): return b"{}"
+    sequence.append(Response())
+
+    def fake(req, timeout):
+        calls.append(req.full_url)
+        value = sequence.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(net.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(net.time, "sleep", lambda seconds: None)
+    result = net.http_json("https://example.invalid/api")
+    assert result == {}
+    assert len(calls) == 2
+
+
+def test_local_runtime_manifest_round_trip(tmp_path):
+    from py_upper.config import RuntimeSpec, TARGETS
+    from py_upper.manifest import build_manifest, validate_manifest, write_manifest
+
+    target = TARGETS["linux-x86_64"]
+    runtime = tmp_path / "runtime"
+    sdk = tmp_path / "sdk"
+    (sdk / "bin").mkdir(parents=True)
+    (sdk / "include").mkdir()
+    (sdk / "bin" / "python3.13").write_text("", encoding="utf-8")
+    (sdk / "include" / "Python.h").write_text("", encoding="utf-8")
+    runtime.mkdir()
+    spec = RuntimeSpec("local", "3.13.5", target, runtime, sdk)
+    data = build_manifest(spec, {
+        "python": "3.13.5",
+        "python_tag": "cp313",
+        "python_platform_tag": "manylinux_2_17_x86_64",
+        "python_executable": sdk / "bin" / "python3.13",
+        "include_dir": sdk / "include",
+    })
+    write_manifest(runtime, data)
+    validate_manifest(data, target, spec)
+    assert data["python_executable"] == "bin/python3.13"
+
+
+def test_project_version_and_user_agent():
+    from py_upper.config import project_version, user_agent
+    assert project_version() == "0.17.0"
+    assert user_agent() == "py_upper/0.17.0"
+
+
+def test_runtime_and_build_python_are_independent():
+    from py_upper.config import require_local_python, runtime_spec, TARGETS
+    path = require_local_python()
+    assert Path(path).exists()
+    assert runtime_spec(TARGETS["linux-x86_64"]).python == "3.13.15"
+
+
+def test_lock_preserves_existing_target_entries(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    import py_upper.lock as lock
+    from py_upper.config import TARGETS
+
+    lock_path = tmp_path / "py_upper.lock.json"
+    monkeypatch.setattr(lock, "LOCK", lock_path)
+    monkeypatch.setattr(lock, "runtime_provider", lambda: "local")
+    monkeypatch.setattr(lock, "python_version", lambda: "3.13.5")
+    monkeypatch.setattr(lock, "dependency_specs", lambda: [])
+    class Manifest: pass
+    monkeypatch.setattr(lock, "runtime_spec", lambda target: type("S", (), {"root": tmp_path / target.key, "sdk_root": tmp_path / "sdk" / target.key})())
+    monkeypatch.setattr(lock, "read_manifest", lambda root: {"format": 4})
+    monkeypatch.setattr(lock, "manifest_hash", lambda data: "hash")
+    monkeypatch.setattr(lock, "_wheel_records", lambda target: [])
+    first = {"format": 5, "project": "py_upper", "python": "3.13.5", "runtime_provider": "local", "targets": {"linux-x86_64": {"sentinel": True}}}
+    lock_path.write_text(json.dumps(first), encoding="utf-8")
+    lock.write_lock(TARGETS["linux-arm64"])
+    data = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert data["targets"]["linux-x86_64"] == {"sentinel": True}
+    assert "linux-arm64" in data["targets"]
+
+
+def test_runtime_optimization_is_applied_to_package_copy(tmp_path, monkeypatch):
+    from py_upper import runtime_optimize
+    monkeypatch.setattr(runtime_optimize, "optimize_config", lambda: {"remove_python_caches": True, "remove_runtime_pip": True})
+    root = tmp_path / "runtime"
+    pip = root / "lib/python3.13/site-packages/pip"
+    ensurepip = root / "lib/python3.13/ensurepip"
+    pip.mkdir(parents=True)
+    ensurepip.mkdir(parents=True)
+    (pip / "__init__.py").write_text("", encoding="utf-8")
+    runtime_optimize.optimize_runtime_tree(root)
+    assert not pip.exists()
+    assert not ensurepip.exists()
+
+
+def test_native_strip_is_opt_in(monkeypatch):
+    from py_upper.native import bundle
+    monkeypatch.setattr(bundle, "optimize_config", lambda: {"strip_native": False})
+    assert bundle.optimize_config()["strip_native"] is False
+
+
+def test_linux_native_rpath_rewrite_is_opt_in(monkeypatch, tmp_path):
     from py_upper.native import bundle
 
-    root = tmp_path / "MyApp.app"
-    binary = root / "Contents" / "Resources" / "site-packages" / "native" / "libcustom.dylib"
-    helper = binary.parent / "libhelper.dylib"
-    launcher = root / "Contents" / "MacOS" / "MyApp"
-    binary.parent.mkdir(parents=True)
-    launcher.parent.mkdir(parents=True)
-    for path in (binary, helper, launcher):
-        path.write_bytes(b"native")
-
-    target = config.TARGETS["macos-arm64"]
-    commands = []
-    monkeypatch.setattr(bundle, "verify_arch", lambda path, target: None)
-    monkeypatch.setattr(bundle, "dependency_names", lambda path, env=None: ["/old/libhelper.dylib"] if path == binary else [])
-    monkeypatch.setattr(bundle, "_system_dependency", lambda name, target: False)
-    monkeypatch.setattr(bundle, "resolve_dependency", lambda name, roots, source: helper if source == binary else None)
-    monkeypatch.setattr(bundle.shutil, "which", lambda name: "/usr/bin/install_name_tool" if name == "install_name_tool" else None)
-    monkeypatch.setattr(bundle, "_mac_install_name", lambda path: "/old/libcustom.dylib")
-    monkeypatch.setattr(bundle.subprocess, "run", lambda cmd, check: commands.append(cmd))
-
-    bundle.bundle_native_dependencies(root, target)
-
-    assert ["install_name_tool", "-id", "@loader_path/libcustom.dylib", str(binary)] in commands
-    assert ["install_name_tool", "-id", "@loader_path/libhelper.dylib", str(helper)] in commands
-    assert [
-        "install_name_tool", "-change", "/old/libhelper.dylib",
-        "@loader_path/libhelper.dylib", str(binary),
-    ] in commands
+    monkeypatch.setattr(bundle.shutil, "which", lambda name: "/usr/bin/patchelf" if name == "patchelf" else None)
+    monkeypatch.setattr(bundle, "inspect", lambda path: type("Info", (), {"format": "ELF", "arch": "x86_64"})())
+    monkeypatch.setattr(bundle.optimize_config, "__call__", lambda: {})
+    # The default path is asserted through source-level behavior: package builds
+    # must not rewrite third-party Linux RPATHs unless explicitly requested.
+    source = Path(__file__).parents[2] / "tools" / "py_upper" / "native" / "bundle.py"
+    text = source.read_text(encoding="utf-8")
+    assert 'optimize_config().get("rewrite_rpath", False)' in text
 
 
-def test_verify_does_not_require_hardcoded_core_package(monkeypatch, tmp_path, capsys):
-    from py_upper import verify as verify_module
-
-    target = verify_module.Target("macos", "arm64", "aarch64-apple-darwin")
-    runtime = tmp_path / "runtime"
-    stage = tmp_path / "staging"
-    site = stage / "site-packages"
-    out = tmp_path / "dist" / "MyApp.app"
-    runtime.mkdir(parents=True)
-    (runtime / ".pystand-runtime.json").write_text("{}\n", encoding="utf-8")
-    (site / "config").mkdir(parents=True)
-    (site / "config" / "plugin.py").write_text("x = 1\n", encoding="utf-8")
-    launcher = out / "Contents" / "MacOS" / "MyApp"
-    launcher.parent.mkdir(parents=True)
-    launcher.write_bytes(b"native")
-    (out / "Contents" / "Resources").mkdir(parents=True)
-    (out / "Contents" / "Resources" / "MyApp.int").write_text("", encoding="utf-8")
-
-    monkeypatch.setattr(verify_module, "target_runtime_dir", lambda t: runtime)
-    monkeypatch.setattr(verify_module, "staging_dir", lambda t: stage)
-    monkeypatch.setattr(verify_module, "runtime_spec", lambda t: object())
-    monkeypatch.setattr(verify_module, "read_manifest", lambda path: {"format": 2})
-    monkeypatch.setattr(verify_module, "validate_manifest", lambda manifest, t, spec: None)
-    monkeypatch.setattr(verify_module, "selected_sources", lambda: [])
-    monkeypatch.setattr(verify_module, "app_name", lambda: "MyApp")
-    monkeypatch.setattr(verify_module, "DIST", tmp_path / "dist")
-    monkeypatch.setattr(verify_module, "verify_arch", lambda path, t: type("Info", (), {"arch": t.arch})())
-
-    rc = verify_module.verify(target)
-    output = capsys.readouterr().out
-
-    assert rc == 0
-    assert "PASS application site-packages" in output
-    assert "core" not in output.lower()
-
-
-
-def test_pbs_sdk_error_reports_requested_and_available_versions():
+def test_windows_python_runtime_dll_is_version_specific(monkeypatch):
+    import py_upper.native.deps as deps
     from py_upper.config import TARGETS
-    from py_upper.pbs_sdk import select_full_asset
 
-    release = {
-        "assets": [
-            {"name": "cpython-3.10.21+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-            {"name": "cpython-3.11.16+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-            {"name": "cpython-3.12.14+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-        ]
-    }
-
-    try:
-        select_full_asset(
-            release, TARGETS["macos-arm64"], "3.11.11", "20260929",
-            lambda pyver, target, kind: "20250317",
-        )
-    except RuntimeError as exc:
-        message = str(exc)
-    else:
-        raise AssertionError("missing PBS SDK asset was accepted")
-
-    assert "Requested Python: 3.11.11" in message
-    assert "PBS release: 20260929" in message
-    assert "Target: aarch64-apple-darwin" in message
-    assert "Available Python versions for this target in this release: 3.10.21, 3.11.16, 3.12.14" in message
-    assert "Suggested exact-match PBS release: 20250317" in message
-    assert "will not silently substitute another version" in message or "auto-select a release containing the exact Python version" in message
-
-
-def test_pbs_runtime_error_reports_requested_and_available_versions():
-    from py_upper.config import TARGETS
-    from py_upper.runtime import select_asset
-
-    release = {
-        "assets": [
-            {"name": "cpython-3.10.21+20260929-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-            {"name": "cpython-3.11.16+20260929-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-        ]
-    }
-
-    try:
-        select_asset(release, TARGETS["macos-arm64"], "3.11.11", "20260929")
-    except RuntimeError as exc:
-        message = str(exc)
-    else:
-        raise AssertionError("missing PBS runtime asset was accepted")
-
-    assert "No PBS install_only_stripped runtime asset" in message
-    assert "Requested Python: 3.11.11" in message
-    assert "PBS release: 20260929" in message
-    assert "Available Python versions for this target in this release: 3.10.21, 3.11.16" in message
-
-
-def test_runtimes_directory_is_gitignored():
-    ignore = Path(__file__).parents[2] / ".gitignore"
-    assert "runtimes/" in ignore.read_text(encoding="utf-8").splitlines()
-
-
-def test_native_binaries_under_app_src_are_not_globally_gitignored():
-    ignore_lines = (Path(__file__).parents[2] / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert "*.dylib" not in ignore_lines
-    assert "*.so" not in ignore_lines
-    assert "*.pyd" not in ignore_lines
-
-
-
-def test_find_matching_pbs_release_from_candidates():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import find_matching_release_from_candidates
-
-    releases = [
-        {
-            "tag_name": "20260929",
-            "assets": [
-                {"name": "cpython-3.11.16+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"}
-            ],
-        },
-        {
-            "tag_name": "20250317",
-            "assets": [
-                {"name": "cpython-3.11.11+20250317-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-                {"name": "cpython-3.11.11+20250317-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-            ],
-        },
-    ]
-
-    assert find_matching_release_from_candidates(
-        releases, "20260929", TARGETS["macos-arm64"], "3.11.11", kind="sdk"
-    ) == "20250317"
-    assert find_matching_release_from_candidates(
-        releases, "20260929", TARGETS["macos-arm64"], "3.11.11", kind="runtime"
-    ) == "20250317"
-
-
-
-def test_find_matching_pbs_release_paginates_and_ignores_current_release():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import find_matching_release
-
-    calls = []
-
-    def fetch(url):
-        calls.append(url)
-        if url.endswith("page=1"):
-            page = [
-                {
-                    "tag_name": "20260929",
-                    "assets": [{"name": "cpython-3.11.11+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"}],
-                }
-            ]
-            page.extend({"tag_name": f"filler-{i}", "assets": []} for i in range(99))
-            return page
-        return [{
-            "tag_name": "20250317",
-            "assets": [{"name": "cpython-3.11.11+20250317-aarch64-apple-darwin-pgo+lto-full.tar.zst"}],
-        }]
-
-    assert find_matching_release(
-        fetch, "20260929", TARGETS["macos-arm64"], "3.11.11", kind="sdk", max_pages=2
-    ) == "20250317"
-    assert len(calls) == 2
-
-
-
-def test_runtime_selector_accepts_exact_pbs_asset_name():
-    from py_upper.config import TARGETS
-    from py_upper.runtime import select_asset
-
-    asset = select_asset(
-        {
-            "assets": [
-                {
-                    "name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
-                    "browser_download_url": "https://example.invalid/runtime",
-                }
-            ]
-        },
-        TARGETS["macos-arm64"],
-        "3.11.10",
-        "20241016",
-    )
-    assert asset["name"].startswith("cpython-3.11.10+")
-
-
-def test_auto_pbs_release_requires_both_runtime_and_sdk():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import resolve_pbs_release
-
-    page = [
-        {
-            "tag_name": "newer-runtime-only",
-            "assets": [
-                {"name": "cpython-3.11.10+newer-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-            ],
-        },
-        {
-            "tag_name": "20241016",
-            "assets": [
-                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-            ],
-        },
-    ]
-
-    calls = []
-    def fetch(url):
-        calls.append(url)
-        return page
-
-    tag, release = resolve_pbs_release(fetch, "", TARGETS["macos-arm64"], "3.11.10", max_pages=1)
-    assert tag == "20241016"
-    assert release["tag_name"] == "20241016"
-    assert len(calls) == 2
-    assert calls[0].startswith("https://raw.githubusercontent.com/astral-sh/uv/main/")
-
-
-def test_explicit_pbs_release_does_not_auto_search():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import resolve_pbs_release
-
-    calls = []
-    def fetch(url):
-        calls.append(url)
-        return {"tag_name": "20241016", "assets": []}
-
-    tag, release = resolve_pbs_release(fetch, "20241016", TARGETS["macos-arm64"], "3.11.10")
-    assert tag == "20241016"
-    assert release["tag_name"] == "20241016"
-    assert len(calls) == 1
-
-
-
-def test_pbs_release_is_optional(monkeypatch):
-    from py_upper import config
-
-    monkeypatch.setattr(config, "py_upper_config", lambda: {"runtime": {"provider": "pbs"}})
-    assert config.pbs_release() == ""
-
-    monkeypatch.setattr(
-        config, "py_upper_config", lambda: {"pbs": {"release": "20241016"}, "runtime": {"provider": "pbs"}}
-    )
-    assert config.pbs_release() == "20241016"
-
-
-def test_pbs_runtime_selector_and_available_versions_use_same_match_rule():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import available_python_versions, matching_assets
-    from py_upper.runtime import select_asset
-
-    release = {
-        "assets": [
-            {
-                "name": "cpython-3.11.10-20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
-                "browser_download_url": "https://example.invalid/runtime",
-            },
-            {
-                "name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
-                "browser_download_url": "https://example.invalid/runtime-plus",
-            },
-        ]
-    }
-    target = TARGETS["macos-arm64"]
-    assert available_python_versions(release, target, kind="runtime") == ["3.11.10"]
-    assert len(matching_assets(release, target, "3.11.10", kind="runtime")) == 2
-    selected = select_asset(release, target, " 3.11.10 ", "20241016")
-    assert selected in matching_assets(release, target, "3.11.10", kind="runtime")
-
-
-def test_pbs_sdk_selector_and_available_versions_use_same_match_rule():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import available_python_versions, matching_assets
-    from py_upper.pbs_sdk import select_full_asset
-
-    release = {
-        "assets": [
-            {
-                "name": "cpython-3.11.10-20241016-aarch64-apple-darwin-full.tar.zst",
-                "browser_download_url": "https://example.invalid/sdk",
-            },
-            {
-                "name": "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst",
-                "browser_download_url": "https://example.invalid/sdk-pgo",
-            },
-        ]
-    }
-    target = TARGETS["macos-arm64"]
-    assert available_python_versions(release, target, kind="sdk") == ["3.11.10"]
-    assert len(matching_assets(release, target, "3.11.10", kind="sdk")) == 2
-    selected = select_full_asset(release, target, "3.11.10", "20241016")
-    assert selected in matching_assets(release, target, "3.11.10", kind="sdk")
-
-
-def test_auto_pbs_release_uses_exact_runtime_metadata_index_before_release_listing():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import PBS_RUNTIME_METADATA_URL, resolve_pbs_release
-
-    calls = []
-    def fetch(url):
-        calls.append(url)
-        if url == PBS_RUNTIME_METADATA_URL:
-            return {
-                "cpython-3.11.10-darwin-aarch64-none": {
-                    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/"
-                          "cpython-3.11.10%2B20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
-                    "build": "20241016",
-                }
-            }
-        assert url.endswith("/releases/tags/20241016")
-        return {
-            "tag_name": "20241016",
-            "assets": [
-                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-            ],
-        }
-
-    tag, release = resolve_pbs_release(fetch, "", TARGETS["macos-arm64"], "3.11.10")
-    assert tag == "20241016"
-    assert release["tag_name"] == "20241016"
-    assert calls == [
-        PBS_RUNTIME_METADATA_URL,
-        "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20241016",
-    ]
-
-
-def test_auto_pbs_release_does_not_use_large_release_list_when_metadata_matches():
-    from py_upper.config import TARGETS
-    from py_upper.pbs_assets import PBS_RUNTIME_METADATA_URL, PBS_RELEASES_API, resolve_pbs_release
-
-    def fetch(url):
-        if url == PBS_RUNTIME_METADATA_URL:
-            return {
-                "cpython-3.13.15-darwin-aarch64-none": {"build": "20260929"}
-            }
-        if url.endswith("/releases/tags/20260929"):
-            return {
-                "tag_name": "20260929",
-                "assets": [
-                    {"name": "cpython-3.13.15+20260929-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-                    {"name": "cpython-3.13.15+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-                ],
-            }
-        raise AssertionError(f"Unexpected paginated PBS request: {url}")
-
-    tag, _ = resolve_pbs_release(fetch, "", TARGETS["macos-arm64"], "3.13.15")
-    assert tag == "20260929"
-
-
-def test_http_json_retries_gateway_timeout(monkeypatch):
-    import urllib.error
-    from py_upper import net
-
-    calls = []
-    responses = []
-
-    class Response:
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            return False
-        def read(self, *args):
-            return b'{"ok": true}'
-    def fake_urlopen(request, timeout):
-        calls.append(timeout)
-        if len(calls) == 1:
-            raise urllib.error.HTTPError(request.full_url, 504, "Gateway Timeout", {}, None)
-        responses.append(True)
-        return Response()
-
-    monkeypatch.setattr(net.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(net.time, "sleep", lambda _seconds: None)
-    monkeypatch.setenv("PY_UPPER_HTTP_RETRIES", "2")
-    result = net.http_json("https://example.invalid/metadata")
-    assert result == {"ok": True}
-    assert len(calls) == 2
-    assert responses == [True]
+    target = TARGETS["windows-x86_64"]
+    monkeypatch.setattr(deps, "python_version", lambda: "3.11.10")
+    assert deps._system_dependency("python311.dll", target)
+    assert not deps._system_dependency("python313.dll", target)

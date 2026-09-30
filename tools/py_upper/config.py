@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 import os
 import platform
 import shutil
-import sys
 import subprocess
-from .compat import tomllib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from .compat import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 APP = ROOT / "app"
@@ -15,19 +17,73 @@ BUILD = ROOT / "build"
 DIST = ROOT / "dist"
 RUNTIMES = ROOT / "runtimes"
 LAUNCHER = ROOT / "launcher"
-
-# The build tool itself supports Python 3.8+. This is intentionally separate
-# from the target Python selected in [tool.py_upper.runtime].
+LOCK = ROOT / "py_upper.lock.json"
 MIN_BUILD_PYTHON = (3, 8)
+
 
 @dataclass(frozen=True)
 class Target:
     os: str
     arch: str
     triple: str
+
     @property
     def key(self) -> str:
         return f"{self.os}-{self.arch}"
+
+    @property
+    def python_tag(self) -> str:
+        return "cp" + python_version().replace(".", "")[:3]
+
+    @property
+    def wheel_platforms(self) -> tuple[str, ...]:
+        if self.os == "windows":
+            return {
+                "x86": ("win32",),
+                "x86_64": ("win_amd64",),
+                "arm64": ("win_arm64",),
+            }[self.arch]
+        if self.os == "macos":
+            if self.arch == "arm64":
+                return (
+                    "macosx_13_0_arm64",
+                    "macosx_12_0_arm64",
+                    "macosx_11_0_arm64",
+                    "macosx_13_0_universal2",
+                    "macosx_12_0_universal2",
+                    "macosx_11_0_universal2",
+                )
+            return (
+                "macosx_13_0_x86_64",
+                "macosx_12_0_x86_64",
+                "macosx_11_0_x86_64",
+                "macosx_10_15_x86_64",
+                "macosx_13_0_universal2",
+                "macosx_12_0_universal2",
+                "macosx_11_0_universal2",
+            )
+        if self.os == "linux":
+            arch = {"x86_64": "x86_64", "arm64": "aarch64"}[self.arch]
+            baseline = str(dependency_config().get("manylinux") or "manylinux_2_17").strip()
+            if baseline == "manylinux2014":
+                return (f"manylinux2014_{arch}",)
+            if not baseline.startswith("manylinux_"):
+                raise RuntimeError("[tool.py_upper.dependencies].manylinux must be manylinux_X_Y or manylinux2014")
+            return (f"{baseline}_{arch}",)
+        raise RuntimeError(f"Unsupported target: {self.key}")
+
+    @property
+    def primary_wheel_platform(self) -> str:
+        return self.wheel_platforms[0]
+
+    @property
+    def extension_platform(self) -> str:
+        if self.os == "windows":
+            return {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[self.arch]
+        if self.os == "linux":
+            return "x86_64-linux-gnu" if self.arch == "x86_64" else "aarch64-linux-gnu"
+        return "darwin"
+
 
 @dataclass(frozen=True)
 class RuntimeSpec:
@@ -36,13 +92,32 @@ class RuntimeSpec:
     target: Target
     root: Path
     sdk_root: Path
+
     @property
     def major_minor(self) -> str:
-        parts = self.python.split(".")
-        return ".".join(parts[:2])
+        return ".".join(self.python.split(".")[:2])
+
     @property
     def abi_tag(self) -> str:
         return f"cp{self.major_minor.replace('.', '')}"
+
+
+@dataclass(frozen=True)
+class TargetPython:
+    target: Target
+    root: Path
+    executable: Path
+    include_dir: Path
+    python_version: str
+    python_major_minor: str
+    abi_tag: str
+    libpython_link_mode: str | None
+    extension_suffix: str
+
+    @property
+    def platform_tags(self) -> tuple[str, ...]:
+        return self.target.wheel_platforms
+
 
 TARGETS = {
     "windows-x86": Target("windows", "x86", "i686-pc-windows-msvc"),
@@ -54,25 +129,40 @@ TARGETS = {
     "linux-arm64": Target("linux", "arm64", "aarch64-unknown-linux-gnu"),
 }
 
+
 def load_app_config() -> dict:
     with (APP / "pyproject.toml").open("rb") as f:
         return tomllib.load(f)
 
+
+def py_upper_config() -> dict:
+    value = load_app_config().get("tool", {}).get("py_upper", {})
+    return value if isinstance(value, dict) else {}
+
+
+def project_config() -> dict:
+    value = load_app_config().get("project", {})
+    return value if isinstance(value, dict) else {}
+
+
 def project_version() -> str:
-    value = str(load_app_config()["project"].get("version") or "")
+    value = str(project_config().get("version") or "").strip()
     if not value:
         raise RuntimeError("[project].version is required")
     return value
 
+
 def app_config() -> dict:
-    cfg = py_upper_config().get("app", {})
-    return cfg if isinstance(cfg, dict) else {}
+    value = py_upper_config().get("app", {})
+    return value if isinstance(value, dict) else {}
+
 
 def app_name() -> str:
     value = str(app_config().get("name") or "MyApp").strip()
     if not value or value in {".", ".."} or any(sep in value for sep in ("/", "\\")):
-        raise RuntimeError("[tool.py_upper.app].name must be a single application name without path separators")
+        raise RuntimeError("[tool.py_upper.app].name must be a single application name")
     return value
+
 
 def app_identifier() -> str:
     value = str(app_config().get("identifier") or "com.example.pyupper").strip()
@@ -80,63 +170,92 @@ def app_identifier() -> str:
         raise RuntimeError("[tool.py_upper.app].identifier must not be empty")
     return value
 
+
+def entry_path() -> Path:
+    value = str(py_upper_config().get("entry") or "main.py").strip()
+    root = (APP / "src").resolve()
+    path = (root / value).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("[tool.py_upper].entry must stay under app/src") from exc
+    if path.suffix != ".py" or not path.exists():
+        raise RuntimeError(f"Application entry file does not exist: {path}")
+    return path
+
+
+def entry_module() -> str:
+    return ".".join(entry_path().relative_to(APP / "src").with_suffix("").parts)
+
+
 def user_agent() -> str:
     return f"py_upper/{project_version()}"
+
 
 def host_target() -> Target:
     system = platform.system()
     machine = platform.machine().lower()
-    if system == "Windows" and machine in {"amd64", "x86_64"}:
-        return TARGETS["windows-x86_64"]
-    if system == "Windows" and machine in {"arm64", "aarch64"}:
-        return TARGETS["windows-arm64"]
-    if system == "Darwin" and machine in {"arm64", "aarch64"}:
-        return TARGETS["macos-arm64"]
-    if system == "Darwin" and machine in {"x86_64", "amd64"}:
-        return TARGETS["macos-x86_64"]
-    if system == "Linux" and machine in {"arm64", "aarch64"}:
-        return TARGETS["linux-arm64"]
-    if system == "Linux" and machine in {"x86_64", "amd64"}:
-        return TARGETS["linux-x86_64"]
-    raise RuntimeError(f"Unsupported host: {system} {machine}")
+    aliases = {
+        ("Windows", "amd64"): "windows-x86_64",
+        ("Windows", "x86_64"): "windows-x86_64",
+        ("Windows", "arm64"): "windows-arm64",
+        ("Windows", "aarch64"): "windows-arm64",
+        ("Windows", "x86"): "windows-x86",
+        ("Darwin", "arm64"): "macos-arm64",
+        ("Darwin", "aarch64"): "macos-arm64",
+        ("Darwin", "x86_64"): "macos-x86_64",
+        ("Darwin", "amd64"): "macos-x86_64",
+        ("Linux", "arm64"): "linux-arm64",
+        ("Linux", "aarch64"): "linux-arm64",
+        ("Linux", "x86_64"): "linux-x86_64",
+        ("Linux", "amd64"): "linux-x86_64",
+    }
+    name = aliases.get((system, machine))
+    if not name:
+        raise RuntimeError(f"Unsupported host: {system} {machine}")
+    return TARGETS[name]
+
 
 def validate_target(name: str | None) -> Target:
     if not name:
         return host_target()
-    if name not in TARGETS:
+    target = TARGETS.get(name)
+    if target is None:
         raise SystemExit(f"Unknown target: {name}; available: {', '.join(TARGETS)}")
-    return TARGETS[name]
+    return target
 
-def py_upper_config() -> dict:
-    return load_app_config()["tool"].get("py_upper", {})
 
 def runtime_config() -> dict:
-    cfg = py_upper_config().get("runtime", {})
-    return cfg if isinstance(cfg, dict) else {}
+    value = py_upper_config().get("runtime", {})
+    return value if isinstance(value, dict) else {}
+
 
 def python_version() -> str:
-    cfg = runtime_config()
-    value = cfg.get("python") or py_upper_config().get("python") or ""
-    value = str(value)
-    if not value:
-        raise RuntimeError("[tool.py_upper.runtime].python is required")
+    value = str(runtime_config().get("python") or "").strip()
+    parts = value.split(".")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        raise RuntimeError("[tool.py_upper.runtime].python must be an exact X.Y.Z Python version")
     return value
+
+
+def runtime_provider() -> str:
+    provider = str(runtime_config().get("provider") or "pbs").strip().lower()
+    if provider not in {"pbs", "local"}:
+        raise RuntimeError(f"Unsupported runtime provider: {provider!r}; use 'pbs' or 'local'")
+    return provider
+
 
 def runtime_spec(target: Target) -> RuntimeSpec:
     provider = runtime_provider()
+    python = python_version()
     if provider == "local":
         root = local_runtime_path(target)
         sdk = local_sdk_path(target)
     else:
-        root = target_runtime_dir(target)
-        sdk = pbs_sdk_dir(target)
-    return RuntimeSpec(provider, python_version(), target, root, sdk)
+        root = RUNTIMES / target.key / python
+        sdk = CACHE / "pbs-sdk" / target.key / python
+    return RuntimeSpec(provider, python, target, root, sdk)
 
-def runtime_provider() -> str:
-    provider = str(runtime_config().get("provider") or "pbs").lower()
-    if provider not in {"pbs", "local"}:
-        raise RuntimeError(f"Unsupported runtime provider: {provider!r}; use 'pbs' or 'local'")
-    return provider
 
 def local_runtime_path(target: Target) -> Path:
     value = runtime_config().get("runtime")
@@ -144,162 +263,159 @@ def local_runtime_path(target: Target) -> Path:
         raise RuntimeError("[tool.py_upper.runtime].runtime is required when provider = 'local'")
     return _expand_target_path(str(value), target)
 
+
 def local_sdk_path(target: Target) -> Path:
     value = runtime_config().get("sdk")
     if not value:
         raise RuntimeError("[tool.py_upper.runtime].sdk is required when provider = 'local'")
     return _expand_target_path(str(value), target)
 
+
 def _expand_target_path(value: str, target: Target) -> Path:
     return (ROOT / value.format(target=target.key, os=target.os, arch=target.arch, python=python_version())).resolve()
 
-def pbs_release() -> str:
-    """Return an explicitly configured PBS release, or an empty string for auto.
 
-    The default build contract only requires the exact target Python version.
-    py_upper can then select the newest PBS release containing both the runtime
-    and full SDK assets for the target. An explicit release remains supported
-    for reproducible/pinned builds and lock files.
-    """
+def pbs_release() -> str:
     cfg = py_upper_config().get("pbs", {})
-    if not isinstance(cfg, dict):
-        return ""
-    value = cfg.get("release")
-    return str(value).strip() if value else ""
+    return str(cfg.get("release") or "").strip() if isinstance(cfg, dict) else ""
+
 
 def cython_config() -> dict:
-    return py_upper_config().get("cython", {})
+    value = py_upper_config().get("cython", {})
+    return value if isinstance(value, dict) else {}
 
-def target_extension_suffix(target: Target, python_major_minor: str, abi_tag: str) -> str:
-    """Return the extension-module suffix recognized by target CPython."""
-    if target.os == "windows":
-        platform_tag = {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[target.arch]
-        return f".{abi_tag}-{platform_tag}.pyd"
-    if target.os == "linux":
-        arch = {"x86_64": "x86_64", "arm64": "aarch64"}[target.arch]
-        return f".cpython-{python_major_minor.replace('.', '')}-{arch}-linux-gnu.so"
-    return f".cpython-{python_major_minor.replace('.', '')}-darwin.so"
+
+def optimize_config() -> dict:
+    value = py_upper_config().get("optimize", {})
+    return value if isinstance(value, dict) else {}
+
+
+def dependency_config() -> dict:
+    value = py_upper_config().get("dependencies", {})
+    return value if isinstance(value, dict) else {}
 
 
 def target_runtime_dir(target: Target) -> Path:
-    if runtime_provider() == "local":
-        return local_runtime_path(target)
-    return RUNTIMES / target.key / python_version()
+    return runtime_spec(target).root
+
 
 def staging_dir(target: Target) -> Path:
     return BUILD / "staging" / target.key
 
+
 def wheel_dir(target: Target) -> Path:
     return BUILD / "wheels" / target.key
 
+
 def pbs_sdk_dir(target: Target) -> Path:
-    if runtime_provider() == "local":
-        return local_sdk_path(target)
-    return CACHE / "pbs-sdk" / target.key / python_version()
+    return runtime_spec(target).sdk_root
+
+
+def target_extension_suffix(target: Target, python_major_minor: str, abi_tag: str) -> str:
+    digits = python_major_minor.replace(".", "")
+    if target.os == "windows":
+        return f".{abi_tag}-{target.extension_platform}.pyd"
+    if target.os == "linux":
+        return f".cpython-{digits}-{target.extension_platform}.so"
+    return f".cpython-{digits}-darwin.so"
+
 
 def validate_build_python_version(version_info=None) -> None:
     info = version_info or sys.version_info
-    actual = (info.major, info.minor)
+    actual = (int(info.major), int(info.minor))
     if actual < MIN_BUILD_PYTHON:
         raise RuntimeError(
             f"py_upper build tool requires Python {MIN_BUILD_PYTHON[0]}.{MIN_BUILD_PYTHON[1]}+; "
-            f"current interpreter is {info.major}.{info.minor}. "
-            "Use a newer development Python; the bundled target Python remains independently configurable."
+            f"current interpreter is {info.major}.{info.minor}"
         )
 
-def python_executable() -> Path:
-    """Return the preferred development Python without requiring a venv.
 
-    Priority: explicit PYSTAND_PYTHON, app/.venv, the interpreter running
-    this build tool, then python/python3 on PATH.
-    """
-    explicit = os.environ.get("PYSTAND_PYTHON")
+def python_executable() -> Path:
+    explicit = os.environ.get("PY_UPPER_PYTHON") or os.environ.get("PYSTAND_PYTHON")
     if explicit:
         return Path(explicit).expanduser().resolve()
-
     local = APP / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
     if local.exists():
-        return local
-
+        return local.resolve()
     current = Path(sys.executable).resolve()
     if current.exists():
         return current
-
     for name in ("python", "python3"):
         found = shutil.which(name)
         if found:
             return Path(found).resolve()
-    raise RuntimeError("No development Python found. Set PYSTAND_PYTHON or install Python.")
+    raise RuntimeError("No development Python found. Set PY_UPPER_PYTHON or install Python.")
+
+
+def require_local_python() -> Path:
+    path = python_executable()
+    if not path.exists():
+        raise RuntimeError(f"Development Python not found: {path}")
+    probe = subprocess.run(
+        [str(path), "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip().split()
+    if len(probe) != 2:
+        raise RuntimeError(f"Could not determine development Python version: {path}")
+    major, minor = int(probe[0]), int(probe[1])
+    if (major, minor) < MIN_BUILD_PYTHON:
+        raise RuntimeError(f"Development Python {major}.{minor} is too old; Python 3.8+ is required: {path}")
+    return path
+
 
 def host_description() -> str:
     return f"{platform.system()} {platform.machine()} Python {platform.python_version()}"
 
 
-def resolve_target_python(target: Target):
-    """Resolve the target SDK/runtime contract without executing target Python."""
-    from dataclasses import dataclass
+def _find_target_executable(root: Path, target: Target) -> Path:
+    names = ["python.exe", "python3.exe"] if target.os == "windows" else [
+        f"python{python_version()}", f"python{'.'.join(python_version().split('.')[:2])}", "python3", "python"
+    ]
+    candidates = []
+    for name in names:
+        candidates.extend((root / "bin" / name, root / "install" / "bin" / name))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    for name in names:
+        for candidate in root.rglob(name):
+            if candidate.is_file():
+                return candidate
+    raise RuntimeError(f"Target Python executable not found under {root}")
 
-    @dataclass(frozen=True)
-    class TargetPython:
-        target: Target
-        root: Path
-        executable: Path
-        include_dir: Path
-        python_version: str
-        python_major_minor: str
-        abi_tag: str
-        libpython_link_mode: str | None
 
-        @property
-        def platform_tag(self) -> str:
-            if self.target.os == "windows":
-                return {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[self.target.arch]
-            if self.target.os == "linux":
-                return {"x86_64": "manylinux_2_17_x86_64", "arm64": "manylinux_2_17_aarch64"}[self.target.arch]
-            return "macosx_11_0_arm64" if self.target.arch == "arm64" else "macosx_10_15_x86_64"
+def _find_target_include(sdk_root: Path) -> Path:
+    for candidate in (
+        sdk_root / "python" / "include",
+        sdk_root / "python" / "install" / "include",
+        sdk_root / "include",
+        sdk_root / "install" / "include",
+    ):
+        if candidate.exists() and (candidate / "Python.h").exists():
+            return candidate
+    matches = sorted(p.parent for p in sdk_root.rglob("Python.h"))
+    if matches:
+        return matches[0]
+    raise RuntimeError(f"Target Python include directory not found under {sdk_root}")
 
-        @property
-        def extension_suffix(self) -> str:
-            return target_extension_suffix(self.target, self.python_major_minor, self.abi_tag)
 
+def resolve_target_python(target: Target) -> TargetPython:
     from .runtime_provider import ensure_sdk, sdk_info
+
     spec = runtime_spec(target)
-    root = ensure_sdk(target)
+    ensure_sdk(target)
     info = sdk_info(target)
-    exe = Path(info["python_executable"])
-    include = Path(info["include_dir"])
-    if not exe.exists():
-        raise RuntimeError(f"Target Python executable not found: {exe}")
+    sdk_root = Path(str(info.get("root") or spec.sdk_root)).resolve()
+    executable = Path(str(info.get("python_executable") or ""))
+    if not executable.exists():
+        executable = _find_target_executable(spec.root, target)
+    include = Path(str(info.get("include_dir") or ""))
     if not include.exists():
-        raise RuntimeError(f"Target Python include directory not found: {include}")
+        include = _find_target_include(sdk_root)
     actual = str(info.get("python") or spec.python)
-    if not actual.startswith(spec.python):
+    if actual != spec.python:
         raise RuntimeError(f"Target Python {actual} does not match configured runtime Python {spec.python}")
     major_minor = ".".join(actual.split(".")[:2])
-    return TargetPython(target, root, exe, include, actual, major_minor, f"cp{major_minor.replace('.', '')}", info.get("libpython_link_mode"))
-
-
-def require_local_python() -> Path:
-    """Return the configurable host/development Python.
-
-    The host Python is only a build tool: Cython generates C with it and the
-    target Python headers/runtime are used for the actual extension build. It
-    therefore does *not* need to equal the bundled target Python version.
-    This is important for legacy targets such as Python 3.8.x.
-    """
-    p = python_executable()
-    if not p.exists():
-        raise RuntimeError(f"Development Python not found: {p}. Set PYSTAND_PYTHON to a valid interpreter.")
-    probe = __import__("subprocess").run(
-        [str(p), "-c", "import sys; print(sys.version_info[0], sys.version_info[1], sys.executable)"],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip().split()
-    if len(probe) < 2:
-        raise RuntimeError(f"Could not determine development Python version: {p}")
-    major, minor = int(probe[0]), int(probe[1])
-    if (major, minor) < MIN_BUILD_PYTHON:
-        raise RuntimeError(
-            f"Development Python {major}.{minor} is too old; "
-            f"Python {MIN_BUILD_PYTHON[0]}.{MIN_BUILD_PYTHON[1]}+ is required: {p}"
-        )
-    return p
+    abi = f"cp{major_minor.replace('.', '')}"
+    suffix = target_extension_suffix(target, major_minor, abi)
+    return TargetPython(target, spec.root, executable, include, actual, major_minor, abi, info.get("libpython_link_mode"), suffix)

@@ -6,110 +6,186 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..config import BUILD, app_name
+from ..config import BUILD, app_name, optimize_config
+from ..fs import copy_file_contents
 from .deps import Dependency, _mac_install_name, _system_dependency, dependency_names, resolve_dependency
-from .inspect import verify_arch
+from .inspect import BinaryInfo, inspect, verify_arch
+
+
+def _native_files(root: Path, target) -> list[Path]:
+    """Return native images, including framework binaries without .dylib suffixes."""
+    result: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if target.os == "windows" and suffix not in {".pyd", ".dll", ".exe"}:
+            continue
+        if target.os == "linux" and suffix != ".so":
+            continue
+        try:
+            info = inspect(path)
+        except (OSError, ValueError):
+            continue
+        if (target.os == "macos" and info.format.startswith("Mach-O")) or info.format in {"ELF", "PE"}:
+            result.append(path)
+    return sorted(set(result))
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _maybe_remove_signature(path: Path) -> None:
+    codesign = shutil.which("codesign")
+    if codesign:
+        subprocess.run([codesign, "--remove-signature", str(path)], capture_output=True, check=False)
+
+
+def _ad_hoc_sign(path: Path) -> None:
+    codesign = shutil.which("codesign")
+    if codesign:
+        result = subprocess.run([codesign, "--force", "--sign", "-", "--timestamp=none", str(path)], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"codesign failed for {path}: {result.stderr.strip()}")
+
+
+def _mac_aliases(roots: list[Path]) -> dict[str, Path]:
+    aliases: dict[str, Path] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                info = inspect(path)
+            except (OSError, ValueError):
+                continue
+            if not info.format.startswith("Mach-O"):
+                continue
+            install_name = _mac_install_name(path)
+            if not install_name:
+                continue
+            aliases.setdefault(os.path.basename(install_name).lower(), path.resolve())
+    return aliases
+
+
+
+
+def _strip_native(path: Path, target) -> None:
+    if not bool(optimize_config().get("strip_native", False)):
+        return
+    if target.os == "windows":
+        tool = shutil.which("llvm-strip") or shutil.which("strip")
+        if not tool:
+            raise RuntimeError("strip_native=true requires llvm-strip or strip on PATH for Windows targets")
+        cmd = [tool, str(path)]
+    else:
+        tool = shutil.which("strip")
+        if not tool:
+            raise RuntimeError("strip_native=true requires strip on PATH")
+        cmd = [tool, "--strip-unneeded", str(path)] if target.os == "linux" else [tool, "-x", str(path)]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"strip failed for {path}: {(result.stderr or result.stdout).strip()}")
 
 
 def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = None) -> list[Dependency]:
-    """Validate and close the native dependency graph inside the final bundle."""
-    site = root / "site-packages"
-    runtime = root / "runtime"
-    search_roots = [site, runtime, root]
-    suffixes = {".pyd", ".dll", ".exe"} if target.os == "windows" else ({".so", ".dylib"} if target.os == "macos" else {".so"})
-    queue = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in suffixes]
-    # Unix launchers have no extension; the fixed application entrypoint is
-    # nevertheless part of the native dependency graph.
+    """Resolve and embed the native dependency closure of the application payload."""
     name = app_name()
-    launcher = root / (f"{name}.exe" if target.os == "windows" else name)
+    package_site = root / "Contents" / "Resources" / "site-packages" if target.os == "macos" else root / "site-packages"
+    runtime_lib = root / "Contents" / "Resources" / "runtime" / "lib" if target.os == "macos" else root / "runtime" / "lib"
+    search_roots = [package_site, runtime_lib, root]
+    queue = _native_files(package_site, target)
+    launcher = (root / "Contents" / "MacOS" / name) if target.os == "macos" else root / (f"{name}.exe" if target.os == "windows" else name)
     if launcher.is_file():
         queue.append(launcher)
+    queue = list(dict.fromkeys(queue))
+    aliases = _mac_aliases(search_roots) if target.os == "macos" else {}
+
     seen: set[Path] = set()
-    deps: list[Dependency] = []
+    dependencies: list[Dependency] = []
     while queue:
         source = queue.pop(0).resolve()
         if source in seen:
             continue
         seen.add(source)
         verify_arch(source, target)
-        for name in dependency_names(source, env):
-            if _system_dependency(name, target):
+        for dep_name in dependency_names(source, env):
+            if _system_dependency(dep_name, target):
                 continue
-            resolved = resolve_dependency(name, search_roots, source)
+            resolved = resolve_dependency(dep_name, search_roots, source, aliases=aliases)
             if resolved is None:
-                deps.append(Dependency(source, name, None, True))
+                dependencies.append(Dependency(source, dep_name, None, True))
                 continue
-            # Dependencies already inside the final bundle are fine. If a tool
-            # resolves a library outside it, copy that library next to its owner.
-            try:
-                resolved.relative_to(root.resolve())
-                inside = True
-            except ValueError:
-                inside = False
-            if not inside:
+            if not _inside(resolved, root):
                 verify_arch(resolved, target)
                 destination = source.parent / resolved.name
-                if not destination.exists():
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(resolved, destination)
-                    queue.append(destination)
+                if destination.exists():
+                    if destination.resolve() != resolved.resolve():
+                        raise RuntimeError(f"Native dependency basename collision: {destination} != {resolved}")
+                else:
+                    copy_file_contents(resolved, destination)
                 resolved = destination.resolve()
-            deps.append(Dependency(source, name, resolved, False))
+                if resolved not in seen:
+                    queue.append(resolved)
+            dependencies.append(Dependency(source, dep_name, resolved, False))
 
     report_dir = BUILD / "native-deps" / target.key
     report_dir.mkdir(parents=True, exist_ok=True)
-    (report_dir / "report.json").write_text(
-        json.dumps([
-            {
-                "owner": str(d.owner.relative_to(root)),
-                "name": d.name,
-                "resolved": str(d.resolved.relative_to(root)) if d.resolved else None,
-                "unresolved": d.external,
-            } for d in deps
-        ], indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    report = [
+        {
+            "owner": str(dep.owner.relative_to(root)),
+            "name": dep.name,
+            "resolved": str(dep.resolved.relative_to(root)) if dep.resolved and _inside(dep.resolved, root) else None,
+            "unresolved": dep.external,
+        }
+        for dep in dependencies
+    ]
+    (report_dir / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    unresolved = [d for d in deps if d.external]
+    unresolved = [dep for dep in dependencies if dep.external]
     if unresolved:
-        lines = [f"{d.owner.name}: {d.name}" for d in unresolved]
+        lines = sorted(set(f"{dep.owner.relative_to(root)}: {dep.name}" for dep in unresolved))
         raise RuntimeError("Unresolved native dependencies:\n  " + "\n  ".join(lines))
 
-    if target.os == "linux" and shutil.which("patchelf"):
+    # Linux RPATH rewriting is opt-in. Many wheels intentionally carry multiple
+    # RPATH entries; replacing them unconditionally can break otherwise valid
+    # third-party packages. The bundle copier already preserves existing RPATHs.
+    if target.os == "linux" and shutil.which("patchelf") and bool(optimize_config().get("rewrite_rpath", False)):
         for binary in seen:
             if binary.suffix.lower() == ".so":
                 subprocess.run(["patchelf", "--set-rpath", "$ORIGIN", str(binary)], check=True)
-    if target.os == "macos" and shutil.which("install_name_tool"):
-        # First normalize every dylib's own LC_ID_DYLIB. This matters when an
-        # application carries prebuilt native libraries under src/: their
-        # install names often still point at the developer's original path.
-        for binary in seen:
-            if binary.suffix.lower() != ".dylib":
-                continue
-            install_name = _mac_install_name(binary)
-            if not install_name:
-                continue
-            new_id = "@loader_path/" + binary.name
-            if install_name == new_id:
-                continue
-            subprocess.run(
-                ["install_name_tool", "-id", new_id, str(binary)],
-                check=True,
-            )
 
-        for dependency in deps:
-            if dependency.external or dependency.resolved is None:
+    if target.os == "macos" and shutil.which("install_name_tool"):
+        native_images = [path for path in seen if inspect(path).format.startswith("Mach-O")]
+        changed: set[Path] = set()
+        for dep in dependencies:
+            if dep.external or dep.resolved is None:
                 continue
-            binary = dependency.owner
-            if binary.suffix.lower() not in {".so", ".dylib"} and binary.name != app_name():
+            owner = dep.owner
+            if not inspect(owner).format.startswith("Mach-O"):
                 continue
-            try:
-                rel = os.path.relpath(dependency.resolved, binary.parent)
-            except ValueError:
+            relative = os.path.relpath(dep.resolved, owner.parent).replace(os.sep, "/")
+            new_name = "@loader_path/" + relative
+            if dep.name == new_name:
                 continue
-            new_name = "@loader_path/" + rel.replace(os.sep, "/")
-            if dependency.name == new_name:
-                continue
-            subprocess.run(
-                ["install_name_tool", "-change", dependency.name, new_name, str(binary)],
-                check=True,
-            )
-    return deps
+            if owner not in changed:
+                _maybe_remove_signature(owner)
+                changed.add(owner)
+            subprocess.run(["install_name_tool", "-change", dep.name, new_name, str(owner)], check=True)
+        for binary in native_images:
+            if bool(optimize_config().get("strip_native", False)):
+                _maybe_remove_signature(binary)
+            _strip_native(binary, target)
+        for binary in native_images:
+            _ad_hoc_sign(binary)
+    else:
+        for binary in seen:
+            _strip_native(binary, target)
+    return dependencies

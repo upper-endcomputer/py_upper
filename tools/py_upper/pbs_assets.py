@@ -1,24 +1,34 @@
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import unquote
 
-from .config import Target
+from .config import CACHE, Target
 
-VERSION_RE = re.compile(r"^cpython-(\d+\.\d+\.\d+)(?:\+|-)")
-PBS_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=100&page={page}"
 PBS_RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
-# Astral's uv publishes a generated index mapping exact managed-Python versions
-# and targets to python-build-standalone release builds. We use it to avoid the
-# very large paginated GitHub Releases response during automatic resolution.
 PBS_RUNTIME_METADATA_URL = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json"
-
-_RELEASE_RESPONSE_CACHE: dict[tuple[int, str], dict[str, Any]] = {}
-
+_METADATA_CACHE = CACHE / "pbs" / "uv-download-metadata.json"
 
 
+@dataclass(frozen=True)
+class PBSAsset:
+    name: str
+    url: str
+    sha256: str | None = None
 
-def _metadata_key(target: Target, pyver: str) -> str:
+
+@dataclass(frozen=True)
+class PBSInputs:
+    tag: str
+    runtime: PBSAsset
+    sdk: PBSAsset
+    source: str
+
+
+def metadata_key(target: Target, pyver: str) -> str:
     platform = {
         ("macos", "arm64"): "darwin-aarch64-none",
         ("macos", "x86_64"): "darwin-x86_64-none",
@@ -27,212 +37,163 @@ def _metadata_key(target: Target, pyver: str) -> str:
         ("windows", "arm64"): "windows-aarch64-none",
         ("linux", "x86_64"): "linux-x86_64-gnu",
         ("linux", "arm64"): "linux-aarch64-gnu",
-    }.get((target.os, target.arch))
-    if not platform:
-        raise RuntimeError(f"No PBS metadata mapping for target {target.key}")
-    return f"cpython-{str(pyver).strip()}-{platform}"
+    }[(target.os, target.arch)]
+    return f"cpython-{pyver.strip()}-{platform}"
 
-
-def find_release_via_runtime_metadata(
-    fetch_json: Callable[[str], Any], target: Target, pyver: str
-) -> tuple[str, dict[str, Any]] | None:
-    """Return the PBS release/build metadata for an exact runtime version.
-
-    This uses Astral uv's generated download metadata as a lightweight index. The
-    actual runtime and SDK assets are still selected from the PBS release itself.
-    """
-    data = fetch_json(PBS_RUNTIME_METADATA_URL)
-    if not isinstance(data, dict):
-        return None
-    entry = data.get(_metadata_key(target, pyver))
-    if not isinstance(entry, dict):
-        return None
-    build = str(entry.get("build") or "").strip()
-    if not build:
-        url = str(entry.get("url") or "")
-        match = re.search(r"/releases/download/([^/]+)/", url)
-        build = match.group(1) if match else ""
-    if not build:
-        return None
-    return build, entry
-
-
-def _release_from_tag(fetch_json: Callable[[str], Any], tag: str) -> dict[str, Any]:
-    cache_key = (id(fetch_json), tag)
-    if cache_key in _RELEASE_RESPONSE_CACHE:
-        return _RELEASE_RESPONSE_CACHE[cache_key]
-    release = fetch_json(PBS_RELEASE_API.format(tag=tag))
-    if not isinstance(release, dict):
-        raise RuntimeError(f"Unexpected PBS release API response for tag {tag}")
-    _RELEASE_RESPONSE_CACHE[cache_key] = release
-    return release
 
 def asset_python_version(name: str) -> str | None:
-    match = VERSION_RE.match(name)
+    match = re.match(r"^cpython-(\d+\.\d+\.\d+)(?:\+|-)", str(name).strip())
     return match.group(1) if match else None
 
 
-def _is_matching_asset(name: str, target: Target, pyver: str, *, kind: str) -> bool:
+def _asset_from_release(asset: dict[str, Any]) -> PBSAsset:
+    name = str(asset.get("name") or "").strip()
+    url = str(asset.get("browser_download_url") or asset.get("url") or "").strip()
+    return PBSAsset(name=name, url=url, sha256=str(asset.get("sha256") or "").strip() or None)
+
+
+def is_matching_asset(name: str, target: Target, pyver: str, *, kind: str) -> bool:
     name = str(name).strip()
-    pyver = str(pyver).strip()
-    if asset_python_version(name) != pyver or target.triple not in name or "freethreaded" in name:
+    if asset_python_version(name) != pyver.strip() or target.triple not in name:
+        return False
+    if "freethreaded" in name or "debug" in name:
         return False
     if kind == "runtime":
-        return "install_only_stripped" in name and name.endswith(".tar.gz")
+        return name.endswith("-install_only_stripped.tar.gz")
     if kind == "sdk":
-        return "full" in name and name.endswith(".tar.zst")
+        return name.endswith(("-pgo+lto-full.tar.zst", "-pgo-full.tar.zst", "-full.tar.zst"))
     raise ValueError(f"Unknown PBS asset kind: {kind}")
 
 
-def matching_assets(
-    release: dict[str, Any], target: Target, pyver: str, *, kind: str
-) -> list[dict[str, Any]]:
-    """Return exactly the PBS assets accepted for a Python/target/kind tuple."""
+def matching_assets(release: dict[str, Any], target: Target, pyver: str, *, kind: str) -> list[dict[str, Any]]:
     return [
-        asset
-        for asset in release.get("assets", []) or []
-        if _is_matching_asset(str(asset.get("name") or ""), target, pyver, kind=kind)
+        asset for asset in (release.get("assets") or [])
+        if isinstance(asset, dict) and is_matching_asset(asset.get("name") or "", target, pyver, kind=kind)
     ]
-
-
-def release_has_asset(release: dict[str, Any], target: Target, pyver: str, *, kind: str) -> bool:
-    return bool(matching_assets(release, target, pyver, kind=kind))
 
 
 def available_python_versions(release: dict[str, Any], target: Target, *, kind: str) -> list[str]:
-    """Return sorted CPython versions available for a target in a PBS release."""
-    versions: set[str] = set()
-    for asset in release.get("assets", []) or []:
-        name = str(asset.get("name") or "").strip()
-        version = asset_python_version(name)
-        if version and _is_matching_asset(name, target, version, kind=kind):
-            versions.add(version)
-
-    def key(value: str) -> tuple[int, int, int]:
-        return tuple(int(part) for part in value.split("."))  # type: ignore[return-value]
-
-    return sorted(versions, key=key)
+    values = {
+        version
+        for asset in (release.get("assets") or [])
+        if isinstance(asset, dict)
+        for version in [asset_python_version(str(asset.get("name") or ""))]
+        if version and is_matching_asset(str(asset.get("name") or ""), target, version, kind=kind)
+    }
+    return sorted(values, key=lambda x: tuple(int(part) for part in x.split(".")))
 
 
-def find_matching_release_from_candidates(
-    releases: list[dict[str, Any]],
-    current_tag: str,
-    target: Target,
-    pyver: str,
-    *,
-    kind: str,
-) -> str | None:
-    """Find the newest release in a supplied GitHub releases list with an exact asset."""
-    for release in releases:
-        tag = str(release.get("tag_name") or "")
-        if not tag or tag == current_tag:
+def available_metadata_python_versions(data: dict[str, Any], target: Target) -> list[str]:
+    suffix = metadata_key(target, "0.0.0").split("0.0.0-", 1)[1]
+    prefix = "cpython-"
+    values: set[str] = set()
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.startswith(prefix) or not key.endswith("-" + suffix):
             continue
-        if release_has_asset(release, target, pyver, kind=kind):
-            return tag
-    return None
+        version = key[len(prefix): -len(suffix) - 1]
+        if re.fullmatch(r"\d+\.\d+\.\d+", version) and isinstance(value, dict) and value.get("url"):
+            values.add(version)
+    return sorted(values, key=lambda x: tuple(int(part) for part in x.split(".")))
 
 
-def find_matching_release(
-    fetch_json: Callable[[str], Any],
-    current_tag: str,
-    target: Target,
-    pyver: str,
-    *,
-    kind: str,
-    max_pages: int = 20,
-) -> str | None:
-    """Best-effort lookup of a recent PBS release containing an exact asset."""
-    for page in range(1, max_pages + 1):
+def _load_metadata(fetch_json: Callable[[str], Any], *, force: bool = False) -> dict[str, Any]:
+    if not force and _METADATA_CACHE.exists():
         try:
-            data = fetch_json(PBS_RELEASES_API.format(page=page))
-        except Exception:
-            return None
-        if not isinstance(data, list):
-            return None
-        match = find_matching_release_from_candidates(data, current_tag, target, pyver, kind=kind)
-        if match:
-            return match
-        if len(data) < 100:
-            return None
-    return None
+            value = json.loads(_METADATA_CACHE.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                return value
+        except (OSError, ValueError):
+            pass
+    value = fetch_json(PBS_RUNTIME_METADATA_URL)
+    if not isinstance(value, dict):
+        raise RuntimeError("Invalid PBS runtime metadata index")
+    _METADATA_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    _METADATA_CACHE.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    return value
 
 
-def resolve_pbs_release(
-    fetch_json: Callable[[str], Any],
-    configured_tag: str,
-    target: Target,
-    pyver: str,
-    *,
-    max_pages: int = 20,
-) -> tuple[str, dict[str, Any]]:
-    """Resolve a PBS release containing both the exact runtime and full SDK assets.
+def metadata_asset(data: dict[str, Any], target: Target, pyver: str) -> PBSAsset | None:
+    entry = data.get(metadata_key(target, pyver))
+    if not isinstance(entry, dict):
+        return None
+    url = str(entry.get("url") or "").strip()
+    if not url:
+        return None
+    return PBSAsset(
+        name=unquote(url.rsplit("/", 1)[-1]),
+        url=url,
+        sha256=str(entry.get("sha256") or "").strip() or None,
+    )
 
-    With an explicit configured release, only that release is accepted. Without
-    one, search newest-to-oldest releases and select the newest release containing
-    both required artifacts for the requested exact Python/target pair.
+
+def _best_sdk(assets: list[dict[str, Any]]) -> dict[str, Any]:
+    return max(assets, key=lambda asset: ("pgo+lto-full" in str(asset.get("name") or ""), str(asset.get("name") or "")))
+
+
+def no_asset_error(release_tag: str, target: Target, pyver: str, release: dict[str, Any], *, missing_runtime: bool, missing_sdk: bool) -> RuntimeError:
+    missing = []
+    if missing_runtime:
+        missing.append("install_only_stripped runtime")
+    if missing_sdk:
+        missing.append("full SDK")
+    return RuntimeError(
+        f"No PBS {' / '.join(missing)} asset for Python {pyver} / {target.triple} in release {release_tag}.\n"
+        f"Requested Python: {pyver}\n"
+        f"PBS release: {release_tag}\n"
+        f"Target: {target.triple}\n"
+        f"Available runtime Python versions: {', '.join(available_python_versions(release, target, kind='runtime')) or 'none'}\n"
+        f"Available SDK Python versions: {', '.join(available_python_versions(release, target, kind='sdk')) or 'none'}\n"
+        "Set [tool.py_upper.pbs].release to a release containing the requested exact Python version; "
+        "py_upper will not silently substitute another version."
+    )
+
+
+def resolve_pbs_inputs(fetch_json: Callable[[str], Any], configured_tag: str, target: Target, pyver: str) -> PBSInputs:
+    """Resolve one exact PBS runtime + SDK pair.
+
+    Automatic mode uses the uv-generated exact runtime metadata to determine the
+    build tag, then requests only that tagged GitHub release to locate the matching
+    full SDK. It never enumerates the GitHub /releases collection.
     """
     if configured_tag:
-        return configured_tag, _release_from_tag(fetch_json, configured_tag)
+        release = fetch_json(PBS_RELEASE_API.format(tag=configured_tag))
+        if not isinstance(release, dict):
+            raise RuntimeError(f"Unexpected PBS release response for {configured_tag}")
+        runtime_assets = matching_assets(release, target, pyver, kind="runtime")
+        sdk_assets = matching_assets(release, target, pyver, kind="sdk")
+        if not runtime_assets or not sdk_assets:
+            raise no_asset_error(configured_tag, target, pyver, release, missing_runtime=not runtime_assets, missing_sdk=not sdk_assets)
+        runtime = _asset_from_release(runtime_assets[0])
+        sdk = _asset_from_release(_best_sdk(sdk_assets))
+        return PBSInputs(configured_tag, runtime, sdk, "release")
 
-    # Prefer the lightweight exact-version index. The GitHub Releases list endpoint
-    # returns every asset for every release on a page and can be very large.
-    metadata_match = find_release_via_runtime_metadata(fetch_json, target, pyver)
-    if metadata_match:
-        tag, _entry = metadata_match
-        release = _release_from_tag(fetch_json, tag)
-        if release_has_asset(release, target, pyver, kind="runtime") and release_has_asset(
-            release, target, pyver, kind="sdk"
-        ):
-            return tag, release
-        # Metadata identified the exact historical build but the release payload is
-        # incomplete/unexpected. Fall through to the legacy exhaustive search.
+    data = _load_metadata(fetch_json)
+    runtime = metadata_asset(data, target, pyver)
+    if runtime is None:
+        available = available_metadata_python_versions(data, target)
+        if available and pyver not in available:
+            raise RuntimeError(
+                f"No PBS runtime metadata for exact Python {pyver} / {target.triple}.\n"
+                f"Requested Python: {pyver}\n"
+                f"Target: {target.triple}\n"
+                f"Available Python versions from PBS metadata for this target: {', '.join(available)}\n"
+                "py_upper will not silently substitute another Python version."
+            )
+        data = _load_metadata(fetch_json, force=True)
+        runtime = metadata_asset(data, target, pyver)
+    if runtime is None:
+        raise RuntimeError(f"No PBS runtime metadata for exact Python {pyver} / {target.triple}")
 
-    for page in range(1, max_pages + 1):
-        data = fetch_json(PBS_RELEASES_API.format(page=page))
-        if not isinstance(data, list):
-            raise RuntimeError(f"Unexpected PBS releases API response on page {page}")
-        for release in data:
-            tag = str(release.get("tag_name") or "")
-            if not tag:
-                continue
-            if release_has_asset(release, target, pyver, kind="runtime") and release_has_asset(
-                release, target, pyver, kind="sdk"
-            ):
-                return tag, release
-        if len(data) < 100:
-            break
-    raise RuntimeError(
-        f"No PBS release contains both install_only_stripped runtime and full SDK "
-        f"for Python {pyver} / {target.triple}."
-    )
+    match = re.search(r"/releases/download/([^/]+)/", runtime.url)
+    tag = unquote(match.group(1)) if match else ""
+    if not tag:
+        raise RuntimeError(f"PBS runtime metadata has no release build tag: {runtime.url}")
 
-
-def no_asset_error(
-    *,
-    release_tag: str,
-    target: Target,
-    pyver: str,
-    kind: str,
-    release: dict,
-    suggested_release: str | None = None,
-) -> RuntimeError:
-    label = "full SDK" if kind == "sdk" else "install_only_stripped runtime"
-    available = available_python_versions(release, target, kind=kind)
-    lines = [
-        f"No PBS {label} asset for Python {pyver} / {target.triple} in release {release_tag}.",
-        f"Requested Python: {pyver}",
-        f"PBS release: {release_tag}",
-        f"Target: {target.triple}",
-    ]
-    if available:
-        lines.append("Available Python versions for this target in this release: " + ", ".join(available))
-    else:
-        lines.append(f"No {label} assets were found for {target.triple} in this release.")
-    if suggested_release:
-        lines.append(f"Suggested exact-match PBS release: {suggested_release}")
-
-    lines.append(
-        "Pin [tool.py_upper.pbs].release only when you want an explicit PBS release; "
-        "otherwise omit that setting and py_upper will auto-select a release containing the exact Python version."
-    )
-    return RuntimeError("\n".join(lines))
+    release = fetch_json(PBS_RELEASE_API.format(tag=tag))
+    if not isinstance(release, dict):
+        raise RuntimeError(f"Unexpected PBS release response for {tag}")
+    sdk_assets = matching_assets(release, target, pyver, kind="sdk")
+    if not sdk_assets:
+        raise no_asset_error(tag, target, pyver, release, missing_runtime=False, missing_sdk=True)
+    sdk = _asset_from_release(_best_sdk(sdk_assets))
+    return PBSInputs(tag, runtime, sdk, "metadata")

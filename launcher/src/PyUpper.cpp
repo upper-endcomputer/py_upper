@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -75,12 +76,15 @@ int PyUpper::run(const std::string& exe,const std::vector<std::string>& args){
     const auto root=exe_dir(exe);
     const auto app_stem=fs::path(exe).stem().string();
 #ifdef _WIN32
-    const auto home=root/"runtime"; const auto site=root/"site-packages"; const auto script=root/(app_stem+".int");
+    const auto home=root/"runtime"; const auto site=root/"site-packages"; auto script=root/(app_stem+".int");
 #elif defined(__APPLE__)
-    const auto contents=root.parent_path(); const auto home=contents/"Resources"/"runtime"; const auto site=contents/"Resources"/"site-packages"; const auto script=contents/"Resources"/(app_stem+".int");
+    const auto contents=root.parent_path(); const auto home=contents/"Resources"/"runtime"; const auto site=contents/"Resources"/"site-packages"; auto script=contents/"Resources"/(app_stem+".int");
 #else
-    const auto home=root/"runtime"; const auto site=root/"site-packages"; const auto script=root/(app_stem+".int");
+    const auto home=root/"runtime"; const auto site=root/"site-packages"; auto script=root/(app_stem+".int");
 #endif
+    if(const char* smoke = std::getenv("PY_UPPER_SMOKE"); smoke && std::string(smoke) == "1") {
+        script = script.parent_path() / (app_stem + ".smoke.int");
+    }
     if(!fs::exists(script)){std::cerr<<"Entry script missing: "<<script<<"\n";return 3;}
     auto loaded=load_python(home); if(!loaded.handle){std::cerr<<"Could not load bundled CPython from "<<home<<"\n";return 4;}
     auto init_config=(ConfigInit)symbol(loaded.handle,"PyConfig_InitIsolatedConfig"); auto set_string=(ConfigSetString)symbol(loaded.handle,"PyConfig_SetString"); auto append=(WideAppend)symbol(loaded.handle,"PyWideStringList_Append"); auto init=(InitializeFromConfig)symbol(loaded.handle,"Py_InitializeFromConfig"); auto clear=(ConfigClear)symbol(loaded.handle,"PyConfig_Clear"); auto finalize=(FinalizeEx)symbol(loaded.handle,"Py_FinalizeEx"); auto initialized=(IsInitialized)symbol(loaded.handle,"Py_IsInitialized");

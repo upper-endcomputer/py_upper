@@ -1,206 +1,150 @@
 from __future__ import annotations
 
-from typing import Any
-
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
-from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version, user_agent
+from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version
+from .fs import copy_tree_contents
 from .net import download, http_json
-from .pbs_assets import find_matching_release, matching_assets, no_asset_error, resolve_pbs_release
+from .pbs_assets import PBSInputs, resolve_pbs_inputs
 
-RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
+MARKER = ".py_upper-sdk.json"
 
 
 def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def resolve_release(target: Target) -> tuple[str, dict]:
-    return resolve_pbs_release(http_json, pbs_release(), target, python_version())
-
-
-def _version_key(name: str) -> tuple[int, int, int, str]:
-    m = re.search(r"cpython-(\d+)\.(\d+)\.(\d+)([^-]*)-", name)
-    if not m:
-        return (0, 0, 0, "")
-    return int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
-
-
-def select_full_asset(
-    release: dict, target: Target, pyver: str, release_tag: str | None = None,
-    release_finder=None,
-) -> dict:
-    candidates = matching_assets(release, target, pyver, kind="sdk")
-    if not candidates:
-        tag = release_tag or pbs_release()
-        suggested = release_finder(pyver, target, "sdk") if release_finder else None
-        raise no_asset_error(
-            release_tag=tag, target=target, pyver=pyver, kind="sdk", release=release,
-            suggested_release=suggested,
-        )
-
-    # Prefer the optimized full build. The archive metadata remains authoritative.
-    def rank(asset: dict) -> tuple[int, tuple[int, int, int, str]]:
-        n = asset["name"]
-        optimization = 2 if "pgo+lto" in n else 1 if "pgo" in n else 0
-        return optimization, _version_key(n)
-
-    return max(candidates, key=rank)
-
-
-def _extract_zst(archive: Path, dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
-    # Prefer a native tar implementation that understands zstd. This works with
-    # modern bsdtar/GNU tar installations. Fall back to zstd + tar.
+def _safe_extract_zst(archive: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
     tar = shutil.which("tar")
-    if tar:
-        p = subprocess.run([tar, "-axf", str(archive), "-C", str(dest)], capture_output=True, text=True)
-        if p.returncode == 0:
-            return
-
+    if not tar:
+        raise RuntimeError("Extracting PBS SDK requires tar on PATH")
+    result = subprocess.run([tar, "-axf", str(archive), "-C", str(destination)], capture_output=True, text=True, check=False)
+    if result.returncode == 0:
+        return
     zstd = shutil.which("zstd")
-    if not zstd or not tar:
-        raise RuntimeError(
-            "Extracting PBS full SDK requires a tar implementation with zstd support "
-            "or both tar and zstd on PATH."
-        )
+    if not zstd:
+        raise RuntimeError(f"Unable to extract {archive.name}: tar could not read zstd archive and zstd is not installed")
     raw = archive.with_suffix("")
     subprocess.run([zstd, "-d", "-f", str(archive), "-o", str(raw)], check=True)
     try:
-        subprocess.run([tar, "-xf", str(raw), "-C", str(dest)], check=True)
+        subprocess.run([tar, "-xf", str(raw), "-C", str(destination)], check=True)
     finally:
         raw.unlink(missing_ok=True)
 
 
-def _safe_member_path(root: Path, member: str) -> None:
-    target = (root / member).resolve()
-    if os.path.commonpath([str(root.resolve()), str(target)]) != str(root.resolve()):
-        raise RuntimeError(f"Unsafe archive path: {member}")
-
-
-def _validate_layout(root: Path) -> dict:
+def _validate_layout(root: Path) -> tuple[Path, Path, dict]:
     python_root = root / "python"
-    metadata = python_root / "PYTHON.json"
-    if not metadata.exists():
-        raise RuntimeError(f"PBS full archive has no PYTHON.json: {metadata}")
-    data = json.loads(metadata.read_text(encoding="utf-8"))
-    paths = data.get("python_paths", {})
+    metadata_path = python_root / "PYTHON.json"
+    if not metadata_path.exists():
+        raise RuntimeError(f"PBS full SDK has no PYTHON.json: {metadata_path}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     install_root = python_root / "install"
-    include_rel = paths.get("include")
-    stdlib_rel = paths.get("stdlib")
-    if not include_rel:
-        raise RuntimeError("PBS PYTHON.json has no python_paths.include")
-    include = python_root / include_rel
-    if not include.exists():
-        # Some PBS metadata paths are relative to the install directory.
-        include = install_root / include_rel
-    if not include.exists():
-        raise RuntimeError(f"PBS include directory not found: {include_rel}")
-    if not install_root.exists():
-        raise RuntimeError("PBS full archive has no python/install directory")
-    return {
-        "metadata": data,
-        "python_root": python_root,
-        "install_root": install_root,
-        "include_dir": include,
-        "stdlib_rel": stdlib_rel,
-    }
+    if not install_root.is_dir():
+        raise RuntimeError(f"PBS full SDK has no python/install directory: {install_root}")
+    matches = sorted(path.parent for path in python_root.rglob("Python.h"))
+    if not matches:
+        raise RuntimeError(f"PBS full SDK contains no Python.h: {python_root}")
+    return python_root, matches[0], metadata
+
+
+def resolve_inputs(target: Target) -> PBSInputs:
+    return resolve_pbs_inputs(http_json, pbs_release(), target, python_version())
 
 
 def ensure_pbs_sdk(target: Target) -> Path:
     out = pbs_sdk_dir(target)
-    marker = out / ".pystand2-sdk.json"
-    if marker.exists():
+    marker_path = out / MARKER
+    if marker_path.exists():
         try:
-            data = json.loads(marker.read_text(encoding="utf-8"))
-            if ((not pbs_release() or data.get("tag") == pbs_release())
-                    and str(data.get("python_major_minor") or data.get("python") or "") .startswith(python_version().rsplit(".", 1)[0])
-                    and str(data.get("python") or "") == python_version()
-                    and data.get("target") == target.key):
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if (
+                marker.get("format") == 2
+                and marker.get("target") == target.key
+                and marker.get("python") == python_version()
+                and out.exists()
+            ):
                 return out
-        except Exception:
+        except (OSError, ValueError):
             pass
 
-    tag, release = resolve_release(target)
-    finder = lambda pyver, target, kind: find_matching_release(
-        http_json, tag, target, pyver, kind=kind
-    )
-    asset = select_full_asset(release, target, python_version(), tag, finder)
-    archive = CACHE / "pbs" / tag / target.key / asset["name"]
-    download(asset["browser_download_url"], archive)
-    digest = asset.get("digest")
+    inputs = resolve_inputs(target)
+    archive = CACHE / "pbs" / inputs.tag / target.key / inputs.sdk.name
+    download(inputs.sdk.url, archive)
     actual = sha256(archive)
-    if digest and digest.startswith("sha256:") and actual.lower() != digest.split(":", 1)[1].lower():
-        raise RuntimeError(f"SHA256 mismatch: expected {digest}, got {actual}")
+    if inputs.sdk.sha256 and actual.lower() != inputs.sdk.sha256.lower():
+        raise RuntimeError(f"PBS SDK SHA256 mismatch: expected {inputs.sdk.sha256}, got {actual}")
 
-    extract = CACHE / "pbs" / tag / target.key / "sdk-extract"
+    extract = CACHE / "pbs" / inputs.tag / target.key / "sdk-extract"
     if extract.exists():
         shutil.rmtree(extract)
-    _extract_zst(archive, extract)
-    layout = _validate_layout(extract)
-
+    _safe_extract_zst(archive, extract)
+    python_root, include_dir, metadata = _validate_layout(extract)
     if out.exists():
         shutil.rmtree(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(extract / "python", out)
-
-    metadata = layout["metadata"]
-    resolved = {
-        "tag": tag,
-        "asset": asset["name"],
+    copy_tree_contents(python_root, out)
+    rel_include = include_dir.relative_to(python_root).as_posix()
+    marker = {
+        "format": 2,
+        "provider": "pbs",
+        "tag": inputs.tag,
+        "asset": inputs.sdk.name,
+        "url": inputs.sdk.url,
         "sha256": actual,
         "target": target.key,
-        "python": metadata.get("python_version"),
-        "python_major_minor": metadata.get("python_major_minor_version"),
-        "python_paths": metadata.get("python_paths", {}),
-        "libpython_link_mode": metadata.get("libpython_link_mode"),
+        "python": str(metadata.get("python_version") or python_version()),
+        "include_dir": rel_include,
     }
-    marker.write_text(json.dumps(resolved, indent=2), encoding="utf-8")
+    (out / MARKER).write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
 
 
 def sdk_info(target: Target) -> dict:
-    root = ensure_sdk(target)
-    marker = root / ".pystand2-sdk.json"
-    data = json.loads(marker.read_text(encoding="utf-8"))
-    data["root"] = str(root)
-    data["python_executable"] = str(target_python_executable(root, target))
-    data["include_dir"] = str(target_include_dir(root))
-    return data
+    root = ensure_pbs_sdk(target)
+    marker = json.loads((root / MARKER).read_text(encoding="utf-8"))
+    include = root / str(marker.get("include_dir") or "")
+    if not include.exists() or not (include / "Python.h").exists():
+        matches = sorted(path.parent for path in root.rglob("Python.h"))
+        if not matches:
+            raise RuntimeError(f"Python.h not found in PBS SDK: {root}")
+        include = matches[0]
 
+    names = [f"python{python_version()}", f"python{'.'.join(python_version().split('.')[:2])}", "python3", "python"]
+    executable = None
+    for name in names:
+        for candidate in (root / "install" / "bin" / name, root / "bin" / name):
+            if candidate.is_file():
+                executable = candidate
+                break
+        if executable:
+            break
+    if executable is None:
+        raise RuntimeError(f"Target Python executable not found in PBS SDK: {root}")
 
-def target_python_executable(root: Path, target: Target) -> Path:
-    if target.os == "windows":
-        return root / "install" / "python.exe"
-    return root / "install" / "bin" / "python3"
-
-
-def target_include_dir(root: Path) -> Path:
-    # PYTHON.json is authoritative; do not guess the SDK layout.
-    marker = root / "PYTHON.json"
-    if marker.exists():
-        data = json.loads(marker.read_text(encoding="utf-8"))
-        rel = data.get("python_paths", {}).get("include")
-        if rel:
-            p = root / rel
-            if p.exists():
-                return p
-    for p in (root / "include", root / "Include", root / "install" / "include"):
-        if p.exists():
-            return p
-    raise RuntimeError(f"Python include directory not found under {root}")
-
-
-def ensure_sdk(target: Target) -> Path:
-    """Backward-compatible PBS-only entrypoint."""
-    return ensure_pbs_sdk(target)
+    actual_python = str(marker.get("python") or python_version())
+    return {
+        "provider": "pbs",
+        "root": str(root),
+        "tag": marker.get("tag"),
+        "asset": marker.get("asset"),
+        "url": marker.get("url"),
+        "sha256": marker.get("sha256"),
+        "python": actual_python,
+        "python_executable": str(executable),
+        "include_dir": str(include),
+        "python_major_minor": ".".join(actual_python.split(".")[:2]),
+        "python_tag": "cp" + "".join(actual_python.split(".")[:2]),
+        "python_platform_tag": target.primary_wheel_platform,
+        "python_implementation_name": "cpython",
+        "libpython_link_mode": "none" if target.os != "windows" else "windows-import-library",
+    }

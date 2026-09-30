@@ -1,3 +1,9 @@
+## v0.17.0
+
+Structural Build Tool reorganization around a unified Target Contract. Third-party wheels are now first-class build inputs, target runtime import smoke is mandatory before `--run`, native application libraries participate in the same dependency closure, lock files preserve multiple targets, and `runtimes/` is a Git-ignored local cache.
+
+Verification: 43 local unit/compatibility tests passed (1 skipped), plus a full Linux end-to-end build/run using a target runtime, Cythonized application, transitive third-party wheels, application-owned native libraries, launcher smoke, and separate lock/locked validation.
+
 ## v0.16.19
 
 Problem:

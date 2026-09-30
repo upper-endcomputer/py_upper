@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import hashlib
 import json
 import os
@@ -9,15 +7,12 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir, user_agent
+from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir
+from .fs import copy_tree_contents
 from .net import download, http_json
-from .pbs_assets import find_matching_release, matching_assets, no_asset_error, resolve_pbs_release
+from .pbs_assets import PBSInputs, resolve_pbs_inputs
 
-RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
-
-
-def resolve_release(target: Target) -> tuple[str, dict]:
-    return resolve_pbs_release(http_json, pbs_release(), target, python_version())
+MARKER = ".py_upper-runtime.json"
 
 
 def sha256(path: Path) -> str:
@@ -39,77 +34,50 @@ def safe_extract(tar_path: Path, dest: Path) -> None:
         tf.extractall(dest)
 
 
-def select_asset(
-    release: dict, target: Target, pyver: str, release_tag: str | None = None,
-    release_finder=None,
-) -> dict:
-    candidates = matching_assets(release, target, pyver, kind="runtime")
-    if not candidates:
-        tag = release_tag or pbs_release()
-        suggested = release_finder(pyver, target, "runtime") if release_finder else None
-        raise no_asset_error(
-            release_tag=tag, target=target, pyver=pyver, kind="runtime", release=release,
-            suggested_release=suggested,
-        )
-    return max(candidates, key=lambda a: a["name"])
+def resolve_inputs(target: Target) -> PBSInputs:
+    return resolve_pbs_inputs(http_json, pbs_release(), target, python_version())
 
 
 def ensure_pbs_runtime(target: Target) -> Path:
     out = target_runtime_dir(target)
-    marker = out / ".pystand2-runtime.json"
+    marker = out / MARKER
     if marker.exists():
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
-            if (data.get("format") == 5
-                    and (not pbs_release() or data.get("tag") == pbs_release())
-                    and str(data.get("python")) == python_version()
-                    and data.get("target") == target.key):
+            expected_tag = str(data.get("tag") or "")
+            if (
+                data.get("format") == 1
+                and data.get("target") == target.key
+                and data.get("python") == python_version()
+                and (not pbs_release() or expected_tag == pbs_release())
+                and out.exists()
+            ):
                 return out
-        except Exception:
+        except (OSError, ValueError):
             pass
 
-    tag, release = resolve_release(target)
-    finder = lambda pyver, target, kind: find_matching_release(
-        http_json, tag, target, pyver, kind=kind
-    )
-    asset = select_asset(release, target, python_version(), tag, finder)
-    archive = CACHE / "pbs" / tag / target.key / asset["name"]
-    download(asset["browser_download_url"], archive)
-    digest = asset.get("digest")
+    inputs = resolve_inputs(target)
+    archive = CACHE / "pbs" / inputs.tag / target.key / inputs.runtime.name
+    download(inputs.runtime.url, archive)
     actual = sha256(archive)
-    if digest and digest.startswith("sha256:"):
-        expected = digest.split(":", 1)[1]
-        if actual.lower() != expected.lower():
-            raise RuntimeError(f"SHA256 mismatch: expected {expected}, got {actual}")
-
-    extract = CACHE / "pbs" / tag / target.key / "runtime-extract"
+    if inputs.runtime.sha256 and actual.lower() != inputs.runtime.sha256.lower():
+        raise RuntimeError(f"PBS runtime SHA256 mismatch: expected {inputs.runtime.sha256}, got {actual}")
+    extract = CACHE / "pbs" / inputs.tag / target.key / "runtime-extract"
     if extract.exists():
         shutil.rmtree(extract)
     safe_extract(archive, extract)
     source = extract / "python"
     if not source.exists():
-        raise RuntimeError(f"Unexpected PBS archive layout: {extract}")
+        raise RuntimeError(f"Unexpected PBS runtime archive layout: {extract}")
     if out.exists():
         shutil.rmtree(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, out)
-    marker.write_text(
-        json.dumps(
-            {
-                "format": 5,
-                "tag": tag,
-                "asset": asset["name"],
-                "sha256": actual,
-                "target": target.key,
-                "python": python_version(),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    copy_tree_contents(source, out)
+    marker.write_text(json.dumps({
+        "format": 1, "provider": "pbs", "tag": inputs.tag, "asset": inputs.runtime.name,
+        "url": inputs.runtime.url, "sha256": actual, "target": target.key, "python": python_version(),
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
 
 
 def ensure_runtime(target: Target) -> Path:
-    """Backward-compatible PBS-only entrypoint."""
     return ensure_pbs_runtime(target)

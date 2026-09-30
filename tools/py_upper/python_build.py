@@ -4,100 +4,52 @@ import fnmatch
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-from .config import APP, BUILD, Target, cython_config, require_local_python, staging_dir, runtime_spec
-from .pbs_sdk import sdk_info
-from .config import resolve_target_python
+from .config import APP, BUILD, Target, cython_config, require_local_python, resolve_target_python, staging_dir
+from .fs import copy_file_contents, copy_tree_contents
 from .toolchain import resolve_toolchain
-from .wheel import install_wheels
-from .fs import copy_tree_contents
+
+CYTHON_REQUIREMENT = "Cython>=3.1,<3.3"
 
 
-CYTHON_REQUIREMENT = "Cython>=3.1,<3.2"
-
-
-def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
-    print("+", " ".join(map(str, cmd)))
-    subprocess.run(cmd, cwd=cwd, env=env, check=True)
+def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
+    print("+", " ".join(str(x) for x in cmd))
+    try:
+        subprocess.run(cmd, cwd=cwd, env=env, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Command failed ({exc.returncode}): {' '.join(map(str, cmd))}") from exc
 
 
 def module_name(path: Path) -> str:
-    src = APP / "src"
-    rel = path.relative_to(src).with_suffix("")
-    parts = list(rel.parts)
-    if parts[-1] == "__init__":
-        parts.pop()
-    return ".".join(parts)
+    return ".".join(path.relative_to(APP / "src").with_suffix("").parts)
 
 
 def selected_sources() -> list[Path]:
     cfg = cython_config()
-    include = cfg.get("include", [])
-    exclude = cfg.get("exclude", [])
-    out = []
-    for p in (APP / "src").rglob("*.py"):
-        # Package __init__.py files remain Python package markers. Every
-        # actual application module, including the entry module, is compiled.
-        if p.name == "__init__.py":
+    include = [str(x) for x in cfg.get("include", ["*"])]
+    exclude = [str(x) for x in cfg.get("exclude", [])]
+    root = APP / "src"
+    result: list[Path] = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "__init__.py":
             continue
-        mod = module_name(p)
-        if any(fnmatch.fnmatch(mod, pat) for pat in include) and not any(fnmatch.fnmatch(mod, pat) for pat in exclude):
-            out.append(p)
-    return sorted(out)
+        name = module_name(path)
+        if any(fnmatch.fnmatch(name, pattern) for pattern in include) and not any(fnmatch.fnmatch(name, pattern) for pattern in exclude):
+            result.append(path)
+    return result
 
 
-def _target_lib_dir(root: Path, target: Target) -> Path | None:
-    candidates = [
-        root / "install" / "libs",
-        root / "install" / "lib",
-        root / "libs",
-        root / "lib",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    return None
+def _cython_cache_dir(host_python: Path) -> Path:
+    probe = subprocess.run([str(host_python), "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"], capture_output=True, text=True, check=True)
+    version = probe.stdout.strip().replace('.', '_')
+    return BUILD / "host-tools" / f"cython-py{version}"
 
 
-def _python_library(root: Path, target: Target) -> tuple[Path | None, str | None]:
-    libdir = _target_lib_dir(root, target)
-    if not libdir:
-        return None, None
-    if target.os == "windows":
-        matches = sorted(libdir.glob("python*.lib"))
-        if matches:
-            name = matches[0].stem
-            return libdir, name
-    else:
-        # Extension modules on macOS normally resolve Python symbols from the
-        # embedding executable/runtime. Do not force a PBS libpython dylib.
-        return libdir, None
-    return libdir, None
-
-
-def _cython_version(host_python: Path, env: dict[str, str] | None = None) -> str | None:
-    """Read Cython's installed distribution version without importing Cython.
-
-    The build tool may be launched under a debugger. Importing a missing
-    Cython package in a child ``python -c`` process causes debuggers to stop
-    on the expected ModuleNotFoundError before the bootstrap code can recover.
-    ``importlib.metadata`` lets us probe the installed distribution without
-    raising that exception.
-    """
+def _cython_version(host_python: Path, env: dict[str, str]) -> str | None:
     probe = subprocess.run(
-        [
-            str(host_python),
-            "-c",
-            "import importlib.metadata as m; "
-            "d=next(m.distributions(name=\"Cython\"), None); "
-            "print(d.version if d else \"\")",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
+        [str(host_python), "-c", "import importlib.metadata as m; d=next(m.distributions(name='Cython'), None); print(d.version if d else '')"],
+        env=env, capture_output=True, text=True, check=False,
     )
     if probe.returncode != 0:
         return None
@@ -107,94 +59,58 @@ def _cython_version(host_python: Path, env: dict[str, str] | None = None) -> str
 def _supported_cython(version: str | None) -> bool:
     if not version:
         return False
-    parts = version.split(".")
     try:
-        return (int(parts[0]), int(parts[1])) == (3, 1)
-    except (ValueError, IndexError):
+        major, minor = (int(x) for x in version.split(".")[:2])
+        return (major, minor) in {(3, 1), (3, 2)}
+    except (ValueError, TypeError):
         return False
 
 
-def _cython_cache_dir(host_python: Path) -> Path:
-    return BUILD / "host-tools" / f"cython-{host_python.stem}-{host_python.parent.name}"
-
-
 def _cython_env(host_python: Path) -> dict[str, str]:
-    """Return an environment where a supported Cython is importable.
-
-    The build tool deliberately does not require the developer to pre-install
-    Cython into their selected Python. If it is missing (or outside the
-    supported 3.1.x range), bootstrap it once into a py_upper-owned cache
-    instead of modifying the user's Python environment.
-
-    The cache is checked before running pip, so repeated builds do not
-    reinstall Cython. The version probe never imports Cython, which also keeps
-    VS Code/debugpy from stopping on an expected missing-module exception.
-    """
-    env = dict(os.environ)
-    host_version = _cython_version(host_python, env)
-    if _supported_cython(host_version):
-        return env
-
+    base = dict(os.environ)
+    installed = _cython_version(host_python, base)
     cache = _cython_cache_dir(host_python)
-    cache_env = dict(env)
-    cache_env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    cache_version = _cython_version(host_python, cache_env) if cache.exists() else None
-    if not _supported_cython(cache_version):
+    env = dict(base)
+    if cache.exists():
+        env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    cached = _cython_version(host_python, env)
+    if not _supported_cython(installed) and not _supported_cython(cached):
         cache.mkdir(parents=True, exist_ok=True)
-        run(
-            [
-                str(host_python), "-m", "pip", "install",
-                "--disable-pip-version-check", "--no-input",
-                "--target", str(cache), CYTHON_REQUIREMENT,
-            ],
-        )
-        cache_env = dict(env)
-        cache_env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        cache_version = _cython_version(host_python, cache_env)
-        if not _supported_cython(cache_version):
-            raise RuntimeError(
-                f"Cython bootstrap completed but a supported Cython is still unavailable under {host_python}. "
-                f"Expected {CYTHON_REQUIREMENT}; cache={cache}"
-            )
-
-    env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        _run([
+            str(host_python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+            "--target", str(cache), CYTHON_REQUIREMENT,
+        ])
+        env = dict(base)
+        env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        cached = _cython_version(host_python, env)
+        if not _supported_cython(cached):
+            raise RuntimeError(f"Unable to bootstrap {CYTHON_REQUIREMENT} for {host_python}; cache={cache}")
+    elif not _supported_cython(installed):
+        env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     return env
 
 
 def cythonize_to_c(sources: list[Path], host_python: Path) -> dict[Path, Path]:
-    """Translate application modules to C without writing generated files into src/.
-
-    Cython is invoked from each source directory with a relative source/output
-    path for macOS portability, but generated C files live under build/. This
-    keeps the source tree clean and guarantees that packaged output is driven
-    by compiled extensions rather than copied .py sources.
-    """
-    cython_env = _cython_env(host_python)
     generated_root = BUILD / "cython"
-    generated_root.mkdir(parents=True, exist_ok=True)
+    if generated_root.exists():
+        # Rebuild the exact source set; stale C output must never be packaged.
+        shutil.rmtree(generated_root)
+    generated_root.mkdir(parents=True)
+    env = _cython_env(host_python)
     outputs: dict[Path, Path] = {}
     for source in sources:
         rel = source.relative_to(APP / "src")
-        c = generated_root / rel.with_suffix(".c")
-        c.parent.mkdir(parents=True, exist_ok=True)
-        c.unlink(missing_ok=True)
-        # Keep Cython's cwd/source arguments relative (important on macOS),
-        # while placing the generated artifact outside app/src.
-        output_rel = os.path.relpath(c, source.parent)
-        run(
+        destination = generated_root / rel.with_suffix(".c")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        output_rel = os.path.relpath(destination, source.parent)
+        _run(
             [str(host_python), "-m", "cython", "--force", "-3", "-o", output_rel, source.name],
             cwd=source.parent,
-            env=cython_env,
+            env=env,
         )
-        if not c.exists():
-            candidates = sorted(c.parent.glob(f"{source.stem}.*"))
-            generated = ", ".join(p.name for p in candidates if p.suffix in {".c", ".cpp"}) or "none"
-            raise RuntimeError(
-                f"Cython completed successfully but did not generate {c}. "
-                f"source={source}, cwd={source.parent}, generated={generated}, "
-                f"host_python={host_python}"
-            )
-        outputs[source] = c
+        if not destination.exists():
+            raise RuntimeError(f"Cython completed but did not generate {destination}")
+        outputs[source] = destination
     return outputs
 
 
@@ -202,132 +118,99 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
     if not sources:
         return []
     host_python = require_local_python()
-    target_python = resolve_target_python(target)
-    tc = resolve_toolchain(target)
-    sdk = target_python.root
-    libdir, python_lib = _python_library(sdk, target)
-
-    # Generate C with the host build tools, then compile/link that generated C
-    # using the target toolchain and target CPython headers/libs. This is the
-    # important v0.7 split: Cython itself need not execute target machine code.
     generated = cythonize_to_c(sources, host_python)
-    c_sources: list[Path] = []
-    for src in sources:
-        c = generated[src]
-        if not c.exists():
-            raise RuntimeError(f"Cython did not generate {c}")
-        c_sources.append(c)
+    if target.os != "windows":
+        from .native.build_ext import compile_unix_extensions
+        outputs = compile_unix_extensions(target, generated)
+    else:
+        # MSVC cross-compilation still uses setuptools because Visual Studio's
+        # import-library and compiler environment are target-specific.
+        target_python = resolve_target_python(target)
+        tc = resolve_toolchain(target)
+        build_root = BUILD / "native" / target.key
+        if build_root.exists():
+            shutil.rmtree(build_root)
+        build_root.mkdir(parents=True)
+        include = target_python.include_dir
+        candidates = [target_python.root / "libs", target_python.root / "install" / "libs", target_python.root / "lib", target_python.root / "install" / "lib"]
+        libdir = next((path for path in candidates if path.exists() and any(path.glob("python*.lib"))), None)
+        if libdir is None:
+            raise RuntimeError(f"Target Python import library not found under {target_python.root}")
+        python_lib = sorted(libdir.glob("python*.lib"))[0].stem
+        source_repr = ", ".join(repr(str(generated[p])) for p in sources)
+        name_repr = ", ".join(repr(module_name(p)) for p in sources)
+        setup = BUILD / "target-setup" / target.key / "setup.py"
+        setup.parent.mkdir(parents=True, exist_ok=True)
+        setup.write_text(
+            "from setuptools import setup, Extension\n"
+            "from setuptools.command.build_ext import build_ext as _build_ext\n"
+            f"TARGET_INCLUDE={str(include)!r}\n"
+            f"TARGET_LIBDIR={str(libdir)!r}\n"
+            f"TARGET_LIBRARIES={[python_lib]!r}\n"
+            f"SOURCES=[{source_repr}]\n"
+            f"NAMES=[{name_repr}]\n"
+            "class TargetBuildExt(_build_ext):\n"
+            "    def finalize_options(self):\n"
+            "        super().finalize_options()\n"
+            "        self.include_dirs=[TARGET_INCLUDE]\n"
+            "        self.library_dirs=[TARGET_LIBDIR]\n"
 
-    ext_names = [module_name(s) for s in sources]
-    setup = APP / "_py_upper_target_setup.py"
-    include = target_python.include_dir
-    libdir_arg = repr(str(libdir)) if libdir else "None"
-    libraries = repr([python_lib] if python_lib else [])
-    source_repr = ",\n    ".join(repr(str(p)) for p in c_sources)
-    name_repr = ",\n    ".join(repr(n) for n in ext_names)
-    setup.write_text(
-        "from setuptools import setup, Extension\n"
-        "from setuptools.command.build_ext import build_ext as _build_ext\n"
-        "import sysconfig\n"
-        f"TARGET_INCLUDE={str(include)!r}\n"
-        f"TARGET_LIBDIR={str(libdir) if libdir else None!r}\n"
-        f"TARGET_LIBRARIES={libraries}\n"
-        f"sources=[{source_repr}]\n"
-        f"names=[{name_repr}]\n"
-        "class TargetBuildExt(_build_ext):\n"
-        "    def finalize_options(self):\n"
-        "        super().finalize_options()\n"
-        "        host_inc = sysconfig.get_path('include')\n"
-        "        self.include_dirs = [d for d in (self.include_dirs or []) if d != host_inc]\n"
-        "        if TARGET_INCLUDE not in self.include_dirs: self.include_dirs.insert(0, TARGET_INCLUDE)\n"
-        "        if TARGET_LIBDIR and TARGET_LIBDIR not in (self.library_dirs or []): self.library_dirs.insert(0, TARGET_LIBDIR)\n"
-        "ext=[Extension(name, [src], include_dirs=[TARGET_INCLUDE], library_dirs=[TARGET_LIBDIR] if TARGET_LIBDIR else [], libraries=TARGET_LIBRARIES) for src,name in zip(sources,names)]\n"
-        "setup(name='py-upper-target-native', ext_modules=ext, cmdclass={'build_ext': TargetBuildExt})\n",
-        encoding="utf-8",
-    )
-    build_root = BUILD / "native" / target.key
-    if build_root.exists():
-        shutil.rmtree(build_root)
-    build_root.mkdir(parents=True)
-
-    env = dict(os.environ)
-    env.update(tc.env)
-    env["PYSTAND_TARGET"] = target.key
-    env["PYSTAND_TARGET_PYTHON"] = str(target_python.executable)
-    env["PYSTAND_TARGET_INCLUDE"] = str(include)
-    if libdir:
-        env["PYSTAND_TARGET_LIB"] = str(libdir)
-    # Tell distutils not to replace our MSVC environment with host defaults.
-    if target.os == "windows":
-        env["DISTUTILS_USE_SDK"] = "1"
-        env["MSSdk"] = "1"
-    run([str(host_python), str(setup), "build_ext", "--build-lib", str(build_root)], cwd=APP, env=env)
-    setup.unlink(missing_ok=True)
-
-    outputs = []
-    for p in build_root.rglob("*.pyd" if target.os == "windows" else "*.so"):
-        outputs.append(p)
-    # setuptools runs under the development interpreter, so its extension
-    # suffix describes the host Python. Normalize it to the *target* ABI.
-    # This is essential when, for example, a Python 3.13 build host produces
-    # a Python 3.8 runtime package.
-    target_suffix = target_python.extension_suffix
-    renamed = []
-    for out in outputs:
-        stem = out.name.split(".", 1)[0]
-        dst = out if out.name.endswith(target_suffix) else out.with_name(stem + target_suffix)
-        if out != dst:
-            out.rename(dst)
-        renamed.append(dst)
-    outputs = renamed
-    if len(outputs) != len(sources):
-        raise RuntimeError(f"Expected {len(sources)} native extensions, got {len(outputs)} in {build_root}")
+            "extensions=[Extension(n,[s],include_dirs=[TARGET_INCLUDE],library_dirs=[TARGET_LIBDIR],libraries=TARGET_LIBRARIES) for n,s in zip(NAMES,SOURCES)]\n"
+            "setup(name='py-upper-target-native',ext_modules=extensions,cmdclass={'build_ext':TargetBuildExt})\n",
+            encoding="utf-8",
+        )
+        env=dict(os.environ); env.update(tc.env); env["PY_UPPER_TARGET"]=target.key
+        env["DISTUTILS_USE_SDK"]="1"; env["MSSdk"]="1"
+        try:
+            _run([str(host_python), str(setup), "build_ext", "--build-lib", str(build_root)], cwd=APP, env=env)
+        finally:
+            setup.unlink(missing_ok=True)
+        outputs=[]
+        suffix=target_python.extension_suffix
+        for source in sources:
+            expected=build_root.joinpath(*source.relative_to(APP / "src").with_suffix("").parts[:-1], source.stem+suffix)
+            if not expected.exists():
+                raise RuntimeError(f"Target extension missing: {expected}")
+            outputs.append(expected)
     return outputs
 
 
 def copy_python_tree(site: Path) -> None:
-    # Never copy development caches or generated bytecode into the package.
-    # Actual application modules are removed after their native extensions are
-    # installed; package __init__.py files remain as Python package markers.
-    copy_tree_contents(APP / "src", site)
+    copy_tree_contents(APP / "src", site, replace=False)
     for cache in list(site.rglob("__pycache__")):
         if cache.is_dir():
             shutil.rmtree(cache)
-    for generated in list(site.rglob("*.pyc")) + list(site.rglob("*.pyo")) + list(site.rglob("*.c")) + list(site.rglob("*.cpp")):
-        generated.unlink(missing_ok=True)
+    for path in list(site.rglob("*.pyc")) + list(site.rglob("*.pyo")) + list(site.rglob("*.c")) + list(site.rglob("*.cpp")):
+        path.unlink(missing_ok=True)
 
 
-def remove_cython_source_py(site: Path) -> None:
-    for src in selected_sources():
-        rel = src.relative_to(APP / "src").with_suffix("")
-        py = site / rel.with_suffix(".py")
-        if py.name != "__init__.py":
-            py.unlink(missing_ok=True)
+def remove_compiled_source_py(site: Path, sources: list[Path]) -> None:
+    for source in sources:
+        relative = source.relative_to(APP / "src").with_suffix(".py")
+        (site / relative).unlink(missing_ok=True)
 
 
 def copy_native_outputs(outputs: list[Path], site: Path, target: Target) -> None:
     build_root = BUILD / "native" / target.key
-    for out in outputs:
-        rel = out.relative_to(build_root)
-        dest = site / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(out, dest)
+    for source in outputs:
+        copy_file_contents(source, site / source.relative_to(build_root))
 
 
 def build_python_package(target: Target) -> Path:
-    host_python = require_local_python()
     stage = staging_dir(target)
     if stage.exists():
         shutil.rmtree(stage)
     site = stage / "site-packages"
     site.mkdir(parents=True)
 
-    install_wheels(target, site)
+    # Third-party dependencies are resolved/installed exactly once here. They are
+    # not Cythonized; only application source modules are compiled below.
+    from .third_party import install_wheels
+    install_wheels(target, stage)
     copy_python_tree(site)
     sources = selected_sources()
     outputs = build_target_extensions(target, sources)
     copy_native_outputs(outputs, site, target)
-    remove_cython_source_py(site)
-
+    remove_compiled_source_py(site, sources)
     print(f"Python stage ready: {site}")
     return stage

@@ -7,7 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .inspect import verify_arch
+from .inspect import inspect as inspect_binary, verify_arch
+from ..config import python_version
 
 
 @dataclass(frozen=True)
@@ -143,24 +144,23 @@ def _elf_dependencies(path: Path) -> list[str]:
 
 
 def dependency_names(path: Path, env: dict[str, str] | None = None) -> list[str]:
-    suffix = path.suffix.lower()
-    if suffix in {".pyd", ".dll", ".exe"}:
+    try:
+        binary_format = inspect_binary(path).format
+    except (OSError, ValueError):
+        binary_format = ""
+
+    if binary_format == "PE" or path.suffix.lower() in {".pyd", ".dll", ".exe"}:
         return _dumpbin_dependencies(path, env) or _pe_imports(path)
+    if binary_format.startswith("Mach-O"):
+        return _mac_dependencies(path)
+    if binary_format == "ELF":
+        return _elf_dependencies(path)
+
+    suffix = path.suffix.lower()
     if suffix == ".dylib":
         return _mac_dependencies(path)
     if suffix == ".so":
         return _elf_dependencies(path)
-
-    # The launcher itself has no extension on Unix. Detect native executables
-    # by their file signature so its DT_NEEDED/load commands are also checked.
-    try:
-        head = path.read_bytes()[:4]
-    except OSError:
-        return []
-    if head == b"\x7fELF":
-        return _elf_dependencies(path)
-    if head in {b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}:
-        return _mac_dependencies(path)
     return []
 
 
@@ -235,7 +235,7 @@ def _recursive_name_matches(search_roots: list[Path], key: str) -> list[Path]:
     return matches
 
 
-def resolve_dependency(name: str, search_roots: list[Path], owner: Path | None = None) -> Path | None:
+def resolve_dependency(name: str, search_roots: list[Path], owner: Path | None = None, aliases: dict[str, Path] | None = None) -> Path | None:
     """Resolve a native dependency using its platform-aware load path semantics.
 
     In particular, macOS ``@rpath`` is resolved from the owner's ``LC_RPATH``
@@ -245,6 +245,11 @@ def resolve_dependency(name: str, search_roots: list[Path], owner: Path | None =
     """
     key = _name_key(name)
     candidates: list[Path] = []
+    aliases = aliases or {}
+
+    alias = aliases.get(key)
+    if alias is not None:
+        candidates.append(alias)
 
     if owner is not None:
         if name.startswith(("$ORIGIN/", "${ORIGIN}/", "@loader_path/")):
@@ -268,7 +273,15 @@ def resolve_dependency(name: str, search_roots: list[Path], owner: Path | None =
             resolved = candidate.resolve()
         except OSError:
             continue
-        if resolved.is_file() and resolved.name.lower() == key:
+        if not resolved.is_file():
+            continue
+        # An alias can intentionally map a load name to a differently named
+        # file (for example PCBUSB.dylib -> @rpath/libPCBUSB.0.12.1.dylib).
+        # In that case the alias target is authoritative and must not be
+        # rejected merely because its basename differs from the load name.
+        if alias is not None and resolved == Path(alias).resolve():
+            return resolved
+        if resolved.name.lower() == key:
             return resolved
     return None
 
@@ -276,11 +289,12 @@ def resolve_dependency(name: str, search_roots: list[Path], owner: Path | None =
 def _system_dependency(name: str, target) -> bool:
     base = _name_key(name)
     if target.os == "windows":
+        python_dll = f"python{'.'.join(python_version().split('.')[:2]).replace('.', '')}.dll".lower()
         return base in {
             "kernel32.dll", "user32.dll", "advapi32.dll", "ws2_32.dll", "ole32.dll",
             "oleaut32.dll", "shell32.dll", "gdi32.dll", "bcrypt.dll", "crypt32.dll",
             "ntdll.dll", "msvcrt.dll", "ucrtbase.dll", "vcruntime140.dll", "vcruntime140_1.dll",
-            "python313.dll",
+            python_dll,
         } or base.startswith(("api-ms-win-", "ext-ms-win-"))
     if target.os == "linux":
         return base in {

@@ -3,13 +3,13 @@ requires = [
     "setuptools>=71,<72; python_version < '3.9'",
     "setuptools>=77; python_version >= '3.9'",
     "wheel",
-    "Cython>=3.1,<3.2",
+    "Cython>=3.1,<3.3",
 ]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.16.19"
+version = "0.17.0"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 dependencies = []
@@ -21,8 +21,6 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.py_upper]
-# Bundled target/runtime Python. This is independent from the Python used to
-# run tools/build.py. Set it to the exact runtime you want to ship.
 entry = "main.py"
 
 [tool.py_upper.app]
@@ -30,19 +28,19 @@ name = "MyApp"
 identifier = "com.example.pyupper"
 
 [tool.py_upper.runtime]
-# Runtime is independent from the Python used to run tools/build.py.
-# provider = "pbs" uses python-build-standalone.
-# provider = "local" lets you supply a prebuilt target runtime + SDK.
 provider = "pbs"
-python = "3.13"
-
-# Used only by provider = "local". Paths may contain {target}, {arch}, {python}.
-# runtime = "runtimes/{target}/{python}"
-# sdk = "runtimes/{target}/{python}-sdk"
+python = "3.13.15"
 
 [tool.py_upper.cython]
 include = ["*"]
 exclude = []
+
+[tool.py_upper.optimize]
+profile = "safe"
+remove_python_caches = true
+remove_tests = false
+remove_docs = false
+strip_native = false
 
 [tool.py_upper.windows]
 architectures = ["x86", "x86_64", "arm64"]
