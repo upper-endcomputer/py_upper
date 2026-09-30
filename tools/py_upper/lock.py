@@ -62,9 +62,17 @@ def write_lock(target: Target) -> Path:
     data["format"] = 3
     data["python"] = python_version()
     data["runtime_provider"] = runtime_provider()
-    if runtime_provider() == "pbs":
-        data["pbs_release"] = pbs_release()
     runtime_record = _runtime_record(target)
+    if runtime_provider() == "pbs":
+        resolved_tag = str(runtime_record.get("tag") or "")
+        if not resolved_tag:
+            sdk_marker = pbs_sdk_dir(target) / ".pystand2-sdk.json"
+            if sdk_marker.exists():
+                sdk_data = json.loads(sdk_marker.read_text(encoding="utf-8"))
+                resolved_tag = str(sdk_data.get("tag") or "")
+        if not resolved_tag:
+            raise RuntimeError(f"Unable to determine resolved PBS release for {target.key}")
+        data["pbs_release"] = resolved_tag
     manifest = read_manifest(target_runtime_dir(target))
     target_data = {
         "runtime": runtime_record,
@@ -95,8 +103,10 @@ def verify_lock(target: Target) -> None:
         raise RuntimeError(f"Target {target.key} is not present in {LOCK}")
 
     if runtime_provider() == "pbs":
-        if str(data.get("pbs_release") or "") != pbs_release():
-            raise RuntimeError(f"Lock PBS release {data.get('pbs_release')} != app PBS release {pbs_release()}")
+        configured = pbs_release()
+        locked_release = str(data.get("pbs_release") or "")
+        if configured and locked_release != configured:
+            raise RuntimeError(f"Lock PBS release {locked_release} != app PBS release {configured}")
         sdk_marker = pbs_sdk_dir(target) / ".pystand2-sdk.json"
         if not sdk_marker.exists():
             raise RuntimeError(f"Locked build requires cached PBS SDK: {pbs_sdk_dir(target)}")

@@ -57,7 +57,7 @@ def main(argv=None):
         print("target-abi:", spec.abi_tag)
         print("runtime-provider:", spec.provider)
         if runtime_provider() == "pbs":
-            print("PBS release:", pbs_release())
+            print("PBS release:", pbs_release() or "auto")
         try:
             dev = require_local_python()
             probe = subprocess.run([str(dev), "-c", "import sys; print(sys.version)"] , capture_output=True, text=True, check=True).stdout.strip()

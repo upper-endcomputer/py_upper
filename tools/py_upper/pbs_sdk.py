@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version, user_agent
-from .pbs_assets import find_matching_release, no_asset_error
+from .pbs_assets import find_matching_release, no_asset_error, resolve_pbs_release
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
@@ -44,9 +44,8 @@ def download(url: str, dst: Path) -> None:
         shutil.copyfileobj(r, f)
 
 
-def resolve_release() -> tuple[str, dict]:
-    tag = pbs_release()
-    return tag, http_json(RELEASE_API.format(tag=tag))
+def resolve_release(target: Target) -> tuple[str, dict]:
+    return resolve_pbs_release(http_json, pbs_release(), target, python_version())
 
 
 def _version_key(name: str) -> tuple[int, int, int, str]:
@@ -154,13 +153,15 @@ def ensure_pbs_sdk(target: Target) -> Path:
     if marker.exists():
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
-            if (data.get("tag") == pbs_release() and str(data.get("python_major_minor") or data.get("python")) .startswith(python_version())
+            if ((not pbs_release() or data.get("tag") == pbs_release())
+                    and str(data.get("python_major_minor") or data.get("python") or "") .startswith(python_version().rsplit(".", 1)[0])
+                    and str(data.get("python") or "") == python_version()
                     and data.get("target") == target.key):
                 return out
         except Exception:
             pass
 
-    tag, release = resolve_release()
+    tag, release = resolve_release(target)
     finder = lambda pyver, target, kind: find_matching_release(
         http_json, tag, target, pyver, kind=kind
     )

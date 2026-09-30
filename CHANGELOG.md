@@ -1,3 +1,11 @@
+## 0.16.17
+
+- Allow projects to configure only the exact target Python version when using PBS.
+- Automatically select the newest PBS release containing both the matching `install_only_stripped` runtime and full SDK for the target triple.
+- Fix the macOS runtime asset matcher so exact PBS filenames using `cpython-X.Y.Z+release-...` are recognized.
+- Keep explicit `[tool.py_upper.pbs].release` support for pinned/reproducible builds.
+- Record the resolved PBS release in the lock file and avoid requiring a network release lookup for `--locked` verification.
+
 # py_upper Changelog
 
 ## 0.16.16 — Improve PBS Python-version diagnostics and ignore runtime caches

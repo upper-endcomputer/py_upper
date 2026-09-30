@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from typing import Any
+from typing import Any, Callable
 
 from .config import Target
 
-VERSION_RE = re.compile(r"^cpython-(\d+\.\d+\.\d+)")
-PBS_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=50&page={page}"
+VERSION_RE = re.compile(r"^cpython-(\d+\.\d+\.\d+)(?:\+|-)")
+PBS_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=100&page={page}"
 
 
 def asset_python_version(name: str) -> str | None:
@@ -15,12 +14,24 @@ def asset_python_version(name: str) -> str | None:
     return match.group(1) if match else None
 
 
-def available_python_versions(
-    release: dict,
-    target: Target,
-    *,
-    kind: str,
-) -> list[str]:
+def _is_matching_asset(name: str, target: Target, pyver: str, *, kind: str) -> bool:
+    if asset_python_version(name) != pyver or target.triple not in name or "freethreaded" in name:
+        return False
+    if kind == "runtime":
+        return "install_only_stripped" in name and name.endswith(".tar.gz")
+    if kind == "sdk":
+        return "full" in name and name.endswith(".tar.zst")
+    raise ValueError(f"Unknown PBS asset kind: {kind}")
+
+
+def release_has_asset(release: dict[str, Any], target: Target, pyver: str, *, kind: str) -> bool:
+    return any(
+        _is_matching_asset(str(asset.get("name") or ""), target, pyver, kind=kind)
+        for asset in release.get("assets", []) or []
+    )
+
+
+def available_python_versions(release: dict, target: Target, *, kind: str) -> list[str]:
     """Return sorted CPython versions available for a target in a PBS release."""
     versions: set[str] = set()
     for asset in release.get("assets", []):
@@ -51,23 +62,13 @@ def find_matching_release_from_candidates(
     *,
     kind: str,
 ) -> str | None:
-    """Find the newest release in a supplied GitHub releases list with the exact asset."""
+    """Find the newest release in a supplied GitHub releases list with an exact asset."""
     for release in releases:
         tag = str(release.get("tag_name") or "")
         if not tag or tag == current_tag:
             continue
-        for asset in release.get("assets", []) or []:
-            name = str(asset.get("name") or "")
-            if asset_python_version(name) != pyver or target.triple not in name or "freethreaded" in name:
-                continue
-            if kind == "runtime":
-                if "install_only_stripped" in name and name.endswith(".tar.gz"):
-                    return tag
-            elif kind == "sdk":
-                if "full" in name and name.endswith(".tar.zst"):
-                    return tag
-            else:
-                raise ValueError(f"Unknown PBS asset kind: {kind}")
+        if release_has_asset(release, target, pyver, kind=kind):
+            return tag
     return None
 
 
@@ -78,7 +79,7 @@ def find_matching_release(
     pyver: str,
     *,
     kind: str,
-    max_pages: int = 4,
+    max_pages: int = 20,
 ) -> str | None:
     """Best-effort lookup of a recent PBS release containing an exact asset."""
     for page in range(1, max_pages + 1):
@@ -88,14 +89,51 @@ def find_matching_release(
             return None
         if not isinstance(data, list):
             return None
-        match = find_matching_release_from_candidates(
-            data, current_tag, target, pyver, kind=kind
-        )
+        match = find_matching_release_from_candidates(data, current_tag, target, pyver, kind=kind)
         if match:
             return match
-        if len(data) < 50:
+        if len(data) < 100:
             return None
     return None
+
+
+def resolve_pbs_release(
+    fetch_json: Callable[[str], Any],
+    configured_tag: str,
+    target: Target,
+    pyver: str,
+    *,
+    max_pages: int = 20,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve a PBS release containing both the exact runtime and full SDK assets.
+
+    With an explicit configured release, only that release is accepted. Without
+    one, search newest-to-oldest releases and select the newest release containing
+    both required artifacts for the requested exact Python/target pair.
+    """
+    if configured_tag:
+        return configured_tag, fetch_json(
+            f"https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{configured_tag}"
+        )
+
+    for page in range(1, max_pages + 1):
+        data = fetch_json(PBS_RELEASES_API.format(page=page))
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected PBS releases API response on page {page}")
+        for release in data:
+            tag = str(release.get("tag_name") or "")
+            if not tag:
+                continue
+            if release_has_asset(release, target, pyver, kind="runtime") and release_has_asset(
+                release, target, pyver, kind="sdk"
+            ):
+                return tag, release
+        if len(data) < 100:
+            break
+    raise RuntimeError(
+        f"No PBS release contains both install_only_stripped runtime and full SDK "
+        f"for Python {pyver} / {target.triple}."
+    )
 
 
 def no_asset_error(
@@ -123,7 +161,7 @@ def no_asset_error(
         lines.append(f"Suggested exact-match PBS release: {suggested_release}")
 
     lines.append(
-        "Set [tool.py_upper.pbs].release to a release containing the requested exact Python version; "
-        "py_upper will not silently substitute another version."
+        "Pin [tool.py_upper.pbs].release only when you want an explicit PBS release; "
+        "otherwise omit that setting and py_upper will auto-select a release containing the exact Python version."
     )
     return RuntimeError("\n".join(lines))

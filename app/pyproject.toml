@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.16.16"
+version = "0.16.17"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 dependencies = []
@@ -39,9 +39,6 @@ python = "3.13"
 # Used only by provider = "local". Paths may contain {target}, {arch}, {python}.
 # runtime = "runtimes/{target}/{python}"
 # sdk = "runtimes/{target}/{python}-sdk"
-
-[tool.py_upper.pbs]
-release = "20260929"
 
 [tool.py_upper.cython]
 include = ["*"]

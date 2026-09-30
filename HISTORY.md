@@ -1,3 +1,15 @@
+## v0.16.17
+
+**Problem solved:** Projects had to manually coordinate a target Python patch version with a PBS release tag, and the runtime asset matcher rejected valid PBS filenames such as `cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz`.
+
+**Root cause:** `[tool.py_upper.pbs].release` was effectively required, and `runtime.select_asset()` used a `cpython-{version}.` prefix instead of the actual `cpython-{version}+` PBS filename pattern.
+
+**Implementation:** Made the PBS release pin optional. When omitted, py_upper searches PBS releases from newest to oldest and selects the newest release containing both the exact requested Python/target runtime and full SDK assets. Explicit release pins remain supported. Lock files record the resolved release. Added regression tests for exact asset matching, automatic release selection, and explicit pin behavior.
+
+**Verification:** Full local test suite passed; `py_upper doctor` and `git diff --check` passed.
+
+**Impact:** A project can now normally configure only one runtime version, for example `python = "3.11.10"`; py_upper handles the corresponding PBS release selection automatically while preserving reproducibility through lock files.
+
 # v0.16.16
 
 **Problem solved:** Selecting a target Python patch version that is absent from the configured PBS release produced an opaque asset-not-found error, and the local `runtimes/` directory was not explicitly protected from Git commits.

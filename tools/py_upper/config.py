@@ -154,10 +154,18 @@ def _expand_target_path(value: str, target: Target) -> Path:
     return (ROOT / value.format(target=target.key, os=target.os, arch=target.arch, python=python_version())).resolve()
 
 def pbs_release() -> str:
-    value = py_upper_config().get("pbs", {}).get("release")
-    if not value:
-        raise RuntimeError("[tool.py_upper.pbs].release is required for reproducible builds")
-    return str(value)
+    """Return an explicitly configured PBS release, or an empty string for auto.
+
+    The default build contract only requires the exact target Python version.
+    py_upper can then select the newest PBS release containing both the runtime
+    and full SDK assets for the target. An explicit release remains supported
+    for reproducible/pinned builds and lock files.
+    """
+    cfg = py_upper_config().get("pbs", {})
+    if not isinstance(cfg, dict):
+        return ""
+    value = cfg.get("release")
+    return str(value).strip() if value else ""
 
 def cython_config() -> dict:
     return py_upper_config().get("cython", {})

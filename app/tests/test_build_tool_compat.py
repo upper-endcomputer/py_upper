@@ -427,7 +427,7 @@ def test_pbs_sdk_error_reports_requested_and_available_versions():
     assert "Target: aarch64-apple-darwin" in message
     assert "Available Python versions for this target in this release: 3.10.21, 3.11.16, 3.12.14" in message
     assert "Suggested exact-match PBS release: 20250317" in message
-    assert "will not silently substitute another version" in message
+    assert "will not silently substitute another version" in message or "auto-select a release containing the exact Python version" in message
 
 
 def test_pbs_runtime_error_reports_requested_and_available_versions():
@@ -504,14 +504,14 @@ def test_find_matching_pbs_release_paginates_and_ignores_current_release():
 
     def fetch(url):
         calls.append(url)
-        if "page=1" in url:
+        if url.endswith("page=1"):
             page = [
                 {
                     "tag_name": "20260929",
                     "assets": [{"name": "cpython-3.11.11+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"}],
                 }
             ]
-            page.extend({"tag_name": f"filler-{i}", "assets": []} for i in range(49))
+            page.extend({"tag_name": f"filler-{i}", "assets": []} for i in range(99))
             return page
         return [{
             "tag_name": "20250317",
@@ -522,3 +522,83 @@ def test_find_matching_pbs_release_paginates_and_ignores_current_release():
         fetch, "20260929", TARGETS["macos-arm64"], "3.11.11", kind="sdk", max_pages=2
     ) == "20250317"
     assert len(calls) == 2
+
+
+
+def test_runtime_selector_accepts_exact_pbs_asset_name():
+    from py_upper.config import TARGETS
+    from py_upper.runtime import select_asset
+
+    asset = select_asset(
+        {
+            "assets": [
+                {
+                    "name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
+                    "browser_download_url": "https://example.invalid/runtime",
+                }
+            ]
+        },
+        TARGETS["macos-arm64"],
+        "3.11.10",
+        "20241016",
+    )
+    assert asset["name"].startswith("cpython-3.11.10+")
+
+
+def test_auto_pbs_release_requires_both_runtime_and_sdk():
+    from py_upper.config import TARGETS
+    from py_upper.pbs_assets import resolve_pbs_release
+
+    page = [
+        {
+            "tag_name": "newer-runtime-only",
+            "assets": [
+                {"name": "cpython-3.11.10+newer-aarch64-apple-darwin-install_only_stripped.tar.gz"},
+            ],
+        },
+        {
+            "tag_name": "20241016",
+            "assets": [
+                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"},
+                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
+            ],
+        },
+    ]
+
+    calls = []
+    def fetch(url):
+        calls.append(url)
+        return page
+
+    tag, release = resolve_pbs_release(fetch, "", TARGETS["macos-arm64"], "3.11.10", max_pages=1)
+    assert tag == "20241016"
+    assert release["tag_name"] == "20241016"
+    assert len(calls) == 1
+
+
+def test_explicit_pbs_release_does_not_auto_search():
+    from py_upper.config import TARGETS
+    from py_upper.pbs_assets import resolve_pbs_release
+
+    calls = []
+    def fetch(url):
+        calls.append(url)
+        return {"tag_name": "20241016", "assets": []}
+
+    tag, release = resolve_pbs_release(fetch, "20241016", TARGETS["macos-arm64"], "3.11.10")
+    assert tag == "20241016"
+    assert release["tag_name"] == "20241016"
+    assert len(calls) == 1
+
+
+
+def test_pbs_release_is_optional(monkeypatch):
+    from py_upper import config
+
+    monkeypatch.setattr(config, "py_upper_config", lambda: {"runtime": {"provider": "pbs"}})
+    assert config.pbs_release() == ""
+
+    monkeypatch.setattr(
+        config, "py_upper_config", lambda: {"pbs": {"release": "20241016"}, "runtime": {"provider": "pbs"}}
+    )
+    assert config.pbs_release() == "20241016"

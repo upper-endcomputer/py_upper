@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir, user_agent
-from .pbs_assets import find_matching_release, no_asset_error
+from .pbs_assets import find_matching_release, no_asset_error, resolve_pbs_release
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
@@ -25,9 +25,8 @@ def http_json(url: str) -> Any:
         return json.load(r)
 
 
-def resolve_release() -> tuple[str, dict]:
-    tag = pbs_release()
-    return tag, http_json(RELEASE_API.format(tag=tag))
+def resolve_release(target: Target) -> tuple[str, dict]:
+    return resolve_pbs_release(http_json, pbs_release(), target, python_version())
 
 
 def sha256(path: Path) -> str:
@@ -67,7 +66,7 @@ def select_asset(
     for asset in release.get("assets", []):
         name = asset.get("name", "")
         if (
-            name.startswith(f"cpython-{pyver}.")
+            name.startswith(f"cpython-{pyver}+")
             and target.triple in name
             and "install_only_stripped" in name
             and "freethreaded" not in name
@@ -90,14 +89,15 @@ def ensure_pbs_runtime(target: Target) -> Path:
     if marker.exists():
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
-            if (data.get("format") == 5 and data.get("tag") == pbs_release()
+            if (data.get("format") == 5
+                    and (not pbs_release() or data.get("tag") == pbs_release())
                     and str(data.get("python")) == python_version()
                     and data.get("target") == target.key):
                 return out
         except Exception:
             pass
 
-    tag, release = resolve_release()
+    tag, release = resolve_release(target)
     finder = lambda pyver, target, kind: find_matching_release(
         http_json, tag, target, pyver, kind=kind
     )

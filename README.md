@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前开发线：**0.16.12**。
+当前开发线：**0.16.17**。
 
 ## 核心原则
 
@@ -104,6 +104,27 @@ python tools/build.py --doctor
 python tools/build.py --clean
 python tools/build.py --release
 ```
+
+## Target Python / PBS
+
+默认只需要指定你想打包的精确 Target Python 版本：
+
+```toml
+[tool.py_upper.runtime]
+provider = "pbs"
+python = "3.11.10"
+```
+
+`[tool.py_upper.pbs].release` 是可选的。省略它时，py_upper 会从 PBS release 列表中自动选择**最新且同时提供该精确 Python 版本、目标平台 runtime 和 full SDK** 的 release，不会把 `3.11.10` 自动替换成其他 patch 版本。
+
+如果需要完全固定 PBS release，可以显式指定：
+
+```toml
+[tool.py_upper.pbs]
+release = "20241016"
+```
+
+锁定构建时，实际解析到的 PBS release 会记录到 lock 文件，因此日常项目配置不需要同时维护 Python 版本和 PBS release 两个版本号。
 
 ## Python 环境
 
