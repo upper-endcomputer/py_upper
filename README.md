@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前开发线：**0.16.1**。
+当前开发线：**0.16.2**。
 
 ## 核心原则
 
@@ -107,6 +107,22 @@ python tools/build.py --release
 
 ## Python 环境
 
+### Build Tool Python 兼容性
+
+`tools/build.py` 及 `tools/py_upper/` 的最低开发 Python 版本为 **3.8**。它与最终打包的 Target Python 完全独立。
+
+- Python 3.8–3.10：使用项目内置的兼容 TOML 解析器。
+- Python 3.11+：优先使用标准库 `tomllib`。
+- 因此使用 Python 3.10 开发时，不需要把开发环境升级到 3.11。
+- Target Runtime 仍由 `[tool.py_upper.runtime]` 单独决定。
+
+兼容性验证命令：
+
+```bash
+python tools/build.py --doctor
+python -m pytest app/tests -q
+```
+
 开发 Python 选择顺序：
 
 1. `PYSTAND_PYTHON`
@@ -172,4 +188,4 @@ CI 使用原生 runner 验证 Linux x86_64、Linux ARM64、Windows x86_64、Wind
 
 ## Git 历史
 
-此前的 PyStand2 历史版本完整保留在 Git tag 中；本次重构从 `v0.16.0` 延续到 `v0.16.1`，不会改写旧版本的历史内容。
+此前的 PyStand2 历史版本完整保留在 Git tag 中；本次重构从 `v0.16.0` 延续到 `v0.16.2`，不会改写旧版本的历史内容。

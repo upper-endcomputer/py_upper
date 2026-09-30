@@ -1,0 +1,4 @@
+# Optional external dependencies for developers who prefer pip-managed tools.
+# py_upper vendors a compatible TOML reader, so this file is not required just
+# to start tools/build.py on Python 3.8-3.10.
+tomli>=2.0,<3; python_version < "3.11"

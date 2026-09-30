@@ -4,7 +4,7 @@ import platform
 import shutil
 import sys
 import subprocess
-import tomllib
+from .compat import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +15,10 @@ BUILD = ROOT / "build"
 DIST = ROOT / "dist"
 RUNTIMES = ROOT / "runtimes"
 LAUNCHER = ROOT / "launcher"
+
+# The build tool itself supports Python 3.8+. This is intentionally separate
+# from the target Python selected in [tool.py_upper.runtime].
+MIN_BUILD_PYTHON = (3, 8)
 
 @dataclass(frozen=True)
 class Target:
@@ -174,6 +178,16 @@ def pbs_sdk_dir(target: Target) -> Path:
         return local_sdk_path(target)
     return CACHE / "pbs-sdk" / target.key / python_version()
 
+def validate_build_python_version(version_info=None) -> None:
+    info = version_info or sys.version_info
+    actual = (info.major, info.minor)
+    if actual < MIN_BUILD_PYTHON:
+        raise RuntimeError(
+            f"py_upper build tool requires Python {MIN_BUILD_PYTHON[0]}.{MIN_BUILD_PYTHON[1]}+; "
+            f"current interpreter is {info.major}.{info.minor}. "
+            "Use a newer development Python; the bundled target Python remains independently configurable."
+        )
+
 def python_executable() -> Path:
     """Return the preferred development Python without requiring a venv.
 
@@ -260,6 +274,9 @@ def require_local_python() -> Path:
     if len(probe) < 2:
         raise RuntimeError(f"Could not determine development Python version: {p}")
     major, minor = int(probe[0]), int(probe[1])
-    if (major, minor) < (3, 8):
-        raise RuntimeError(f"Development Python {major}.{minor} is too old; Python 3.8+ is required: {p}")
+    if (major, minor) < MIN_BUILD_PYTHON:
+        raise RuntimeError(
+            f"Development Python {major}.{minor} is too old; "
+            f"Python {MIN_BUILD_PYTHON[0]}.{MIN_BUILD_PYTHON[1]}+ is required: {p}"
+        )
     return p

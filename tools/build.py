@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse, os, shutil, subprocess, platform
 
-from py_upper.config import BUILD, DIST, TARGETS, app_name, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider, runtime_spec, host_description
+from py_upper.config import BUILD, DIST, TARGETS, app_name, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider, runtime_spec, host_description, validate_build_python_version
 from py_upper.toolchain import describe_toolchain
 from py_upper.runtime_provider import ensure_sdk, sdk_info
 from py_upper.python_build import build_python_package
@@ -14,6 +14,7 @@ from py_upper.verify import verify
 from py_upper.release_artifacts import write_release_manifest
 
 def main(argv=None):
+    validate_build_python_version()
     p = argparse.ArgumentParser(
         description="py_upper - build, verify and release a standalone Python application",
         epilog=(

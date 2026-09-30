@@ -1,5 +1,26 @@
 # py_upper Changelog
 
+## 0.16.2 — Build Tool Python 3.8+ compatibility
+
+### Problem
+- Python 3.10 could not start `tools/build.py` because the build tool imported `tomllib`, which was added to the Python standard library in 3.11.
+- Build-tool type annotations needed to remain importable on Python 3.8.
+- The boundary between the Build Tool Python and the bundled Target Python needed to be explicit for legacy-runtime work.
+
+### Changes
+- Add `tools/py_upper/compat.py` with a vendored Tomli fallback for Python 3.8–3.10.
+- Keep Python 3.11+ on standard-library `tomllib`.
+- Normalize build-tool modules around postponed annotations.
+- Declare Python 3.8 as the minimum Build Tool Python and provide a clear diagnostic below it.
+- Add compatibility tests and documentation.
+- Keep Target Runtime selection independent from Build Tool Python.
+
+### Verification
+- Python 3.13: 12 tests passed.
+- TOML fallback path exercised by simulating an unavailable `tomllib`.
+- `tools/build.py --doctor --target linux-x86_64` passed locally.
+- Python 3.10 is included in the CI compatibility matrix for direct validation.
+
 ## 0.16.1 — Project identity and source layout refactor
 - Rename project identity to `py_upper`.
 - Flatten `app/src/myapp/` to `app/src/`.
