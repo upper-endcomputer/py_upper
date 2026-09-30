@@ -1,5 +1,23 @@
 # py_upper Changelog
 
+## 0.16.15 — Fix embedded CPython native-extension symbol resolution
+
+### Problem
+- A packaged macOS application could load the bundled CPython runtime but fail to import a Cython extension with `symbol not found in flat namespace '_PyArg_ValidateKeywordArguments'`.
+
+### Root cause
+- The launcher loaded bundled `libpython` with `RTLD_LOCAL`. Unix CPython extensions normally do not link directly to `libpython`, so an embedded interpreter loaded with local visibility cannot satisfy their Python C-API symbol references.
+
+### Changes
+- Load bundled `libpython` with `RTLD_GLOBAL` on Unix.
+- Add a regression test preventing the launcher from reverting to `RTLD_LOCAL`.
+- Bump the project version to 0.16.15.
+
+### Verification
+- Full local regression suite passes.
+- Linux launcher compiles successfully.
+- `git diff --check` passes.
+
 ## 0.16.14 — Use CPython-recognized extension suffixes
 
 ### Problem

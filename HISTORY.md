@@ -1,3 +1,21 @@
+# v0.16.15
+
+### Problem
+- The packaged macOS application loaded bundled CPython but failed to import compiled application extensions with `symbol not found in flat namespace '_PyArg_ValidateKeywordArguments'`.
+
+### Root cause
+- The launcher used `dlopen(..., RTLD_NOW | RTLD_LOCAL)` for `libpython`. Unix CPython extensions generally resolve Python C-API symbols from the global process namespace because they do not directly link against `libpython`.
+
+### Changes
+- Change bundled `libpython` loading to `RTLD_NOW | RTLD_GLOBAL` on Unix.
+- Add a regression test for the loader flag.
+- Bump the project version to 0.16.15.
+
+### Verification
+- Full local regression suite passed.
+- Linux launcher build passed.
+- `git diff --check` passed.
+
 # v0.16.14
 
 **Problem solved:** The packaged macOS/Linux application could fail with `ModuleNotFoundError: No module named 'main'` after Cythonized modules were placed in `site-packages`.
@@ -152,9 +170,9 @@ Fixes a macOS build failure where Cython exited successfully but the expected ge
 
 # py_upper Git history
 
-This repository preserves the complete release evolution from v0.9.1 through v0.16.11.
+This repository preserves the complete release evolution from v0.9.1 through v0.16.15.
 
-Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.12 is the current native library packaging and relocation release.
+Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.15 is the current embedded-CPython native-extension loading release.
 
 
 ## v0.16.2

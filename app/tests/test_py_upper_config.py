@@ -23,8 +23,8 @@ def test_all_release_targets_are_declared():
 
 def test_project_version_and_user_agent():
     from py_upper.config import project_version, user_agent
-    assert project_version() == "0.16.14"
-    assert user_agent() == "py_upper/0.16.14"
+    assert project_version() == "0.16.15"
+    assert user_agent() == "py_upper/0.16.15"
 
 
 def test_app_name_is_configurable(monkeypatch):

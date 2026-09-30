@@ -97,6 +97,13 @@ def test_cythonize_keeps_generated_c_out_of_src(monkeypatch, tmp_path):
     assert not (source.parent / "app.c").exists()
 
 
+def test_launcher_loads_libpython_with_global_symbols():
+    launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
+    text = launcher.read_text(encoding="utf-8")
+    assert "RTLD_NOW | RTLD_GLOBAL" in text
+    assert "RTLD_LOCAL" not in text
+
+
 def test_macho_arm64_header_is_detected_with_correct_byte_order(tmp_path):
     from py_upper.native.inspect import inspect
 

@@ -10,7 +10,7 @@ def test_release_manifest_is_deterministic_and_hashed(tmp_path):
     (out / "DemoApp" / "DemoApp").write_bytes(b"launcher")
     path = write_release_manifest(TARGETS["linux-x86_64"], out)
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["version"] == "0.16.14"
+    assert data["version"] == "0.16.15"
     assert data["target"] == "linux-x86_64"
     assert data["files"][0]["path"] == "DemoApp/DemoApp"
     assert len(data["files"][0]["sha256"]) == 64

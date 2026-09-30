@@ -56,7 +56,13 @@ RuntimeLoad load_python(const fs::path& home) {
 #endif
     }
     std::sort(libs.begin(),libs.end());
-    for(const auto& p:libs){r.handle=dlopen(p.c_str(),RTLD_NOW|RTLD_LOCAL);if(r.handle)break;}
+    for(const auto& p:libs) {
+        // Unix CPython extensions normally do not link against libpython.
+        // When the launcher embeds CPython via dlopen(), libpython symbols
+        // must remain globally visible to subsequently imported extensions.
+        r.handle = dlopen(p.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        if (r.handle) break;
+    }
     for(const auto& e:fs::directory_iterator(libdir)) if(e.is_directory() && e.path().filename().string().rfind("python3.",0)==0){r.stdlib=e.path();break;}
 #endif
     return r;
