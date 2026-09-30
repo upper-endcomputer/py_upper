@@ -7,7 +7,65 @@ from .config import Target
 
 VERSION_RE = re.compile(r"^cpython-(\d+\.\d+\.\d+)(?:\+|-)")
 PBS_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=100&page={page}"
+PBS_RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
+# Astral's uv publishes a generated index mapping exact managed-Python versions
+# and targets to python-build-standalone release builds. We use it to avoid the
+# very large paginated GitHub Releases response during automatic resolution.
+PBS_RUNTIME_METADATA_URL = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json"
 
+_RELEASE_RESPONSE_CACHE: dict[tuple[int, str], dict[str, Any]] = {}
+
+
+
+
+def _metadata_key(target: Target, pyver: str) -> str:
+    platform = {
+        ("macos", "arm64"): "darwin-aarch64-none",
+        ("macos", "x86_64"): "darwin-x86_64-none",
+        ("windows", "x86"): "windows-i686-none",
+        ("windows", "x86_64"): "windows-x86_64-none",
+        ("windows", "arm64"): "windows-aarch64-none",
+        ("linux", "x86_64"): "linux-x86_64-gnu",
+        ("linux", "arm64"): "linux-aarch64-gnu",
+    }.get((target.os, target.arch))
+    if not platform:
+        raise RuntimeError(f"No PBS metadata mapping for target {target.key}")
+    return f"cpython-{str(pyver).strip()}-{platform}"
+
+
+def find_release_via_runtime_metadata(
+    fetch_json: Callable[[str], Any], target: Target, pyver: str
+) -> tuple[str, dict[str, Any]] | None:
+    """Return the PBS release/build metadata for an exact runtime version.
+
+    This uses Astral uv's generated download metadata as a lightweight index. The
+    actual runtime and SDK assets are still selected from the PBS release itself.
+    """
+    data = fetch_json(PBS_RUNTIME_METADATA_URL)
+    if not isinstance(data, dict):
+        return None
+    entry = data.get(_metadata_key(target, pyver))
+    if not isinstance(entry, dict):
+        return None
+    build = str(entry.get("build") or "").strip()
+    if not build:
+        url = str(entry.get("url") or "")
+        match = re.search(r"/releases/download/([^/]+)/", url)
+        build = match.group(1) if match else ""
+    if not build:
+        return None
+    return build, entry
+
+
+def _release_from_tag(fetch_json: Callable[[str], Any], tag: str) -> dict[str, Any]:
+    cache_key = (id(fetch_json), tag)
+    if cache_key in _RELEASE_RESPONSE_CACHE:
+        return _RELEASE_RESPONSE_CACHE[cache_key]
+    release = fetch_json(PBS_RELEASE_API.format(tag=tag))
+    if not isinstance(release, dict):
+        raise RuntimeError(f"Unexpected PBS release API response for tag {tag}")
+    _RELEASE_RESPONSE_CACHE[cache_key] = release
+    return release
 
 def asset_python_version(name: str) -> str | None:
     match = VERSION_RE.match(name)
@@ -114,9 +172,20 @@ def resolve_pbs_release(
     both required artifacts for the requested exact Python/target pair.
     """
     if configured_tag:
-        return configured_tag, fetch_json(
-            f"https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{configured_tag}"
-        )
+        return configured_tag, _release_from_tag(fetch_json, configured_tag)
+
+    # Prefer the lightweight exact-version index. The GitHub Releases list endpoint
+    # returns every asset for every release on a page and can be very large.
+    metadata_match = find_release_via_runtime_metadata(fetch_json, target, pyver)
+    if metadata_match:
+        tag, _entry = metadata_match
+        release = _release_from_tag(fetch_json, tag)
+        if release_has_asset(release, target, pyver, kind="runtime") and release_has_asset(
+            release, target, pyver, kind="sdk"
+        ):
+            return tag, release
+        # Metadata identified the exact historical build but the release payload is
+        # incomplete/unexpected. Fall through to the legacy exhaustive search.
 
     for page in range(1, max_pages + 1):
         data = fetch_json(PBS_RELEASES_API.format(page=page))

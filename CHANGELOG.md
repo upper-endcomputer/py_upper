@@ -1,3 +1,10 @@
+## 0.16.19
+
+- Fix PBS automatic release resolution through a lightweight exact-version metadata index.
+- Avoid the very large paginated GitHub Releases response when an exact PBS build mapping is available.
+- Add HTTP retries for transient 408/425/429/5xx errors, including HTTP 504 gateway timeouts.
+- Cache release API responses within a build so SDK/runtime resolution does not request the same release twice.
+
 ## 0.16.18
 
 - Unify PBS asset matching across runtime selection, SDK selection, release detection, and diagnostics.

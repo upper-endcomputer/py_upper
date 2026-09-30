@@ -7,22 +7,13 @@ import json
 import os
 import shutil
 import tarfile
-import urllib.request
 from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir, user_agent
+from .net import download, http_json
 from .pbs_assets import find_matching_release, matching_assets, no_asset_error, resolve_pbs_release
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
-
-
-def http_json(url: str) -> Any:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": user_agent(), "Accept": "application/vnd.github+json"},
-    )
-    with urllib.request.urlopen(req) as r:
-        return json.load(r)
 
 
 def resolve_release(target: Target) -> tuple[str, dict]:
@@ -35,16 +26,6 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def download(url: str, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        return
-    print(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": user_agent()})
-    with urllib.request.urlopen(req) as r, dst.open("wb") as f:
-        shutil.copyfileobj(r, f)
 
 
 def safe_extract(tar_path: Path, dest: Path) -> None:

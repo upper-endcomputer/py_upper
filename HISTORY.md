@@ -1,3 +1,24 @@
+## v0.16.19
+
+Problem:
+- Automatic PBS resolution failed on HTTP 504 from the large paginated GitHub Releases endpoint.
+
+Root cause:
+- The resolver requested up to 100 releases with all of their assets before it knew which historical release contained the requested Python version.
+
+Changes:
+- Use Astral uv's generated exact-version runtime metadata as the first release lookup index.
+- Fetch only the exact PBS release required for the requested Python/target pair.
+- Add bounded retries/backoff for transient network failures and 504 gateway timeouts.
+- Reuse the exact release response for runtime and SDK resolution within one build.
+
+Verification:
+- 47 tests passed locally.
+- Linux doctor passed.
+- git diff --check passed.
+
+Impact:
+- Automatic Python-version-only configuration no longer depends on the large paginated GitHub Releases response in the normal path.
 ## v0.16.18
 
 **Problem solved:** py_upper could report an exact Python version as available in a PBS release while the runtime selector still rejected the corresponding asset.

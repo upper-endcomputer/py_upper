@@ -573,7 +573,8 @@ def test_auto_pbs_release_requires_both_runtime_and_sdk():
     tag, release = resolve_pbs_release(fetch, "", TARGETS["macos-arm64"], "3.11.10", max_pages=1)
     assert tag == "20241016"
     assert release["tag_name"] == "20241016"
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert calls[0].startswith("https://raw.githubusercontent.com/astral-sh/uv/main/")
 
 
 def test_explicit_pbs_release_does_not_auto_search():
@@ -650,3 +651,89 @@ def test_pbs_sdk_selector_and_available_versions_use_same_match_rule():
     assert len(matching_assets(release, target, "3.11.10", kind="sdk")) == 2
     selected = select_full_asset(release, target, "3.11.10", "20241016")
     assert selected in matching_assets(release, target, "3.11.10", kind="sdk")
+
+
+def test_auto_pbs_release_uses_exact_runtime_metadata_index_before_release_listing():
+    from py_upper.config import TARGETS
+    from py_upper.pbs_assets import PBS_RUNTIME_METADATA_URL, resolve_pbs_release
+
+    calls = []
+    def fetch(url):
+        calls.append(url)
+        if url == PBS_RUNTIME_METADATA_URL:
+            return {
+                "cpython-3.11.10-darwin-aarch64-none": {
+                    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/"
+                          "cpython-3.11.10%2B20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
+                    "build": "20241016",
+                }
+            }
+        assert url.endswith("/releases/tags/20241016")
+        return {
+            "tag_name": "20241016",
+            "assets": [
+                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"},
+                {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
+            ],
+        }
+
+    tag, release = resolve_pbs_release(fetch, "", TARGETS["macos-arm64"], "3.11.10")
+    assert tag == "20241016"
+    assert release["tag_name"] == "20241016"
+    assert calls == [
+        PBS_RUNTIME_METADATA_URL,
+        "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20241016",
+    ]
+
+
+def test_auto_pbs_release_does_not_use_large_release_list_when_metadata_matches():
+    from py_upper.config import TARGETS
+    from py_upper.pbs_assets import PBS_RUNTIME_METADATA_URL, PBS_RELEASES_API, resolve_pbs_release
+
+    def fetch(url):
+        if url == PBS_RUNTIME_METADATA_URL:
+            return {
+                "cpython-3.13.15-darwin-aarch64-none": {"build": "20260929"}
+            }
+        if url.endswith("/releases/tags/20260929"):
+            return {
+                "tag_name": "20260929",
+                "assets": [
+                    {"name": "cpython-3.13.15+20260929-aarch64-apple-darwin-install_only_stripped.tar.gz"},
+                    {"name": "cpython-3.13.15+20260929-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
+                ],
+            }
+        raise AssertionError(f"Unexpected paginated PBS request: {url}")
+
+    tag, _ = resolve_pbs_release(fetch, "", TARGETS["macos-arm64"], "3.13.15")
+    assert tag == "20260929"
+
+
+def test_http_json_retries_gateway_timeout(monkeypatch):
+    import urllib.error
+    from py_upper import net
+
+    calls = []
+    responses = []
+
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self, *args):
+            return b'{"ok": true}'
+    def fake_urlopen(request, timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(request.full_url, 504, "Gateway Timeout", {}, None)
+        responses.append(True)
+        return Response()
+
+    monkeypatch.setattr(net.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(net.time, "sleep", lambda _seconds: None)
+    monkeypatch.setenv("PY_UPPER_HTTP_RETRIES", "2")
+    result = net.http_json("https://example.invalid/metadata")
+    assert result == {"ok": True}
+    assert len(calls) == 2
+    assert responses == [True]
