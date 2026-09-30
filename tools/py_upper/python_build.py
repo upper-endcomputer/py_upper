@@ -14,6 +14,9 @@ from .toolchain import resolve_toolchain
 from .wheel import install_wheels
 
 
+CYTHON_REQUIREMENT = "Cython>=3.1,<3.2"
+
+
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(map(str, cmd)))
     subprocess.run(cmd, cwd=cwd, env=env, check=True)
@@ -71,20 +74,85 @@ def _python_library(root: Path, target: Target) -> tuple[Path | None, str | None
     return libdir, None
 
 
+def _cython_version(host_python: Path, env: dict[str, str] | None = None) -> str | None:
+    probe = subprocess.run(
+        [str(host_python), "-c", "import Cython; print(Cython.__version__)"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if probe.returncode != 0:
+        return None
+    return probe.stdout.strip() or None
+
+
+def _cython_env(host_python: Path) -> dict[str, str]:
+    """Return an environment where a supported Cython is importable.
+
+    The build tool deliberately does not require the developer to pre-install
+    Cython into their selected Python. If it is missing (or outside the
+    supported 3.1.x range), bootstrap it into a py_upper-owned cache instead
+    of modifying the user's Python environment.
+    """
+    env = dict(os.environ)
+    version = _cython_version(host_python, env)
+    if version:
+        parts = version.split(".")
+        try:
+            major, minor = int(parts[0]), int(parts[1])
+        except (ValueError, IndexError):
+            major = minor = -1
+        if (major, minor) == (3, 1):
+            return env
+
+    cache = BUILD / "host-tools" / f"cython-{host_python.stem}-{host_python.parent.name}"
+    cache.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            str(host_python), "-m", "pip", "install",
+            "--disable-pip-version-check", "--no-input", "--upgrade",
+            "--target", str(cache), CYTHON_REQUIREMENT,
+        ],
+    )
+    env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    version = _cython_version(host_python, env)
+    if not version:
+        raise RuntimeError(
+            f"Cython bootstrap completed but Cython is still unavailable under {host_python}. "
+            f"Expected {CYTHON_REQUIREMENT}; cache={cache}"
+        )
+    parts = version.split(".")
+    try:
+        supported = (int(parts[0]), int(parts[1])) == (3, 1)
+    except (ValueError, IndexError):
+        supported = False
+    if not supported:
+        raise RuntimeError(
+            f"Unsupported Cython version {version!r} under {host_python}; "
+            f"expected {CYTHON_REQUIREMENT}, cache={cache}"
+        )
+    return env
+
+
 def cythonize_to_c(sources: list[Path], host_python: Path) -> None:
     """Translate selected Python modules to C using the build-host Python.
 
     Run Cython from each source directory and use relative input/output paths.
     This avoids path canonicalisation/symlink issues on macOS and also makes
     the generated-file contract explicit. ``--force`` prevents a stale Cython
-    cache or timestamp decision from silently skipping generation.
+    cache or timestamp decision from silently skipping generation. Cython is
+    bootstrapped into a py_upper-owned cache when the selected build Python
+    does not already provide a supported version.
     """
+    cython_env = _cython_env(host_python)
     for source in sources:
         c = source.with_suffix(".c")
         c.unlink(missing_ok=True)
         run(
             [str(host_python), "-m", "cython", "--force", "-3", "-o", c.name, source.name],
             cwd=source.parent,
+            env=cython_env,
         )
         if not c.exists():
             candidates = sorted(source.parent.glob(f"{source.stem}.*"))

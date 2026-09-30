@@ -1,3 +1,7 @@
+## 0.16.5
+
+Fixes fresh-build failures caused by the selected development Python not having Cython installed. The build now bootstraps supported Cython 3.1.x into a py_upper-owned cache and uses it without modifying the developer's environment.
+
 ## 0.16.4
 
 Fixes a macOS build failure where Cython exited successfully but the expected generated `app.c` file was not found. Cython is now invoked from each source directory using relative paths and `--force`, with clearer diagnostics when generation still does not produce the requested file.

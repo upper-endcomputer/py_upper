@@ -1,3 +1,17 @@
+## 0.16.5
+
+### Fixed
+
+- Fix fresh development environments failing at the Cython step with `No module named cython`.
+- Automatically bootstrap the supported Cython 3.1.x build dependency into a py_upper-owned cache instead of requiring a manual install into the developer Python.
+- Keep the Cython cache isolated from the user's selected development environment and reuse it on subsequent builds.
+
+### Verification
+
+- 15 local tests passed.
+- Cython bootstrap regression test covers the missing-dependency path.
+- The v0.16.4 macOS relative-path/`--force` Cython fix remains covered by regression tests.
+
 ## 0.16.4
 
 ### Fixed
