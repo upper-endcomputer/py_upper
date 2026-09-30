@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import APP, BUILD, DIST, Target, app_name, entry_module, optimize_config, runtime_spec, staging_dir, target_extension_suffix
 from .manifest import read_manifest, validate_manifest
-from .native.inspect import inspect, verify_arch
+from .native.inspect import inspect, target_format, verify_arch
 from .python_build import module_name, selected_sources
 from .third_party import WHEEL_MANIFEST, dependency_specs, wheel_dir
 
@@ -106,7 +106,13 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
         checks.append((expected.is_file(), f"packaged extension {name_}"))
         checks.append((not (site / source.relative_to(APP / "src")).exists(), f"packaged source removed {name_}"))
 
-    native_formats = []
+    # Only binaries the target OS can actually load are part of the native ABI
+    # contract. Bundled runtimes and third-party packages ship inert
+    # foreign-format data files (for example the Windows setuptools launcher
+    # stubs inside a macOS CPython runtime); their architecture is irrelevant
+    # and must not fail an otherwise correct package.
+    target_container = target_format(target)
+    checked = 0
     for path in root.rglob("*"):
         if not path.is_file():
             continue
@@ -114,13 +120,14 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
             info = inspect(path)
         except (OSError, ValueError):
             continue
-        if info.format.startswith("Mach-O") or info.format in {"ELF", "PE"}:
-            native_formats.append(path)
-            try:
-                verify_arch(path, target)
-            except Exception as exc:
-                checks.append((False, f"native arch {path.relative_to(root)}: {exc}"))
-    checks.append((True, f"native binaries checked={len(native_formats)}"))
+        if not info.format.startswith(target_container):
+            continue
+        checked += 1
+        try:
+            verify_arch(path, target)
+        except Exception as exc:
+            checks.append((False, f"native arch {path.relative_to(root)}: {exc}"))
+    checks.append((True, f"native binaries checked={checked}"))
     return checks
 
 

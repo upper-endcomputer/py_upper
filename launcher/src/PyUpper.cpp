@@ -32,9 +32,17 @@ std::wstring W(const std::string& s){return std::wstring_convert<std::codecvt_ut
 void* symbol(void* h,const char* n){return dlsym(h,n);}
 void unload(void* h){if(h) dlclose(h);}
 #endif
-fs::path exe_dir(const std::string& exe){return fs::absolute(fs::path(exe)).parent_path();}
+fs::path exe_dir(const std::string& exe){
+    // argv[0] can be relative ("./MyApp"), which would leave a "." component
+    // in the parent chain and misplace the bundle root. Normalise first.
+    std::error_code ec;
+    auto absolute = fs::absolute(fs::path(exe), ec);
+    if (ec) absolute = fs::absolute(fs::path(exe));
+    auto canonical = fs::weakly_canonical(absolute, ec);
+    return (ec ? absolute : canonical).parent_path();
+}
 
-struct RuntimeLoad { void* handle{}; fs::path python_root; fs::path stdlib; fs::path zip; };
+struct RuntimeLoad { void* handle{}; fs::path python_root; fs::path stdlib; fs::path zip; fs::path extension_dir; };
 RuntimeLoad load_python(const fs::path& home) {
     RuntimeLoad r; r.python_root=home;
 #ifdef _WIN32
@@ -43,6 +51,10 @@ RuntimeLoad load_python(const fs::path& home) {
     for (const auto& e: fs::directory_iterator(home)) if (e.is_regular_file() && e.path().extension()==".dll" && e.path().filename().string().rfind("python",0)==0) dlls.push_back(e.path());
     for (const auto& p: dlls) { r.handle=LoadLibraryW(W(p.string()).c_str()); if(r.handle) break; }
     r.stdlib=home/"Lib";
+    // Windows CPython keeps its dynamic stdlib extensions (zlib, _ssl, _socket,
+    // ...) in DLLs; without it on the module search path the packaged app
+    // cannot import them.
+    r.extension_dir=home/"DLLs";
     for (const auto& e: fs::directory_iterator(home)) if(e.is_regular_file() && e.path().extension()==".zip" && e.path().filename().string().rfind("python",0)==0){r.zip=e.path();break;}
 #else
     auto libdir=home/"lib";
@@ -65,6 +77,9 @@ RuntimeLoad load_python(const fs::path& home) {
         if (r.handle) break;
     }
     for(const auto& e:fs::directory_iterator(libdir)) if(e.is_directory() && e.path().filename().string().rfind("python3.",0)==0){r.stdlib=e.path();break;}
+    // A runtime built from a normal CPython/venv keeps dynamic stdlib
+    // extensions in lib-dynload, which is a separate sys.path entry.
+    if(!r.stdlib.empty()) r.extension_dir=r.stdlib/"lib-dynload";
 #endif
     return r;
 }
@@ -91,12 +106,17 @@ int PyUpper::run(const std::string& exe,const std::vector<std::string>& args){
     if(!init_config||!set_string||!append||!init||!clear||!finalize||!initialized){std::cerr<<"Required CPython initialization symbols are missing\n";unload(loaded.handle);return 5;}
     try{
         PyConfig config; init_config(&config); auto whome=W(home.string()); auto wexe=W(exe);
+        // The launcher uses an isolated config, so PYTHONDONTWRITEBYTECODE is ignored.
+        // A packaged app must not write .pyc caches into its own bundle: that mutates a
+        // signed/notarized .app after the fact and breaks its code signature seal.
+        config.write_bytecode=0;
         auto status=set_string(&config,&config.home,whome.c_str()); if(failed(status)){clear(&config);unload(loaded.handle);return 6;}
         status=set_string(&config,&config.program_name,wexe.c_str()); if(failed(status)){clear(&config);unload(loaded.handle);return 6;}
         status=set_string(&config,&config.executable,wexe.c_str()); if(failed(status)){clear(&config);unload(loaded.handle);return 6;}
         config.module_search_paths_set=1;
         if(!loaded.zip.empty()){auto wzip=W(loaded.zip.string());status=append(&config.module_search_paths,wzip.c_str());if(failed(status)){clear(&config);unload(loaded.handle);return 6;}}
         if(!loaded.stdlib.empty()){auto wlib=W(loaded.stdlib.string());status=append(&config.module_search_paths,wlib.c_str());if(failed(status)){clear(&config);unload(loaded.handle);return 6;}}
+        if(!loaded.extension_dir.empty() && fs::exists(loaded.extension_dir)){auto wext=W(loaded.extension_dir.string());status=append(&config.module_search_paths,wext.c_str());if(failed(status)){clear(&config);unload(loaded.handle);return 6;}}
         auto wsite=W(site.string());status=append(&config.module_search_paths,wsite.c_str());if(failed(status)){clear(&config);unload(loaded.handle);return 6;}
         config.parse_argv=0; config.argv.length=0; status=append(&config.argv,wexe.c_str());if(failed(status)){clear(&config);unload(loaded.handle);return 6;}
         for(const auto& arg:args){auto warg=W(arg);status=append(&config.argv,warg.c_str());if(failed(status)){clear(&config);unload(loaded.handle);return 6;}}

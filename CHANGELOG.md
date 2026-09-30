@@ -1,3 +1,45 @@
+## 0.17.1
+
+### Problem
+- macOS builds failed at several stages that only a real host and a real dependency set expose: Cython extensions did not link, the package scan rejected the bundled runtime, the runtime copy lost its execute bits, ad-hoc signing left a stale bundle seal, and `--verify` was not idempotent after a build.
+- The unit suite wrote its PBS metadata fixture into the project's real `.cache/pbs/uv-download-metadata.json`, so any later `macos-arm64` build failed with "No PBS runtime metadata" until the cache was deleted.
+- With a real `PySide6`/`pyserial`/`bleak`/`qasync` dependency set the third-party path broke: environment markers were evaluated against the host interpreter, multi-hundred-megabyte wheels aborted on a single socket timeout, the Qt dependency closure degenerated to O(files x dependencies), optional Qt plugins with unsatisfiable dependencies failed the whole build, pyobjc `*.dSYM` debug bundles were treated as loadable images, and import roots were derived by scanning all of site-packages.
+- Packaged Windows applications could not import dynamic stdlib extensions such as `_ssl`, `_socket` and `_ctypes`, because `DLLs` was missing from the module search path.
+- Nested macOS code such as `QtWebEngineCore.framework/Helpers/QtWebEngineProcess.app` could not be ad-hoc signed inside-out, and a relative launcher invocation resolved the bundle root incorrectly.
+
+### Root cause
+- Platform- and interpreter-specific assumptions were applied where the target contract required the target's own values.
+- Verification and smoke steps mutated the artifacts they were verifying, and test fixtures wrote into shared project state.
+- Native resolution treated every lookup as a fresh tree walk and every Mach-O file as a loadable image.
+
+### Changes
+- Link macOS Cython extensions as bundles with `-undefined dynamic_lookup`, matching CPython's own `LDSHARED` and the launcher's `RTLD_GLOBAL` symbol resolution.
+- Scope the whole-tree architecture check to the container format the target OS can load, so inert foreign-format payloads such as the runtime's Windows setuptools stubs no longer fail a correct package.
+- Preserve execute bits when copying files while still never replaying restrictive source modes.
+- Keep `--verify` idempotent by disabling bytecode writes for the target-Python smoke, and disable bytecode caching in the launcher through `PyConfig.write_bytecode` so a packaged app never mutates its own signed bundle.
+- Sign macOS native payloads inside-out, deepest path first, with the launcher last.
+- Isolate the PBS metadata fixture in tests so the real cache can no longer be poisoned.
+- Resolve target wheels with the target runtime's own interpreter when it is natively executable, so environment markers, tags and `Requires-Python` all match the target instead of the host.
+- Raise the pip socket timeout and retry budget, and download through a py_upper-owned pip cache so repeated builds and CI runs reuse wheels instead of refetching them.
+- Index the bundle search roots once and cache `LC_RPATH` lookups, turning the Qt-sized closure from a tree walk per dependency into a single pass.
+- Add `[tool.py_upper.native].exclude` for optional native payloads whose dependencies cannot exist in the bundle, and make the unresolved-dependency error point at it.
+- Drop `*.dSYM` debug bundles during third-party optimization and skip them in the native scanner.
+- Derive a distribution's import roots from its own `RECORD` instead of scanning the surrounding site-packages.
+- Add the platform extension directory (`DLLs` on Windows, `lib-dynload` on Unix) to the launcher's module search path.
+- Normalise the launcher's executable path so relative invocation resolves the bundle root correctly.
+- Accept a list of manylinux baselines, because PySide6 publishes `manylinux_2_34_x86_64` and `manylinux_2_39_aarch64` wheels.
+- Make the local end-to-end test host-portable and run it on every CI platform instead of Linux only.
+
+### Verification
+- macOS arm64 host: `python tools/build.py --run` with `PySide6==6.11.0`, `pyserial==3.5`, `bleak==3.0.2`, `qasync==0.28.0` - build, package, static verification (415 native binaries), target-runtime import smoke, launcher smoke and application run all pass; `codesign --verify --deep --strict` accepts the packaged bundle.
+- Full suite with `PY_UPPER_E2E=1` on macOS arm64: 54 passed in 74s, including the hermetic local end-to-end build, third-party wheel install, application-owned native library closure and the lock/`--locked` round trip.
+- The end-to-end gate caught three defects that unit tests could not: the missing platform extension directory, the site-packages-wide import scan and the lock round trip.
+
+### Limitations
+- Windows and Linux execution still relies on the CI matrix; this release was validated on macOS arm64 only.
+- Cross-target dependency resolution keeps the host interpreter, so environment markers follow the host for targets that cannot be executed locally.
+- `PySide6` payloads are large; the safe optimization profile does not prune Qt plugins that are present and resolvable.
+
 ## 0.17.0
 
 ### Problem

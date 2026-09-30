@@ -6,17 +6,27 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..config import BUILD, app_name, optimize_config
+from ..config import BUILD, app_name, native_exclude_patterns, optimize_config
 from ..fs import copy_file_contents
-from .deps import Dependency, _mac_install_name, _system_dependency, dependency_names, resolve_dependency
+from .deps import Dependency, DependencyResolver, _mac_install_name, _system_dependency, dependency_names
 from .inspect import BinaryInfo, inspect, verify_arch
+
+
+def is_debug_artifact(path: Path) -> bool:
+    """Debug symbol bundles are data, not loadable images.
+
+    pyobjc wheels ship ``*.dSYM/Contents/Resources/DWARF/*`` Mach-O files;
+    they are not importable libraries and tools such as install_name_tool
+    reject them.
+    """
+    return any(part.endswith(".dSYM") for part in path.parts)
 
 
 def _native_files(root: Path, target) -> list[Path]:
     """Return native images, including framework binaries without .dylib suffixes."""
     result: list[Path] = []
     for path in root.rglob("*"):
-        if not path.is_file():
+        if not path.is_file() or is_debug_artifact(path):
             continue
         suffix = path.suffix.lower()
         if target.os == "windows" and suffix not in {".pyd", ".dll", ".exe"}:
@@ -30,6 +40,35 @@ def _native_files(root: Path, target) -> list[Path]:
         if (target.os == "macos" and info.format.startswith("Mach-O")) or info.format in {"ELF", "PE"}:
             result.append(path)
     return sorted(set(result))
+
+
+def prune_excluded_native_files(site: Path) -> list[Path]:
+    """Remove configured native payloads before the dependency closure runs."""
+    patterns = native_exclude_patterns()
+    if not patterns:
+        return []
+    import fnmatch
+
+    removed: list[Path] = []
+    emptied: set[Path] = set()
+    for path in sorted(site.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(site).as_posix()
+        if not any(fnmatch.fnmatch(relative, pattern) for pattern in patterns):
+            continue
+        path.unlink()
+        removed.append(path)
+        parent = path.parent
+        while parent != site and site in parent.parents:
+            emptied.add(parent)
+            parent = parent.parent
+    # Only remove directories that the exclusions emptied. An empty directory
+    # elsewhere can be a PEP 420 namespace package.
+    for directory in sorted(emptied, key=lambda p: len(p.parts), reverse=True):
+        if directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
+    return removed
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -60,7 +99,7 @@ def _mac_aliases(roots: list[Path]) -> dict[str, Path]:
         if not root.exists():
             continue
         for path in root.rglob("*"):
-            if not path.is_file():
+            if not path.is_file() or is_debug_artifact(path):
                 continue
             try:
                 info = inspect(path)
@@ -107,6 +146,9 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
         queue.append(launcher)
     queue = list(dict.fromkeys(queue))
     aliases = _mac_aliases(search_roots) if target.os == "macos" else {}
+    # One basename index and one rpath cache for the whole closure: Qt-sized
+    # dependency graphs otherwise re-walk the tree for every load name.
+    resolver = DependencyResolver(search_roots, aliases)
 
     seen: set[Path] = set()
     dependencies: list[Dependency] = []
@@ -119,7 +161,7 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
         for dep_name in dependency_names(source, env):
             if _system_dependency(dep_name, target):
                 continue
-            resolved = resolve_dependency(dep_name, search_roots, source, aliases=aliases)
+            resolved = resolver.resolve(dep_name, source)
             if resolved is None:
                 dependencies.append(Dependency(source, dep_name, None, True))
                 continue
@@ -131,6 +173,7 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
                         raise RuntimeError(f"Native dependency basename collision: {destination} != {resolved}")
                 else:
                     copy_file_contents(resolved, destination)
+                    resolver.index.add(destination)
                 resolved = destination.resolve()
                 if resolved not in seen:
                     queue.append(resolved)
@@ -152,7 +195,11 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
     unresolved = [dep for dep in dependencies if dep.external]
     if unresolved:
         lines = sorted(set(f"{dep.owner.relative_to(root)}: {dep.name}" for dep in unresolved))
-        raise RuntimeError("Unresolved native dependencies:\n  " + "\n  ".join(lines))
+        raise RuntimeError(
+            "Unresolved native dependencies:\n  " + "\n  ".join(lines)
+            + "\nOptional native payloads can be dropped with [tool.py_upper.native].exclude "
+              "in app/pyproject.toml."
+        )
 
     # Linux RPATH rewriting is opt-in. Many wheels intentionally carry multiple
     # RPATH entries; replacing them unconditionally can break otherwise valid
@@ -183,7 +230,13 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
             if bool(optimize_config().get("strip_native", False)):
                 _maybe_remove_signature(binary)
             _strip_native(binary, target)
-        for binary in native_images:
+        # Ad-hoc signing must run inside-out. Nested code such as
+        # QtWebEngineCore.framework/Helpers/QtWebEngineProcess.app is rejected
+        # ("code object is not signed at all") unless the code it contains is
+        # signed first, and signing the launcher seals the whole .app bundle,
+        # so it has to happen last. Deepest path first satisfies both, and
+        # matches the order build.py's release path uses.
+        for binary in sorted(native_images, key=lambda path: (-len(path.parts), path == launcher)):
             _ad_hoc_sign(binary)
     else:
         for binary in seen:

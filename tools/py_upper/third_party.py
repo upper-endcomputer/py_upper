@@ -9,7 +9,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-from .config import APP, BUILD, LOCK, ROOT, Target, dependency_config, load_app_config, optimize_config, python_version, require_local_python, wheel_dir
+from .config import APP, BUILD, LOCK, ROOT, Target, dependency_config, host_target, load_app_config, optimize_config, pip_cache_dir, pip_transfer_args, python_version, require_local_python, runtime_executable, wheel_dir
 
 WHEEL_MANIFEST = "manifest.json"
 MANIFEST_FORMAT = 4
@@ -65,6 +65,35 @@ def _pip_args(target: Target) -> list[str]:
     return args
 
 
+def _has_pip(python: Path) -> bool:
+    probe = subprocess.run(
+        [str(python), "-m", "pip", "--version"], capture_output=True, text=True, check=False,
+    )
+    return probe.returncode == 0
+
+
+def resolution_python(target: Target) -> tuple[Path, list[str]]:
+    """Pick the interpreter that resolves target wheels, plus extra pip arguments.
+
+    pip evaluates environment markers (``sys_platform``, ``python_full_version``,
+    ...) against the interpreter running it; ``--platform`` and
+    ``--python-version`` only override wheel compatibility tags and the
+    Requires-Python check. Resolving with the host interpreter therefore pulls
+    the wrong dependency set whenever the target platform or Python version
+    differs from the host, so native builds use the target runtime itself.
+    Cross targets cannot execute the target interpreter and keep the host
+    interpreter with explicit tag overrides.
+    """
+    if target == host_target():
+        try:
+            runtime = runtime_executable(target)
+        except RuntimeError:
+            runtime = None
+        if runtime is not None and _has_pip(runtime):
+            return runtime, []
+    return require_local_python(), _pip_args(target)
+
+
 def _run(cmd: list[str], cwd: Path | None = None) -> None:
     print("+", " ".join(map(str, cmd)))
     try:
@@ -117,23 +146,25 @@ def _top_level_imports(dist_info: Path) -> list[str]:
     if names:
         return sorted(names)
 
-    # top_level.txt is optional. When it is absent, derive conservative import
-    # roots from the installed wheel tree instead of guessing solely from the
-    # distribution name (which often differs from its Python import name).
-    site = dist_info.parent
-    for child in site.iterdir():
-        if child.name == dist_info.name or child.name.endswith(".dist-info") or child.name.endswith(".data"):
-            continue
-        if child.name.startswith("_") and child.name.endswith(".so"):
-            value = child.name.split(".", 1)[0]
-        elif child.is_dir():
-            value = child.name
-        elif child.is_file() and child.suffix == ".py":
-            value = child.stem
-        else:
-            continue
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-            names.add(value)
+    # top_level.txt is optional. Derive the import roots from RECORD, which
+    # lists exactly the files this distribution installed. Scanning the whole
+    # site-packages directory instead would attribute every other
+    # distribution's modules (and unrelated empty directories) to this one, so
+    # a smoke test would try to import unrelated test packages.
+    record = dist_info / "RECORD"
+    if record.exists():
+        for line in record.read_text(encoding="utf-8", errors="replace").splitlines():
+            entry = line.split(",", 1)[0].strip()
+            if not entry or entry.endswith("/") or entry.startswith(".."):
+                continue
+            head, _, tail = entry.partition("/")
+            if head.endswith((".dist-info", ".data")) or head.startswith("."):
+                continue
+            if tail:
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", head):
+                    names.add(head)
+            elif entry.endswith(".py") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", entry):
+                names.add(entry[:-3])
     if names:
         return sorted(names)
 
@@ -278,12 +309,15 @@ def resolve_wheels(target: Target) -> Path:
         _write_manifest(target, [], BUILD / "staging" / target.key / "site-packages")
         return out
 
-    host_python = require_local_python()
+    python, tag_args = resolution_python(target)
+    # Downloads go through a py_upper-owned cache so repeated builds and CI runs
+    # do not refetch multi-hundred-megabyte wheels such as PySide6 Addons.
     cmd = [
-        str(host_python), "-m", "pip", "download",
-        "--disable-pip-version-check", "--only-binary=:all:", "--no-cache-dir", "--prefer-binary",
+        str(python), "-m", "pip", "download",
+        "--disable-pip-version-check", "--only-binary=:all:", "--prefer-binary",
+        "--cache-dir", str(pip_cache_dir()),
         "--dest", str(out),
-    ] + _pip_args(target) + specs
+    ] + pip_transfer_args() + tag_args + specs
     _run(cmd, cwd=APP)
     wheels = _wheel_files(out)
     if not wheels:
@@ -309,6 +343,13 @@ def optimize_site(site: Path) -> dict[str, int]:
         elif remove_caches and path.is_file() and path.suffix.lower() in {".pyc", ".pyo"}:
             path.unlink()
             removed_files += 1
+    # Debug symbol bundles are not runtime payload: they bloat the app and are
+    # not loadable, so they are always dropped regardless of the profile.
+    for path in sorted(site.rglob("*.dSYM"), key=lambda value: len(value.parts), reverse=True):
+        if path.is_dir():
+            shutil.rmtree(path)
+            removed_dirs += 1
+
     remove_tests = bool(cfg.get("remove_tests", False)) or profile == "aggressive"
     remove_docs = bool(cfg.get("remove_docs", False)) or profile == "aggressive"
     removable_dirs: set[str] = set()

@@ -64,12 +64,7 @@ class Target:
             )
         if self.os == "linux":
             arch = {"x86_64": "x86_64", "arm64": "aarch64"}[self.arch]
-            baseline = str(dependency_config().get("manylinux") or "manylinux_2_17").strip()
-            if baseline == "manylinux2014":
-                return (f"manylinux2014_{arch}",)
-            if not baseline.startswith("manylinux_"):
-                raise RuntimeError("[tool.py_upper.dependencies].manylinux must be manylinux_X_Y or manylinux2014")
-            return (f"{baseline}_{arch}",)
+            return tuple(_manylinux_tag(baseline, arch) for baseline in manylinux_baselines())
         raise RuntimeError(f"Unsupported target: {self.key}")
 
     @property
@@ -128,6 +123,45 @@ TARGETS = {
     "linux-x86_64": Target("linux", "x86_64", "x86_64-unknown-linux-gnu"),
     "linux-arm64": Target("linux", "arm64", "aarch64-unknown-linux-gnu"),
 }
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def manylinux_baselines() -> list[str]:
+    """Configured manylinux baselines, newest first.
+
+    A single baseline is not enough for modern projects: PySide6 publishes
+    ``manylinux_2_34_x86_64`` and ``manylinux_2_39_aarch64`` wheels, so the
+    per-arch requirement differs. Listing several baselines lets pip pick the
+    best match for each target while keeping the older ones as fallback.
+    """
+    value = dependency_config().get("manylinux")
+    if value in (None, ""):
+        return ["manylinux_2_17"]
+    if isinstance(value, str):
+        baselines = [value]
+    elif isinstance(value, list):
+        baselines = [str(item) for item in value]
+    else:
+        raise RuntimeError(
+            "[tool.py_upper.dependencies].manylinux must be a manylinux_X_Y string or an array of them"
+        )
+    cleaned = [baseline.strip() for baseline in baselines if str(baseline).strip()]
+    if not cleaned:
+        raise RuntimeError("[tool.py_upper.dependencies].manylinux must not be empty")
+    for baseline in cleaned:
+        if baseline != "manylinux2014" and not baseline.startswith("manylinux_"):
+            raise RuntimeError("[tool.py_upper.dependencies].manylinux must be manylinux_X_Y or manylinux2014")
+    return cleaned
+
+
+def _manylinux_tag(baseline: str, arch: str) -> str:
+    return f"manylinux2014_{arch}" if baseline == "manylinux2014" else f"{baseline}_{arch}"
 
 
 def load_app_config() -> dict:
@@ -290,9 +324,67 @@ def optimize_config() -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def native_config() -> dict:
+    value = py_upper_config().get("native", {})
+    return value if isinstance(value, dict) else {}
+
+
+def native_exclude_patterns() -> list[str]:
+    """Glob patterns (relative to the bundled site-packages) to drop.
+
+    Third-party wheels occasionally ship native files whose dependencies cannot
+    exist in the bundle: PySide6's macOS wheel links the ODBC/Mimer/PostgreSQL
+    Qt SQL drivers against build-machine absolute paths and references a
+    QtQuickShapesDesignHelpers framework it does not ship. Those plugins are
+    optional, so they are removed explicitly instead of failing the closure.
+    """
+    value = native_config().get("exclude", [])
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise RuntimeError("[tool.py_upper.native].exclude must be an array of glob patterns")
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def dependency_config() -> dict:
     value = py_upper_config().get("dependencies", {})
     return value if isinstance(value, dict) else {}
+
+
+PIP_TIMEOUT_DEFAULT = 120
+PIP_RETRIES_DEFAULT = 10
+
+
+def _positive_int(value, fallback: int, name: str) -> int:
+    if value is None or value == "":
+        return fallback
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must not be negative")
+    return parsed
+
+
+def pip_transfer_args() -> list[str]:
+    """pip transfer settings for large wheels over unreliable links.
+
+    The default 15 second socket timeout aborts a multi-hundred-megabyte wheel
+    such as PySide6 Addons on any single stall, which then discards the whole
+    download. ``[tool.py_upper.dependencies].timeout`` / ``.retries`` and the
+    PY_UPPER_PIP_TIMEOUT / PY_UPPER_PIP_RETRIES environment variables override
+    the defaults.
+    """
+    cfg = dependency_config()
+    timeout = _positive_int(cfg.get("timeout"), _env_int("PY_UPPER_PIP_TIMEOUT", PIP_TIMEOUT_DEFAULT), "[tool.py_upper.dependencies].timeout")
+    retries = _positive_int(cfg.get("retries"), _env_int("PY_UPPER_PIP_RETRIES", PIP_RETRIES_DEFAULT), "[tool.py_upper.dependencies].retries")
+    return ["--timeout", str(timeout), "--retries", str(retries)]
+
+
+def pip_cache_dir() -> Path:
+    """py_upper-owned pip download cache, reused across builds and CI runs."""
+    return CACHE / "pip"
 
 
 def target_runtime_dir(target: Target) -> Path:
@@ -361,6 +453,11 @@ def require_local_python() -> Path:
     if (major, minor) < MIN_BUILD_PYTHON:
         raise RuntimeError(f"Development Python {major}.{minor} is too old; Python 3.8+ is required: {path}")
     return path
+
+
+def runtime_executable(target: Target) -> Path:
+    """Locate the target runtime's own interpreter, when it is present locally."""
+    return _find_target_executable(runtime_spec(target).root, target)
 
 
 def host_description() -> str:

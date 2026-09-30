@@ -210,80 +210,106 @@ def _expand_mac_path(value: str, owner: Path, search_roots: list[Path]) -> list[
     return [Path(value)]
 
 
-def _recursive_name_matches(search_roots: list[Path], key: str) -> list[Path]:
-    matches: list[Path] = []
-    seen: set[Path] = set()
-    for root in search_roots:
-        root = root.resolve()
-        if root in seen or not root.exists():
-            continue
-        seen.add(root)
-        direct = root / key
-        candidates = [direct] if direct.is_file() else []
-        candidates.extend(
-            candidate for candidate in root.rglob("*")
-            if candidate.is_file() and candidate.name.lower() == key and candidate != direct
-        )
+class DependencyIndex:
+    """Basename index over the bundle search roots.
+
+    Qt ships hundreds of libraries that reference each other, so resolving each
+    load name with its own recursive tree walk makes the dependency closure
+    O(files x dependencies). The index is built once and extended as the
+    closure copies new libraries into the bundle.
+    """
+
+    def __init__(self, roots: list[Path]):
+        self._by_name: dict[str, list[Path]] = {}
+        self._seen: set[Path] = set()
+        for root in roots:
+            try:
+                root = root.resolve()
+            except OSError:
+                continue
+            if root in self._seen or not root.exists():
+                continue
+            self._seen.add(root)
+            for path in root.rglob("*"):
+                if path.is_file():
+                    self.add(path)
+
+    def add(self, path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        key = resolved.name.lower()
+        bucket = self._by_name.setdefault(key, [])
+        if resolved not in bucket:
+            bucket.append(resolved)
+
+    def matches(self, key: str) -> list[Path]:
+        return list(self._by_name.get(key, ()))
+
+
+class DependencyResolver:
+    """Resolve native load names against a bundle using platform semantics.
+
+    In particular, macOS ``@rpath`` is resolved from the owner's ``LC_RPATH``
+    entries, then from the bundle search roots. PBS places Tcl/Tk dylibs in
+    nested directories under ``runtime/lib``, so basename lookup must recurse
+    rather than checking only the top-level runtime directory.
+    """
+
+    def __init__(self, search_roots: list[Path], aliases: dict[str, Path] | None = None):
+        self.search_roots = [Path(root) for root in search_roots]
+        self.aliases = aliases or {}
+        self.index = DependencyIndex(self.search_roots)
+        self._rpaths: dict[Path, list[str]] = {}
+
+    def rpaths(self, owner: Path) -> list[str]:
+        if owner not in self._rpaths:
+            self._rpaths[owner] = _mac_rpaths(owner)
+        return self._rpaths[owner]
+
+    def resolve(self, name: str, owner: Path | None = None) -> Path | None:
+        key = _name_key(name)
+        candidates: list[Path] = []
+
+        alias = self.aliases.get(key)
+        if alias is not None:
+            candidates.append(alias)
+
+        if owner is not None:
+            if name.startswith(("$ORIGIN/", "${ORIGIN}/", "@loader_path/")):
+                prefix = name.split("/", 1)[1]
+                candidates.append(owner.parent / prefix)
+            elif name == "@loader_path":
+                candidates.append(owner.parent)
+            elif name.startswith("@rpath/"):
+                rel = name.split("/", 1)[1]
+                for rpath in self.rpaths(owner):
+                    for base in _expand_mac_path(rpath, owner, self.search_roots):
+                        candidates.append(base / rel)
+                candidates.extend(r / rel for r in self.search_roots)
+
+        if Path(name).is_absolute():
+            candidates.append(Path(name))
+
+        candidates.extend(self.index.matches(key))
         for candidate in candidates:
             try:
                 resolved = candidate.resolve()
             except OSError:
                 continue
-            if resolved not in seen:
-                seen.add(resolved)
-                matches.append(resolved)
-    return matches
+            if not resolved.is_file():
+                continue
+            # An alias can intentionally map a load name to a differently named
+            # file (for example PCBUSB.dylib -> @rpath/libPCBUSB.0.12.1.dylib).
+            # In that case the alias target is authoritative and must not be
+            # rejected merely because its basename differs from the load name.
+            if alias is not None and resolved == Path(alias).resolve():
+                return resolved
+            if resolved.name.lower() == key:
+                return resolved
+        return None
 
-
-def resolve_dependency(name: str, search_roots: list[Path], owner: Path | None = None, aliases: dict[str, Path] | None = None) -> Path | None:
-    """Resolve a native dependency using its platform-aware load path semantics.
-
-    In particular, macOS ``@rpath`` is resolved from the owner's ``LC_RPATH``
-    entries, then from the bundle search roots.  PBS places Tcl/Tk dylibs in
-    nested directories under ``runtime/lib``, so basename lookup must recurse
-    rather than checking only the top-level runtime directory.
-    """
-    key = _name_key(name)
-    candidates: list[Path] = []
-    aliases = aliases or {}
-
-    alias = aliases.get(key)
-    if alias is not None:
-        candidates.append(alias)
-
-    if owner is not None:
-        if name.startswith(("$ORIGIN/", "${ORIGIN}/", "@loader_path/")):
-            prefix = name.split("/", 1)[1]
-            candidates.append(owner.parent / prefix)
-        elif name == "@loader_path":
-            candidates.append(owner.parent)
-        elif name.startswith("@rpath/"):
-            rel = name.split("/", 1)[1]
-            for rpath in _mac_rpaths(owner):
-                for base in _expand_mac_path(rpath, owner, search_roots):
-                    candidates.append(base / rel)
-            candidates.extend(r / rel for r in search_roots)
-
-    if Path(name).is_absolute():
-        candidates.append(Path(name))
-
-    candidates.extend(_recursive_name_matches(search_roots, key))
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            continue
-        if not resolved.is_file():
-            continue
-        # An alias can intentionally map a load name to a differently named
-        # file (for example PCBUSB.dylib -> @rpath/libPCBUSB.0.12.1.dylib).
-        # In that case the alias target is authoritative and must not be
-        # rejected merely because its basename differs from the load name.
-        if alias is not None and resolved == Path(alias).resolve():
-            return resolved
-        if resolved.name.lower() == key:
-            return resolved
-    return None
 
 
 def _system_dependency(name: str, target) -> bool:
@@ -310,6 +336,7 @@ def scan_tree(root: Path, target, env: dict[str, str] | None = None) -> list[Dep
     binaries = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in suffixes]
     result: list[Dependency] = []
     search_roots = [root]
+    resolver = DependencyResolver(search_roots)
     for binary in binaries:
         try:
             verify_arch(binary, target)
@@ -319,6 +346,6 @@ def scan_tree(root: Path, target, env: dict[str, str] | None = None) -> list[Dep
         for name in dependency_names(binary, env):
             if _system_dependency(name, target):
                 continue
-            resolved = resolve_dependency(name, search_roots, binary)
+            resolved = resolver.resolve(name, binary)
             result.append(Dependency(binary, name, resolved, resolved is None))
     return result

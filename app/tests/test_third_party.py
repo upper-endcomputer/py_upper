@@ -86,7 +86,31 @@ def test_pip_target_arguments_honor_offline_find_links(monkeypatch):
     assert str((third_party.ROOT / "wheelhouse").resolve()) in args
 
 
-def make_native_wheel(root: Path, name="demo_native", version="1.0.0") -> Path:
+def _host_wheel_tag() -> str:
+    """Wheel tag describing the interpreter and platform running the tests."""
+    import sysconfig
+
+    impl = "cp" + sysconfig.get_config_var("py_version_nodot")
+    platform = sysconfig.get_platform().replace("-", "_").replace(".", "_")
+    if platform.startswith("linux_"):
+        platform = "manylinux_2_17_" + platform.rsplit("_", 1)[-1]
+    return f"{impl}-{impl}-{platform}"
+
+
+def _compile_extension(cc: str, source: Path, binary: Path, include: str) -> None:
+    import subprocess
+    import sys
+
+    if sys.platform == "darwin":
+        # macOS CPython extensions are bundles that resolve the Python C-API
+        # from the host process, exactly like sysconfig's own LDSHARED.
+        link = [cc, "-bundle", "-undefined", "dynamic_lookup"]
+    else:
+        link = [cc, "-shared"]
+    subprocess.run(link + ["-fPIC", "-O2", "-DNDEBUG", f"-I{include}", str(source), "-o", str(binary)], check=True)
+
+
+def make_native_wheel(root: Path, name="demo_native", version="1.0.0", platform_tag: str | None = None) -> Path:
     import base64
     import hashlib
     import subprocess
@@ -106,8 +130,11 @@ def make_native_wheel(root: Path, name="demo_native", version="1.0.0") -> Path:
     if not cc:
         raise RuntimeError("gcc/cc required for native wheel fixture")
     include = sysconfig.get_path("include")
-    subprocess.run([cc, "-shared", "-fPIC", "-O2", "-DNDEBUG", f"-I{include}", str(source), "-o", str(binary)], check=True)
-    tag = f"cp{sysconfig.get_config_var('py_version_nodot')}-cp{sysconfig.get_config_var('py_version_nodot')}-manylinux_2_17_x86_64"
+    _compile_extension(cc, source, binary, include)
+    # A caller may pin the wheel tag to the target platform tags instead of the
+    # host's, so the fixture stays consumable by a cross-tagged resolver.
+    impl = "cp" + sysconfig.get_config_var("py_version_nodot")
+    tag = f"{impl}-{impl}-{platform_tag}" if platform_tag else _host_wheel_tag()
     filename = f"{name}-{version}-{tag}.whl"
     wheel = root / filename
     dist = f"{name}-{version}.dist-info"
@@ -132,16 +159,48 @@ def make_native_wheel(root: Path, name="demo_native", version="1.0.0") -> Path:
 
 
 def test_native_wheel_fixture_has_target_extension_and_import_metadata(tmp_path):
+    import shutil
+    import sysconfig
+    import zipfile
+
+    import pytest
+
+    if not (shutil.which("gcc") or shutil.which("cc")):
+        # The fixture is a real compiled extension, so it needs a host C
+        # compiler. Windows CI has no gcc/cc on PATH (MSVC needs a dev shell).
+        pytest.skip("a host C compiler is required to build the native wheel fixture")
+
     wheel = make_native_wheel(tmp_path)
-    assert "cp313-cp313-manylinux_2_17_x86_64" in wheel.name
+    assert _host_wheel_tag() in wheel.name
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+    suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+    assert any(name.endswith(suffix) for name in names)
+    assert "demo_native-1.0.0.dist-info/top_level.txt" in names
 
 
-def test_direct_import_fallback_does_not_require_top_level_txt(tmp_path):
+def test_direct_import_fallback_reads_record_instead_of_sibling_scan(tmp_path):
+    """Without top_level.txt only this distribution's own files count.
+
+    Scanning the surrounding site-packages would report every other
+    distribution's modules as imports of this one, and a packaged smoke test
+    would then try to import unrelated packages (pyobjc ships an empty
+    PyObjCTest directory that breaks exactly that way).
+    """
     from py_upper.third_party import _top_level_imports
 
     dist = tmp_path / "some-distribution-1.0.0.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: some-distribution\nVersion: 1.0.0\n", encoding="utf-8")
+    (dist / "RECORD").write_text(
+        "actual_pkg/__init__.py,sha256=x,1\n"
+        "actual_pkg/core.py,sha256=x,1\n"
+        "single_module.py,sha256=x,1\n"
+        "some-distribution-1.0.0.dist-info/METADATA,,\n",
+        encoding="utf-8",
+    )
     (tmp_path / "actual_pkg").mkdir()
-    (tmp_path / "other_module.py").write_text("x=1\n", encoding="utf-8")
-    assert _top_level_imports(dist) == ["actual_pkg", "other_module"]
+    (tmp_path / "sibling_pkg").mkdir()
+    (tmp_path / "sibling_module.py").write_text("x=1\n", encoding="utf-8")
+
+    assert _top_level_imports(dist) == ["actual_pkg", "single_module"]

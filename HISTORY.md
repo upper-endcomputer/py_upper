@@ -1,3 +1,9 @@
+## v0.17.1
+
+Reliability release for the first real third-party dependency set. macOS extension linking, packaging verification, ad-hoc signing order, wheel resolution semantics, pip transfer behaviour, native closure performance and the Windows module search path were all fixed, and the local end-to-end build is now a CI gate on every platform.
+
+Verification: full suite with `PY_UPPER_E2E=1` on macOS arm64 (54 passed in 74s), plus a complete `PySide6==6.11.0` / `pyserial==3.5` / `bleak==3.0.2` / `qasync==0.28.0` build, package, smoke, launcher smoke, application run and `codesign --verify --deep --strict` check.
+
 ## v0.17.0
 
 Structural Build Tool reorganization around a unified Target Contract. Third-party wheels are now first-class build inputs, target runtime import smoke is mandatory before `--run`, native application libraries participate in the same dependency closure, lock files preserve multiple targets, and `runtimes/` is a Git-ignored local cache.

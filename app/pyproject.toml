@@ -9,10 +9,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.0"
+version = "0.17.1"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
-dependencies = []
+dependencies = ["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -29,7 +29,25 @@ identifier = "com.example.pyupper"
 
 [tool.py_upper.runtime]
 provider = "pbs"
-python = "3.13.15"
+python = "3.10.11"
+
+[tool.py_upper.dependencies]
+# PySide6 ships manylinux_2_34 (x86_64) and manylinux_2_39 (aarch64) wheels, so
+# the Linux targets must accept those baselines. This sets the minimum glibc of
+# the released Linux app; drop entries to target older distributions.
+manylinux = ["manylinux_2_39", "manylinux_2_34"]
+
+[tool.py_upper.native]
+# Optional PySide6 payload that cannot be satisfied inside the bundle:
+# the macOS wheel links the ODBC/Mimer/PostgreSQL Qt SQL drivers against
+# build-machine absolute paths and references a QtQuickShapesDesignHelpers
+# framework it does not ship. Drop them instead of failing the closure.
+exclude = [
+    "PySide6/Qt/plugins/sqldrivers/*qsqlmimer*",
+    "PySide6/Qt/plugins/sqldrivers/*qsqlodbc*",
+    "PySide6/Qt/plugins/sqldrivers/*qsqlpsql*",
+    "PySide6/Qt/qml/QtQuick/Shapes/DesignHelpers/*",
+]
 
 [tool.py_upper.cython]
 include = ["*"]

@@ -6,15 +6,24 @@ import stat
 from pathlib import Path
 
 
+EXECUTE_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+
+
 def copy_file_contents(source: Path, destination: Path, *, replace: bool = True) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() and not replace:
         raise RuntimeError(f"File collision: {destination}")
     shutil.copyfile(source, destination)
+    # Executable status is functional, not disposable metadata: a copied
+    # interpreter or tool must stay runnable. Only execute bits are added;
+    # restrictive source modes are never replayed, which is what made macOS
+    # reject package-time chmod() calls.
+    if source.stat().st_mode & EXECUTE_BITS:
+        make_executable(destination)
 
 
 def copy_tree_contents(source: Path, destination: Path, *, replace: bool = True) -> None:
-    """Copy bytes and symlinks without replaying filesystem metadata."""
+    """Copy bytes, symlinks, and execute bits without replaying filesystem metadata."""
     source = Path(source)
     destination = Path(destination)
     if not source.is_dir():

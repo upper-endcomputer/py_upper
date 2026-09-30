@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .config import APP, BUILD, Target, cython_config, require_local_python, resolve_target_python, staging_dir
+from .config import APP, BUILD, Target, cython_config, pip_transfer_args, require_local_python, resolve_target_python, staging_dir
 from .fs import copy_file_contents, copy_tree_contents
 from .toolchain import resolve_toolchain
 
@@ -78,8 +78,8 @@ def _cython_env(host_python: Path) -> dict[str, str]:
         cache.mkdir(parents=True, exist_ok=True)
         _run([
             str(host_python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
-            "--target", str(cache), CYTHON_REQUIREMENT,
-        ])
+            "--target", str(cache),
+        ] + pip_transfer_args() + [CYTHON_REQUIREMENT])
         env = dict(base)
         env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         cached = _cython_version(host_python, env)

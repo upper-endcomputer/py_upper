@@ -2,9 +2,9 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.0**。
+当前稳定开发线：**0.17.1**。
 
-## v0.17.0 的构建模型
+## 构建模型
 
 Build Tool 不再把 Runtime、Cython、第三方 wheel、native 依赖和打包逻辑各自孤立处理，而是围绕统一的 Target Contract 组织完整流水线：
 
@@ -131,12 +131,26 @@ dependencies = [
 
 py_upper 为目标 Python/平台下载兼容 wheel，并把完整 wheel 内容安装到最终 `site-packages`。第三方包不会进入 Cython 编译流程。
 
-离线/内网源可以：
+解析 wheel 时使用的是**目标解释器**（`runtimes/<target>/<python>` 里的那个），而不是构建机上的 Python。pip 的 `--platform`/`--python-version` 只影响 wheel 兼容标签，环境标记（`sys_platform`、`python_full_version` 等）永远按运行 pip 的解释器求值；用宿主 Python 解析会漏掉目标版本才需要的依赖（例如 `bleak` 在 Python 3.10 上需要 `async-timeout`）。交叉目标无法执行目标解释器，此时退回宿主解释器并显式传入标签参数。
+
+下载使用 py_upper 自己的 pip 缓存（`.cache/pip`），重复构建和 CI 不会重新下载几百 MB 的 wheel。默认 socket 超时 120 秒、重试 10 次，可配置：
 
 ```toml
 [tool.py_upper.dependencies]
 find_links = ["wheelhouse"]
 no_index = true
+# PySide6 的 Linux wheel 是 manylinux_2_34 (x86_64) / manylinux_2_39 (aarch64)，
+# 单个 baseline 覆盖不了两个架构，因此接受一个列表；这同时决定了发布包的
+# 最低 glibc。
+manylinux = ["manylinux_2_39", "manylinux_2_34"]
+timeout = 120
+retries = 10
+```
+
+也可用 `PY_UPPER_PIP_TIMEOUT` / `PY_UPPER_PIP_RETRIES` 覆盖。国内网络建议给本地构建设置镜像（CI 不受影响）：
+
+```bash
+export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 PySide6 这类带大量 Qt native libraries/plugins 的包会继续参加 native dependency scan；py_upper 不会只复制 Python 文件而丢掉 Qt `.dylib/.so/.pyd`。
@@ -175,6 +189,20 @@ app/src/
 
 如果 Cython 扩展在链接阶段直接依赖自有 `.dylib`，仍需让 target compiler 在编译阶段找到该库；发布阶段负责的是复制、闭包和重定位。
 
+## 可选 native 组件排除
+
+个别 wheel 会带上无法在 bundle 内满足依赖的可选组件，例如 PySide6 的 macOS wheel 把 ODBC/Mimer/PostgreSQL 三个 Qt SQL 驱动链接到构建机绝对路径，并引用了它自己没有附带的 `QtQuickShapesDesignHelpers` framework。这类组件可以在打包时显式丢弃：
+
+```toml
+[tool.py_upper.native]
+exclude = [
+    "PySide6/Qt/plugins/sqldrivers/*qsqlodbc*",
+    "PySide6/Qt/qml/QtQuick/Shapes/DesignHelpers/*",
+]
+```
+
+模式是相对打包后 `site-packages` 的 glob。没有排除配置时，未解析的原生依赖仍然是硬错误（不会静默产出坏包）。`*.dSYM` 调试符号包不属于运行负载，始终会被移除。
+
 ## Runtime 与开发 Python
 
 ```toml
@@ -191,6 +219,12 @@ python = "3.13.15"
 4. `python` / `python3`
 
 Windows XP 场景仍必须使用真正兼容 XP 的 custom/local CPython runtime；官方 CPython 3.8.10 本身不是 XP runtime。
+
+## 验证
+
+`--verify` 是静态检查，`--run` 之前的最后一道门是**用目标 Python 真 import**：先由 bundled runtime 导入入口模块和所有直接声明的第三方依赖，再由打包好的 launcher 导入一次。这一步能抓住静态检查看不到的问题（扩展链接方式、stdlib 扩展目录、第三方依赖缺失）。
+
+CI 在每个原生平台上都跑同一套真实链路：单元测试 → 本地端到端构建（第三方 wheel、应用自带 native 库、lock/`--locked` 往返）→ doctor → 完整 PBS 构建 → 运行。本地 E2E 默认跳过，设置 `PY_UPPER_E2E=1` 打开。
 
 ## Git
 

@@ -76,6 +76,17 @@ def inspect(path: Path) -> BinaryInfo:
     raise ValueError(f"Unsupported or invalid native binary: {path}")
 
 
+_TARGET_FORMATS = {"windows": "PE", "macos": "Mach-O", "linux": "ELF"}
+
+
+def target_format(target) -> str:
+    """Return the native container format the target OS can actually load."""
+    try:
+        return _TARGET_FORMATS[target.os]
+    except KeyError as exc:
+        raise RuntimeError(f"Unsupported target OS: {target.os}") from exc
+
+
 def expected_arch(target) -> str:
     return target.arch
 

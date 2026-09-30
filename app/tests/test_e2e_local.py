@@ -2,130 +2,287 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from py_upper.config import host_target
+from py_upper.toolchain import resolve_toolchain
 
-def _make_local_runtime(repo: Path):
-    py = Path(sys.executable).resolve()
+
+def _make_local_runtime(repo: Path) -> str:
+    """Build a local runtime + SDK fixture from the running interpreter.
+
+    The fixture mirrors the directory layout of a downloaded PBS runtime so the
+    full build chain (runtime manifest, launcher, Cython extensions, packaging,
+    target smoke) can be exercised without network access. Windows keeps the
+    python.exe + Lib/ + DLLs/ layout; Unix keeps bin/ + lib/pythonX.Y.
+    """
+    target = host_target()
     version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    import sysconfig
-    runtime = repo / "runtimes" / "linux-x86_64" / version
-    sdk = repo / "build" / "e2e-sdk" / "linux-x86_64" / version
-    if runtime.exists(): shutil.rmtree(runtime)
-    if sdk.exists(): shutil.rmtree(sdk)
-    (runtime / "bin").mkdir(parents=True)
-    (runtime / "lib").mkdir(parents=True)
-    shutil.copyfile(py, runtime / "bin" / "python3.13")
-    (runtime / "bin" / "python3.13").chmod(0o755)
-    libpython = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
-    shutil.copyfile(libpython, runtime / "lib" / libpython.name)
-    stdlib = Path(sysconfig.get_path("stdlib"))
-    shutil.copytree(stdlib, runtime / "lib" / "python3.13", symlinks=True)
+    major_minor = f"{sys.version_info.major}.{sys.version_info.minor}"
+    digits = f"{sys.version_info.major}{sys.version_info.minor}"
+    runtime = repo / "runtimes" / target.key / version
+    sdk = repo / "build" / "e2e-sdk" / target.key / version
+    for path in (runtime, sdk):
+        if path.exists():
+            shutil.rmtree(path)
+    runtime.mkdir(parents=True)
     (sdk / "bin").mkdir(parents=True)
     (sdk / "include").mkdir(parents=True)
-    (sdk / "bin" / "python3.13").symlink_to(runtime / "bin" / "python3.13")
-    (sdk / "include" / "python3.13").symlink_to(sysconfig.get_path("include"))
+
+    stdlib = Path(sysconfig.get_path("stdlib"))
+    ignore = shutil.ignore_patterns("site-packages", "__pycache__")
+
+    if target.os == "windows":
+        shutil.copyfile(sys.executable, runtime / "python.exe")
+        for dll in Path(sys.executable).parent.glob(f"python{digits}.dll"):
+            shutil.copyfile(dll, runtime / dll.name)
+        shutil.copytree(stdlib, runtime / "Lib", symlinks=True, ignore=ignore)
+        extension_dir = Path(sysconfig.get_path("platstdlib")).parent / "DLLs"
+        if extension_dir.is_dir():
+            shutil.copytree(extension_dir, runtime / "DLLs", symlinks=True, ignore=ignore)
+        executable_name = "python.exe"
+    else:
+        (runtime / "bin").mkdir()
+        (runtime / "lib").mkdir()
+        executable = runtime / "bin" / f"python{major_minor}"
+        shutil.copyfile(sys.executable, executable)
+        executable.chmod(0o755)
+        library = Path(str(sysconfig.get_config_var("LIBDIR"))) / str(sysconfig.get_config_var("LDLIBRARY"))
+        shutil.copyfile(library, runtime / "lib" / library.name)
+        shutil.copytree(stdlib, runtime / "lib" / f"python{major_minor}", symlinks=True, ignore=ignore)
+        executable_name = f"python{major_minor}"
+
+    shutil.copyfile(runtime / ("python.exe" if target.os == "windows" else f"bin/{executable_name}"), sdk / "bin" / executable_name)
+    shutil.copytree(Path(sysconfig.get_path("include")), sdk / "include" / f"python{major_minor}", symlinks=True, ignore=ignore)
+
     manifest = {
-        "format": 4, "provider": "local", "target": "linux-x86_64", "target_triple": "x86_64-unknown-linux-gnu",
-        "python": version, "python_major_minor": "3.13", "python_abi": "cp313",
-        "python_platform_tag": "manylinux_2_17_x86_64", "python_implementation": "cpython",
-        "runtime": {"root": "."}, "sdk": {"root": "configured"},
-        "python_executable": "bin/python3.13", "include_dir": "include/python3.13",
+        "format": 4,
+        "provider": "local",
+        "target": target.key,
+        "target_triple": target.triple,
+        "python": version,
+        "python_major_minor": major_minor,
+        "python_abi": f"cp{digits}",
+        "python_platform_tag": target.primary_wheel_platform,
+        "python_implementation": "cpython",
+        "runtime": {"root": "."},
+        "sdk": {"root": "configured"},
+        "python_executable": f"bin/{executable_name}",
+        "include_dir": f"include/python{major_minor}",
     }
     (runtime / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return version
 
 
-def _make_app_native_tree(repo: Path):
-    import shutil
+def _compiler_environment(target) -> dict[str, str]:
+    env = dict(os.environ)
+    env.update(resolve_toolchain(target).env)
+    return env
+
+
+def _make_app_native_tree(repo: Path, target) -> None:
+    """Application-owned native libraries that depend on each other."""
     native = repo / "app" / "src" / "config"
     native.mkdir(parents=True, exist_ok=True)
-    cc = shutil.which("gcc") or shutil.which("cc")
+    env = _compiler_environment(target)
+    if target.os == "windows":
+        cc = shutil.which("cl", path=env.get("PATH"))
+        if not cc:
+            pytest.skip("cl.exe is required to build the app-native DLL fixture")
+        child_c = native / "child.c"
+        parent_c = native / "parent.c"
+        child_c.write_text("__declspec(dllexport) int demo_child(void) { return 7; }\n", encoding="utf-8")
+        parent_c.write_text(
+            "__declspec(dllimport) int demo_child(void);\n__declspec(dllexport) int demo_parent(void) { return demo_child(); }\n",
+            encoding="utf-8",
+        )
+        subprocess.run([cc, "/nologo", "/LD", "/O2", str(child_c), f"/Fe:{native / 'demo_child.dll'}", f"/Fo:{native / 'child.obj'}"], check=True, cwd=repo, env=env)
+        subprocess.run([cc, "/nologo", "/LD", "/O2", str(parent_c), f"/Fe:{native / 'demo_parent.dll'}", f"/Fo:{native / 'parent.obj'}", f"/link", f"/LIBPATH:{native}", "demo_child.lib"], check=True, cwd=repo, env=env)
+        for leftover in native.glob("*.obj"):
+            leftover.unlink()
+        return
+
+    cc = shutil.which("clang") or shutil.which("gcc") or shutil.which("cc")
     if not cc:
-        raise RuntimeError("gcc/cc required for app-native E2E fixture")
+        pytest.skip("a host C compiler is required for the app-native fixture")
     child_c = native / "child.c"
     parent_c = native / "parent.c"
-    child = native / "libdemo_child.so"
-    parent = native / "libdemo_parent.so"
-    child_c.write_text('int demo_child(void) { return 7; }\n', encoding="utf-8")
-    parent_c.write_text('extern int demo_child(void); int demo_parent(void) { return demo_child(); }\n', encoding="utf-8")
-    subprocess.run([cc, "-shared", "-fPIC", "-O2", str(child_c), "-o", str(child)], check=True, cwd=repo)
-    subprocess.run([cc, "-shared", "-fPIC", "-O2", str(parent_c), "-L", str(native), "-ldemo_child", "-Wl,-rpath,$ORIGIN", "-o", str(parent)], check=True, cwd=repo)
-    child_c.unlink(); parent_c.unlink()
+    child_c.write_text("int demo_child(void) { return 7; }\n", encoding="utf-8")
+    parent_c.write_text("extern int demo_child(void); int demo_parent(void) { return demo_child(); }\n", encoding="utf-8")
+    if target.os == "macos":
+        child, parent = native / "libdemo_child.dylib", native / "libdemo_parent.dylib"
+        subprocess.run([cc, "-dynamiclib", "-O2", str(child_c), "-install_name", "@rpath/libdemo_child.dylib", "-o", str(child)], check=True, cwd=repo)
+        subprocess.run([cc, "-dynamiclib", "-O2", str(parent_c), "-L", str(native), "-ldemo_child", "-install_name", "@rpath/libdemo_parent.dylib", "-o", str(parent)], check=True, cwd=repo)
+    else:
+        child, parent = native / "libdemo_child.so", native / "libdemo_parent.so"
+        subprocess.run([cc, "-shared", "-fPIC", "-O2", str(child_c), "-o", str(child)], check=True, cwd=repo)
+        subprocess.run([cc, "-shared", "-fPIC", "-O2", str(parent_c), "-L", str(native), "-ldemo_child", "-Wl,-rpath,$ORIGIN", "-o", str(parent)], check=True, cwd=repo)
+    child_c.unlink()
+    parent_c.unlink()
 
 
-def _make_test_wheels(repo: Path):
-    from test_third_party import make_wheel, make_native_wheel
+def _make_test_wheels(repo: Path) -> Path:
+    from test_third_party import make_native_wheel, make_wheel
+
+    target = host_target()
     wheel_dir = repo / "build" / "e2e-wheelhouse"
-    if wheel_dir.exists(): shutil.rmtree(wheel_dir)
+    if wheel_dir.exists():
+        shutil.rmtree(wheel_dir)
     wheel_dir.mkdir(parents=True, exist_ok=True)
-    make_native_wheel(wheel_dir)
     make_wheel(wheel_dir, requires_dist="demo-native==1.0.0")
+    if _has_compiler(target):
+        make_native_wheel(wheel_dir, platform_tag=target.primary_wheel_platform)
     return wheel_dir
+
+
+def _has_compiler(target) -> bool:
+    if shutil.which("gcc") or shutil.which("cc"):
+        return True
+    if target.os != "windows":
+        return False
+    try:
+        return bool(shutil.which("cl", path=_compiler_environment(target).get("PATH")))
+    except Exception:
+        return False
+
+
+def _prepare_repo() -> Path:
+    source_repo = Path(__file__).parents[2]
+    temp_root = Path(tempfile.mkdtemp(prefix="py-upper-e2e-"))
+    repo = temp_root / "repo"
+    shutil.copytree(
+        source_repo,
+        repo,
+        ignore=shutil.ignore_patterns(".git", ".cache", "build", "dist", "runtimes", "__pycache__", ".pytest_cache"),
+        symlinks=True,
+    )
+    target = host_target()
+    version = _make_local_runtime(repo)
+    wheel_dir = _make_test_wheels(repo)
+
+    pyproject = repo / "app" / "pyproject.toml"
+    project = pyproject.read_text(encoding="utf-8")
+    start = project.index("[tool.py_upper.runtime]")
+    end = project.index("[tool.py_upper.cython]")
+    project = project[:start] + (
+        "[tool.py_upper.runtime]\n"
+        'provider = "local"\n'
+        f'python = "{version}"\n'
+        'runtime = "runtimes/{target}/{python}"\n'
+        'sdk = "build/e2e-sdk/{target}/{python}"\n\n'
+        "[tool.py_upper.dependencies]\n"
+        f'find_links = ["{wheel_dir.relative_to(repo).as_posix()}"]\n'
+        "no_index = true\n\n"
+    ) + project[end:]
+    project, replaced = re.subn(
+        r"dependencies = \[[^\]]*\]",
+        'dependencies = ["demo-pkg==1.0.0", "demo-native==1.0.0"]',
+        project,
+        count=1,
+    )
+    assert replaced == 1, "could not rewrite [project].dependencies in the E2E fixture"
+    pyproject.write_text(project, encoding="utf-8")
+
+    main_py = repo / "app" / "src" / "main.py"
+    main_py.write_text(
+        "from core.app import run_application\n"
+        "import demo_native\n"
+        "import demo_pkg\n\n\n"
+        "def main() -> None:\n"
+        '    assert demo_pkg.VALUE == "ok"\n'
+        "    assert demo_native.value() == 42\n"
+        "    run_application()\n\n\n"
+        'if __name__ == "__main__":\n'
+        "    main()\n",
+        encoding="utf-8",
+    )
+    return temp_root
+
+
+def _run_build(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["PY_UPPER_PYTHON"] = sys.executable
+    env["PY_UPPER_E2E"] = "1"
+    return subprocess.run(
+        [sys.executable, "tools/build.py", *args],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _packaged_root(repo: Path, target) -> Path:
+    if target.os == "macos":
+        return repo / "dist" / "MyApp.app" / "Contents" / "Resources"
+    return repo / "dist" / "MyApp"
 
 
 @pytest.mark.skipif(os.environ.get("PY_UPPER_E2E") != "1", reason="set PY_UPPER_E2E=1 to run the full local build E2E")
 def test_local_build_end_to_end_with_third_party_dependency():
-    source_repo = Path(__file__).parents[2]
-    temp_root = Path(tempfile.mkdtemp(prefix="py-upper-e2e-", dir="/tmp"))
-    repo = temp_root / "repo"
-    shutil.copytree(
-        source_repo, repo,
-        ignore=shutil.ignore_patterns(".git", ".cache", "build", "dist", "runtimes", "__pycache__", ".pytest_cache"),
-        symlinks=True,
-    )
-    pyproject = repo / "app" / "pyproject.toml"
-    main_py = repo / "app" / "src" / "main.py"
-    version = _make_local_runtime(repo)
-    _make_app_native_tree(repo)
-    _make_test_wheels(repo)
-    project = pyproject.read_text(encoding="utf-8")
-    project = project.replace(
-        'provider = "pbs"\npython = "3.13.15"',
-        f'provider = "local"\npython = "{version}"\nruntime = "runtimes/{{target}}/{{python}}"\nsdk = "build/e2e-sdk/{{target}}/{{python}}"',
-    )
-    project = project.replace("dependencies = []", 'dependencies = ["demo-pkg==1.0.0"]')
-    marker = "[tool.py_upper.cython]"
-    dependency_table = '[tool.py_upper.dependencies]\nfind_links = ["build/e2e-wheelhouse"]\nno_index = true\n\n'
-    project = project.replace(marker, dependency_table + marker, 1)
-    pyproject.write_text(project, encoding="utf-8")
-    original_main = main_py.read_text(encoding="utf-8")
-    main_py.write_text(
-        original_main.replace(
-            'from core.app import run_application',
-            'from core.app import run_application\nimport demo_pkg\nimport demo_native',
-        ).replace(
-            'def main() -> None:\n    run_application()',
-            'def main() -> None:\n    assert demo_pkg.VALUE == "ok"\n    assert demo_native.value() == 42\n    run_application()',
-        ),
-        encoding="utf-8",
-    )
-    env = dict(os.environ)
-    env["PY_UPPER_PYTHON"] = sys.executable
-    env["PY_UPPER_E2E"] = "1"
-    cmd = [sys.executable, "tools/build.py", "--run", "--target", "linux-x86_64"]
+    target = host_target()
+    temp_root = _prepare_repo()
     try:
-        result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, check=False)
+        repo = temp_root / "repo"
+        result = _run_build(repo, "--run", "--target", target.key)
         assert result.returncode == 0, result.stdout + "\n" + result.stderr
         assert "SMOKE PASS launcher" in result.stdout
         assert "Hello from py_upper" in result.stdout
-        packaged = repo / "dist" / "MyApp" / "site-packages"
+
+        packaged = _packaged_root(repo, target) / "site-packages"
         assert (packaged / "demo_pkg" / "__init__.py").exists()
-        assert any(path.name.startswith("demo_native") and path.suffix == ".so" for path in packaged.iterdir())
+        extension = ".pyd" if target.os == "windows" else ".so"
+        assert any(path.name.startswith("demo_native") and path.suffix == extension for path in packaged.iterdir())
         assert not (packaged / "main.py").exists()
-        wheel_manifest = json.loads((repo / "build" / "wheels" / "linux-x86_64" / "manifest.json").read_text(encoding="utf-8"))
-        assert sorted(wheel_manifest["requirements"]) == ["demo-pkg==1.0.0"]
+
+        wheel_manifest = json.loads((repo / "build" / "wheels" / target.key / "manifest.json").read_text(encoding="utf-8"))
+        assert sorted(wheel_manifest["requirements"]) == ["demo-native==1.0.0", "demo-pkg==1.0.0"]
         wheel_names = {item["file"] for item in wheel_manifest["wheels"]}
         assert any(name.startswith("demo_pkg-") for name in wheel_names)
         assert any(name.startswith("demo_native-") for name in wheel_names)
+        assert sorted(wheel_manifest["imports"]) == ["demo_native", "demo_pkg"]
 
-        # Lock semantics are covered separately in the build-tool lock tests;
-        # this test focuses on the complete target build/package/run path.
+        # lock / --locked round trip: the lock file must be the authority for
+        # runtime, SDK and wheel inputs without re-resolving anything.
+        lock = _run_build(repo, "--lock", "--target", target.key)
+        assert lock.returncode == 0, lock.stdout + "\n" + lock.stderr
+        assert (repo / "py_upper.lock.json").exists()
+        locked = _run_build(repo, "--locked", "--target", target.key)
+        assert locked.returncode == 0, locked.stdout + "\n" + locked.stderr
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+@pytest.mark.skipif(os.environ.get("PY_UPPER_E2E") != "1", reason="set PY_UPPER_E2E=1 to run the full local build E2E")
+def test_local_build_embeds_application_owned_native_libraries():
+    """Application-owned libraries must resolve their own dependency closure."""
+    target = host_target()
+    temp_root = _prepare_repo()
+    try:
+        repo = temp_root / "repo"
+        _make_app_native_tree(repo, target)
+        result = _run_build(repo, "--run", "--target", target.key)
+        assert result.returncode == 0, result.stdout + "\n" + result.stderr
+        assert "Hello from py_upper" in result.stdout
+
+        site = _packaged_root(repo, target) / "site-packages"
+        bundled = sorted(path.name for path in (site / "config").iterdir())
+        if target.os == "windows":
+            assert "demo_parent.dll" in bundled and "demo_child.dll" in bundled
+        else:
+            assert "libdemo_parent.dylib" in bundled and "libdemo_child.dylib" in bundled
+
+        report = json.loads((repo / "build" / "native-deps" / target.key / "report.json").read_text(encoding="utf-8"))
+        assert report, "native dependency report must not be empty"
+        assert not [item for item in report if item["unresolved"]], report
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

@@ -6,7 +6,7 @@ from pathlib import Path
 from .config import APP, DIST, Target, app_identifier, app_name, entry_module, project_version, staging_dir, target_runtime_dir
 from .fs import copy_file_contents, copy_tree_contents, make_executable
 from .runtime_optimize import optimize_runtime_tree
-from .native.bundle import bundle_native_dependencies
+from .native.bundle import bundle_native_dependencies, prune_excluded_native_files
 from .smoke import smoke_modules
 
 def _entry_script() -> str:
@@ -22,6 +22,12 @@ def _write_resource_app_config(path: Path, name: str) -> None:
 
 def _mac_info_plist(name: str) -> str:
     return f'''<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>{name}</string><key>CFBundleIdentifier</key><string>{app_identifier()}</string><key>CFBundleName</key><string>{name}</string><key>CFBundleDisplayName</key><string>{name}</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>{project_version()}</string><key>CFBundleShortVersionString</key><string>{project_version()}</string></dict></plist>\n'''
+
+
+def _report_pruned(site: Path) -> None:
+    removed = prune_excluded_native_files(site)
+    if removed:
+        print(f"Native exclusions: removed {len(removed)} file(s) matched by [tool.py_upper.native].exclude")
 
 
 def package(target: Target, launcher: Path) -> Path:
@@ -47,6 +53,7 @@ def package(target: Target, launcher: Path) -> Path:
         if runtime_data.exists():
             copy_tree_contents(runtime_data, out / "runtime", replace=False)
         copy_tree_contents(site, out / "site-packages")
+        _report_pruned(out / "site-packages")
         copy_tree_contents(APP / "resources", out / "resources")
         _write_resource_app_config(out / "resources" / "config" / "app.toml", name)
         (out / f"{name}.int").write_text(_entry_script(), encoding="utf-8")
@@ -66,6 +73,7 @@ def package(target: Target, launcher: Path) -> Path:
     if runtime_data.exists():
         copy_tree_contents(runtime_data, resources / "runtime", replace=False)
     copy_tree_contents(site, resources / "site-packages")
+    _report_pruned(resources / "site-packages")
     copy_tree_contents(APP / "resources", resources / "resources")
     _write_resource_app_config(resources / "config" / "app.toml", name)
     (resources / f"{name}.int").write_text(_entry_script(), encoding="utf-8")

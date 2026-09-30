@@ -31,8 +31,15 @@ def compile_unix_extensions(target: Target, generated: dict[Path, Path]) -> list
                 f"-I{target_python.include_dir}", str(c_source), "-lm", "-o", str(output),
             ]
         elif target.os == "macos":
+            # CPython extensions on macOS are Mach-O bundles that leave the
+            # Python C-API symbols unresolved and resolve them from the
+            # embedding launcher, which loads the bundled libpython with
+            # RTLD_GLOBAL. Linking with `-dynamiclib` would instead require
+            # every symbol to be defined at link time and fail with
+            # "symbol(s) not found for architecture <arch>".
             cmd = [
-                tc.compiler, "-dynamiclib", "-fPIC", "-O2", "-DNDEBUG",
+                tc.compiler, "-bundle", "-undefined", "dynamic_lookup",
+                "-fPIC", "-O2", "-DNDEBUG",
                 "-arch", target.arch,
                 f"-mmacosx-version-min={tc.deployment_target or '11.0'}",
                 f"-I{target_python.include_dir}", str(c_source), "-o", str(output),

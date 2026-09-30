@@ -5,25 +5,13 @@ import os
 import subprocess
 from pathlib import Path
 
-from .config import BUILD, Target, app_name, entry_module, host_target, python_version, target_runtime_dir
+from .config import BUILD, Target, app_name, entry_module, host_target, runtime_executable, target_runtime_dir
 from .python_build import module_name, selected_sources
 from .third_party import WHEEL_MANIFEST, wheel_dir
 
 
 def runtime_python(target: Target) -> Path:
-    root = target_runtime_dir(target)
-    names = ["python.exe", "python3.exe"] if target.os == "windows" else [
-        f"python{python_version()}", f"python{'.'.join(python_version().split('.')[:2])}", "python3", "python"
-    ]
-    for name in names:
-        for candidate in (root / "bin" / name, root / "install" / "bin" / name, root / name):
-            if candidate.is_file():
-                return candidate
-    for name in names:
-        for candidate in root.rglob(name):
-            if candidate.is_file():
-                return candidate
-    raise RuntimeError(f"Target Python executable not found under {root}")
+    return runtime_executable(target)
 
 
 def direct_dependency_imports(target: Target) -> list[str]:
@@ -69,6 +57,9 @@ def run_target_python_smoke(target: Target) -> None:
     env["PYTHONPATH"] = str(site)
     env["PYTHONHOME"] = str(target_runtime_dir(target))
     env["PYTHONNOUSERSITE"] = "1"
+    # Importing the package markers must not leave __pycache__ inside the
+    # staging tree; a later --verify reports those as leftover build artifacts.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     py = runtime_python(target)
     print("+", py, script)
     subprocess.run([str(py), str(script)], env=env, cwd=stage_root, check=True)

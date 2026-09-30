@@ -24,7 +24,7 @@ def test_exact_pbs_metadata_entry_maps_31110_to_20241016():
     assert asset.sha256.startswith("a5a224")
 
 
-def test_pbs_auto_resolves_one_release_and_requires_sdk():
+def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
     from py_upper.pbs_assets import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URL, metadata_key, resolve_pbs_inputs
 
     target = _target()
@@ -37,7 +37,10 @@ def test_pbs_auto_resolves_one_release_and_requires_sdk():
     ]}
     calls=[]
     from py_upper import pbs_assets
-    pbs_assets._METADATA_CACHE.unlink(missing_ok=True)
+    # The metadata index is cached on disk. A test must never write its fixture
+    # into the project's real cache: a leftover fake index then makes every
+    # later build fail with a misleading "No PBS runtime metadata" error.
+    monkeypatch.setattr(pbs_assets, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
     def fetch(url):
         calls.append(url)
         if url == PBS_RUNTIME_METADATA_URL:
