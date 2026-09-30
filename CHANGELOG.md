@@ -1,3 +1,25 @@
+# py_upper Changelog
+
+## 0.16.13 — Make verification project-layout agnostic
+
+### Problem
+- `tools/build.py --run` could finish packaging successfully but return `SystemExit: 1` because verification required an application package named `core`.
+- Projects using `src/config`, `src/plugins`, or another valid source layout were therefore reported as `FAIL core`.
+
+### Root cause
+- `tools/py_upper/verify.py` hard-coded `stage/site-packages/core` as a mandatory package directory.
+- The build system already derives actual application modules from `selected_sources()`, so the verification rule was inconsistent with the configurable source layout.
+
+### Changes
+- Replace the hard-coded `core` directory check with a generic `site-packages` staging check.
+- Continue validating every actual Cython source through `selected_sources()`.
+- Add a regression test for an application containing `src/config` without any `core` package.
+- Bump the project version to 0.16.13.
+
+### Verification
+- Full local regression suite passed.
+- `git diff --check` passed.
+
 # v0.16.12
 
 ### Problem

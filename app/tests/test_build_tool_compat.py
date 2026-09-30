@@ -354,3 +354,39 @@ def test_macos_bundle_rewrites_dylib_id_and_dependency(monkeypatch, tmp_path):
         "install_name_tool", "-change", "/old/libhelper.dylib",
         "@loader_path/libhelper.dylib", str(binary),
     ] in commands
+
+
+def test_verify_does_not_require_hardcoded_core_package(monkeypatch, tmp_path, capsys):
+    from py_upper import verify as verify_module
+
+    target = verify_module.Target("macos", "arm64", "aarch64-apple-darwin")
+    runtime = tmp_path / "runtime"
+    stage = tmp_path / "staging"
+    site = stage / "site-packages"
+    out = tmp_path / "dist" / "MyApp.app"
+    runtime.mkdir(parents=True)
+    (runtime / ".pystand-runtime.json").write_text("{}\n", encoding="utf-8")
+    (site / "config").mkdir(parents=True)
+    (site / "config" / "plugin.py").write_text("x = 1\n", encoding="utf-8")
+    launcher = out / "Contents" / "MacOS" / "MyApp"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes(b"native")
+    (out / "Contents" / "Resources").mkdir(parents=True)
+    (out / "Contents" / "Resources" / "MyApp.int").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(verify_module, "target_runtime_dir", lambda t: runtime)
+    monkeypatch.setattr(verify_module, "staging_dir", lambda t: stage)
+    monkeypatch.setattr(verify_module, "runtime_spec", lambda t: object())
+    monkeypatch.setattr(verify_module, "read_manifest", lambda path: {"format": 2})
+    monkeypatch.setattr(verify_module, "validate_manifest", lambda manifest, t, spec: None)
+    monkeypatch.setattr(verify_module, "selected_sources", lambda: [])
+    monkeypatch.setattr(verify_module, "app_name", lambda: "MyApp")
+    monkeypatch.setattr(verify_module, "DIST", tmp_path / "dist")
+    monkeypatch.setattr(verify_module, "verify_arch", lambda path, t: type("Info", (), {"arch": t.arch})())
+
+    rc = verify_module.verify(target)
+    output = capsys.readouterr().out
+
+    assert rc == 0
+    assert "PASS application site-packages" in output
+    assert "core" not in output.lower()

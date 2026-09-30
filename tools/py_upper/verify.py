@@ -15,7 +15,7 @@ def verify(t: Target) -> int:
     stage = staging_dir(t)
     checks: list[tuple[bool, str]] = [
         (runtime.exists(), "runtime"),
-        ((stage / "site-packages" / "core").exists(), "core"),
+        ((stage / "site-packages").exists(), "application site-packages"),
     ]
     if runtime.exists():
         try:

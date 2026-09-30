@@ -1,3 +1,13 @@
+# v0.16.13
+
+**Problem solved:** Verification could fail with `FAIL core` and make a successful package return `SystemExit: 1` when the user's source tree did not contain a `core` package.
+
+**Root cause:** `tools/py_upper/verify.py` assumed the sample project's `core/` directory was mandatory instead of validating the actual configured application layout.
+
+**Implementation:** Replaced the hard-coded `core` staging check with a generic `site-packages` check. Real application modules continue to be validated from `selected_sources()`, so layouts such as `src/config` and `src/plugins` remain supported. Added a regression test covering a project without `core/`.
+
+**Verification:** Full local test suite passed; `git diff --check` passed.
+
 # v0.16.12
 
 ### Problem
