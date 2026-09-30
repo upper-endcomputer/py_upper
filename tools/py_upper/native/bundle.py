@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from ..config import BUILD, app_name
-from .deps import Dependency, _system_dependency, dependency_names, resolve_dependency
+from .deps import Dependency, _mac_install_name, _system_dependency, dependency_names, resolve_dependency
 from .inspect import verify_arch
 
 
@@ -78,6 +78,23 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
             if binary.suffix.lower() == ".so":
                 subprocess.run(["patchelf", "--set-rpath", "$ORIGIN", str(binary)], check=True)
     if target.os == "macos" and shutil.which("install_name_tool"):
+        # First normalize every dylib's own LC_ID_DYLIB. This matters when an
+        # application carries prebuilt native libraries under src/: their
+        # install names often still point at the developer's original path.
+        for binary in seen:
+            if binary.suffix.lower() != ".dylib":
+                continue
+            install_name = _mac_install_name(binary)
+            if not install_name:
+                continue
+            new_id = "@loader_path/" + binary.name
+            if install_name == new_id:
+                continue
+            subprocess.run(
+                ["install_name_tool", "-id", new_id, str(binary)],
+                check=True,
+            )
+
         for dependency in deps:
             if dependency.external or dependency.resolved is None:
                 continue

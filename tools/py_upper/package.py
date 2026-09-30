@@ -1,54 +1,19 @@
 from __future__ import annotations
-import os
 import shutil
-import stat
 from pathlib import Path
 from .config import APP, DIST, Target, app_identifier, app_name, project_version, staging_dir, target_runtime_dir
 from .native.bundle import bundle_native_dependencies
+from .fs import (
+    copy_file_contents as _copy_file_contents,
+    copy_tree_contents as _copy_tree_contents,
+    make_executable as _make_executable,
+)
 
 
 def _write_resource_app_config(path: Path, name: str) -> None:
     if not path.exists():
         return
     path.write_text(f"[app]\nname = {name!r}\n", encoding="utf-8")
-
-
-def _copy_file_contents(source: Path, destination: Path) -> None:
-    """Copy only file bytes; never replay source filesystem metadata.
-
-    A packaged runtime must not inherit read-only modes, ACLs, timestamps,
-    extended attributes, or filesystem flags from the PBS extraction tree.
-    The launcher is made executable explicitly by the platform-specific
-    package path below. Native libraries only need to be readable for dlopen.
-    """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-
-def _copy_tree_contents(source: Path, destination: Path) -> None:
-    """Recursively copy a tree without copying source filesystem metadata."""
-    source = Path(source)
-    destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    for entry in os.scandir(source):
-        src = Path(entry.path)
-        dst = destination / entry.name
-        if entry.is_symlink():
-            if dst.exists() or dst.is_symlink():
-                if dst.is_dir() and not dst.is_symlink():
-                    shutil.rmtree(dst)
-                else:
-                    dst.unlink()
-            os.symlink(os.readlink(src), dst, target_is_directory=entry.is_dir())
-        elif entry.is_dir(follow_symlinks=False):
-            _copy_tree_contents(src, dst)
-        elif entry.is_file(follow_symlinks=False):
-            _copy_file_contents(src, dst)
-
-
-def _make_executable(path: Path) -> None:
-    """Make a packaged launcher executable without copying source metadata."""
-    mode = stat.S_IMODE(path.stat().st_mode)
-    os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 ENTRY = '''from main import main\n\nif __name__ == "__main__":\n    raise SystemExit(main())\n'''

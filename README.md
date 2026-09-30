@@ -2,13 +2,13 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前开发线：**0.16.2**。
+当前开发线：**0.16.12**。
 
 ## 核心原则
 
 - `app/src/` 直接就是应用源码，不再套 `myapp/` 之类的项目包名。
 - 开发 Python 与最终随 App 打包的 Target Python 完全独立。
-- Cython 只处理明确选择的业务模块；入口 `main.py` 保持普通 Python。
+- Cython 默认处理 `app/src/` 下所有非 `__init__.py` 的应用模块；也可通过 `[tool.py_upper.cython]` 的 include/exclude 精确选择。
 - Launcher、Runtime、SDK、第三方 wheels 与应用源码分离。
 - 最终 App 名称独立于项目名 `py_upper`，可通过配置随时修改。
 
@@ -158,6 +158,46 @@ Windows XP 场景必须使用真正兼容 XP 的 custom CPython 构建；官方 
 - macOS: x86_64 / arm64
 - Linux: x86_64 / arm64
 
+## 应用自带 native 库
+
+`app/src/` 下的 native 文件会随应用源码一起进入 staging，并自动进入 native 依赖闭包。macOS 下的 `.dylib`、Linux 下的 `.so`、Windows 下的 `.dll`/native `.exe` 都不需要另外执行手工复制。
+
+例如：
+
+```text
+app/src/
+├── main.py
+├── core/
+│   └── app.py
+└── native/
+    ├── libdevice.dylib
+    ├── libhelper.dylib
+    └── plugins/
+        └── libdriver.dylib
+```
+
+打包时 py_upper 会：
+
+```text
+src native files
+      ↓
+site-packages / native
+      ↓
+架构检查
+      ↓
+扫描每个 dylib/so/dll 的依赖
+      ↓
+递归查找同一 App 内及 runtime 中的依赖
+      ↓
+复制缺失的外部 native 依赖
+      ↓
+macOS 重写为 @loader_path 相对路径
+```
+
+因此不要求 native 库必须来自 PBS。应用自己的预编译 `.dylib` 也可以直接放进 `src`。macOS 官方文档建议嵌入 bundle 的动态库使用相对路径；`install_name_tool -id`/`-change` 可用于将原来的绝对路径和依赖改成 bundle-relative 形式。 citeturn766061search1turn766061search0
+
+需要注意：如果 Cython 扩展是在链接阶段直接依赖自定义 dylib，而不是通过 `ctypes`/插件机制运行时加载，那么扩展的链接参数仍然必须让 target compiler 找到该库；py_upper 负责的是**发布阶段的 native 依赖闭包与重定位**，不会凭空推断 C/C++ 链接时应该链接哪个库。
+
 ## 构建流程
 
 ```text
@@ -188,4 +228,4 @@ CI 使用原生 runner 验证 Linux x86_64、Linux ARM64、Windows x86_64、Wind
 
 ## Git 历史
 
-此前的 PyStand2 历史版本完整保留在 Git tag 中；本次重构从 `v0.16.0` 延续到 `v0.16.2`，不会改写旧版本的历史内容。
+此前的 PyStand2 历史版本完整保留在 Git tag 中；本次重构从 `v0.16.0` 延续到当前版本，不会改写旧版本的历史内容。

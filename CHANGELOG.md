@@ -1,3 +1,28 @@
+# v0.16.12
+
+### Problem
+- Applications with prebuilt native libraries under `app/src/` needed an explicit native-library packaging path, and macOS dylib identity paths were not normalized.
+- A dylib's own `LC_ID_DYLIB` could also be mistaken for a dependency when parsing `otool -L` output.
+
+### Root cause
+- Source-tree copying was not explicitly native-aware and used a generic Python tree copier without regression coverage for `.dylib` payloads and symlinked native libraries.
+- The Mach-O dependency parser treated the dylib's own install name as if it were another load dependency.
+- macOS packaging rewrote dependency load commands but did not normalize bundled dylib `LC_ID_DYLIB` values.
+
+### Changes
+- Preserve native libraries and symlinks from `app/src/` into staged `site-packages` using the metadata-safe content copier.
+- Keep native files in the same recursive native dependency graph as Cython extensions and bundled runtime libraries.
+- Exclude Mach-O `LC_ID_DYLIB` from dependency edges returned by `otool -L`.
+- Normalize bundled macOS dylib IDs to `@loader_path/<filename>`.
+- Continue rewriting actual resolved dylib dependencies to `@loader_path`-relative paths.
+- Document the supported `src` native-library workflow and add regression coverage.
+- Bump the project version to 0.16.12.
+
+### Verification
+- Full local regression suite passed.
+- `py_upper doctor --target linux-x86_64` passed.
+- `git diff --check` passed.
+
 # v0.16.11
 
 ### Problem

@@ -168,6 +168,7 @@ def test_remove_cython_sources_leaves_only_package_markers(tmp_path, monkeypatch
 
 
 def test_package_tree_copy_does_not_replay_source_modes_or_metadata(monkeypatch, tmp_path):
+    from py_upper import fs
     from py_upper import package
 
     source = tmp_path / "runtime"
@@ -178,13 +179,13 @@ def test_package_tree_copy_does_not_replay_source_modes_or_metadata(monkeypatch,
     readonly.chmod(0o444)
 
     calls = []
-    real_chmod = package.os.chmod
+    real_chmod = fs.os.chmod
 
     def record_chmod(*args, **kwargs):
         calls.append(args[0])
         return real_chmod(*args, **kwargs)
 
-    monkeypatch.setattr(package.os, "chmod", record_chmod)
+    monkeypatch.setattr(fs.os, "chmod", record_chmod)
     package._copy_tree_contents(source, destination)
 
     copied = destination / "lib" / "pkg" / "README.rst"
@@ -264,3 +265,92 @@ def test_native_dependency_resolver_uses_macos_rpath(monkeypatch, tmp_path):
         [tmp_path / "runtime"],
         owner,
     ) == lib.resolve()
+
+
+def test_source_tree_copies_native_libraries_and_symlinks(monkeypatch, tmp_path):
+    from py_upper import python_build
+
+    src = tmp_path / "src"
+    site = tmp_path / "site"
+    native = src / "native"
+    native.mkdir(parents=True)
+    dylib = native / "libcustom.dylib"
+    dylib.write_bytes(b"macho-like")
+    alias = native / "libcustom-current.dylib"
+    alias.symlink_to("libcustom.dylib")
+    (native / "helper.txt").write_text("keep", encoding="utf-8")
+
+    monkeypatch.setattr(python_build, "APP", tmp_path)
+    python_build.copy_python_tree(site)
+
+    assert (site / "native" / "libcustom.dylib").read_bytes() == b"macho-like"
+    assert (site / "native" / "libcustom-current.dylib").is_symlink()
+    assert (site / "native" / "libcustom-current.dylib").readlink() == Path("libcustom.dylib")
+    assert (site / "native" / "helper.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_source_dylib_install_name_is_not_treated_as_dependency(monkeypatch, tmp_path):
+    from py_upper.native import deps
+
+    binary = tmp_path / "libcustom.dylib"
+    binary.write_bytes(b"macho-like")
+    monkeypatch.setattr(deps.shutil, "which", lambda name: "/usr/bin/otool" if name == "otool" else None)
+
+    def fake_run(cmd, capture_output, text, check):
+        if cmd[1] == "-D":
+            return type("Result", (), {"returncode": 0, "stdout": f"{binary}:\n@rpath/libcustom.dylib\n", "stderr": ""})()
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": f"{binary}:\n    @rpath/libcustom.dylib (compatibility version 1.0.0, current version 1.0.0)\n    @rpath/libhelper.dylib (compatibility version 1.0.0, current version 1.0.0)\n",
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr(deps.subprocess, "run", fake_run)
+    assert deps.dependency_names(binary) == ["@rpath/libhelper.dylib"]
+
+
+def test_source_native_dependency_is_resolved_inside_app_tree(tmp_path):
+    from py_upper.native.deps import resolve_dependency
+
+    root = tmp_path / "site-packages"
+    owner = root / "native" / "plugin" / "libplugin.dylib"
+    dependency = root / "native" / "libs" / "libcustom.dylib"
+    owner.parent.mkdir(parents=True)
+    dependency.parent.mkdir(parents=True)
+    owner.write_bytes(b"owner")
+    dependency.write_bytes(b"dependency")
+
+    assert resolve_dependency("@rpath/libcustom.dylib", [root], owner) == dependency.resolve()
+
+
+def test_macos_bundle_rewrites_dylib_id_and_dependency(monkeypatch, tmp_path):
+    from py_upper import config
+    from py_upper.native import bundle
+
+    root = tmp_path / "MyApp.app"
+    binary = root / "Contents" / "Resources" / "site-packages" / "native" / "libcustom.dylib"
+    helper = binary.parent / "libhelper.dylib"
+    launcher = root / "Contents" / "MacOS" / "MyApp"
+    binary.parent.mkdir(parents=True)
+    launcher.parent.mkdir(parents=True)
+    for path in (binary, helper, launcher):
+        path.write_bytes(b"native")
+
+    target = config.TARGETS["macos-arm64"]
+    commands = []
+    monkeypatch.setattr(bundle, "verify_arch", lambda path, target: None)
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env=None: ["/old/libhelper.dylib"] if path == binary else [])
+    monkeypatch.setattr(bundle, "_system_dependency", lambda name, target: False)
+    monkeypatch.setattr(bundle, "resolve_dependency", lambda name, roots, source: helper if source == binary else None)
+    monkeypatch.setattr(bundle.shutil, "which", lambda name: "/usr/bin/install_name_tool" if name == "install_name_tool" else None)
+    monkeypatch.setattr(bundle, "_mac_install_name", lambda path: "/old/libcustom.dylib")
+    monkeypatch.setattr(bundle.subprocess, "run", lambda cmd, check: commands.append(cmd))
+
+    bundle.bundle_native_dependencies(root, target)
+
+    assert ["install_name_tool", "-id", "@loader_path/libcustom.dylib", str(binary)] in commands
+    assert ["install_name_tool", "-id", "@loader_path/libhelper.dylib", str(helper)] in commands
+    assert [
+        "install_name_tool", "-change", "/old/libhelper.dylib",
+        "@loader_path/libhelper.dylib", str(binary),
+    ] in commands

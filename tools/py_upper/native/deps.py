@@ -98,12 +98,31 @@ def _pe_imports(path: Path) -> list[str]:
     return names
 
 
+def _mac_install_name(path: Path) -> str | None:
+    """Return a dylib's LC_ID_DYLIB install name, when present."""
+    otool = shutil.which("otool")
+    if not otool:
+        return None
+    p = subprocess.run([otool, "-D", str(path)], capture_output=True, text=True, check=False)
+    if p.returncode != 0:
+        return None
+    lines = [line.strip() for line in p.stdout.splitlines() if line.strip()]
+    return lines[1] if len(lines) >= 2 else None
+
+
 def _mac_dependencies(path: Path) -> list[str]:
     otool = shutil.which("otool")
     if not otool:
         return []
     p = subprocess.run([otool, "-L", str(path)], capture_output=True, text=True, check=True)
-    return [line.strip().split(" ", 1)[0] for line in p.stdout.splitlines()[1:] if line.strip()]
+    result = [line.strip().split(" ", 1)[0] for line in p.stdout.splitlines()[1:] if line.strip()]
+    # `otool -L` prints a dylib's own LC_ID_DYLIB as the first load command
+    # entry. It is an identity, not a dependency and must not be resolved or
+    # rewritten as if another library were being loaded.
+    install_name = _mac_install_name(path)
+    if install_name in result:
+        result.remove(install_name)
+    return result
 
 
 def _elf_dependencies(path: Path) -> list[str]:
