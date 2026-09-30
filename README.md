@@ -154,6 +154,9 @@ Windows XP 场景必须使用真正兼容 XP 的 custom CPython 构建；官方 
 
 ## Target
 
+> `runtimes/` is a local PBS/custom-runtime cache and is intentionally Git-ignored. Runtime binaries are machine/target artifacts; the project configuration and lock/manifest metadata record the runtime contract without committing those binaries.
+
+
 - Windows: x86 / x86_64 / arm64
 - macOS: x86_64 / arm64
 - Linux: x86_64 / arm64

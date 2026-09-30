@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import hashlib
 import json
 import os
@@ -10,11 +12,12 @@ import urllib.request
 from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version, user_agent
+from .pbs_assets import find_matching_release, no_asset_error
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
 
-def http_json(url: str) -> dict:
+def http_json(url: str) -> Any:
     req = urllib.request.Request(
         url,
         headers={"User-Agent": user_agent(), "Accept": "application/vnd.github+json"},
@@ -53,12 +56,15 @@ def _version_key(name: str) -> tuple[int, int, int, str]:
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
 
 
-def select_full_asset(release: dict, target: Target, pyver: str) -> dict:
+def select_full_asset(
+    release: dict, target: Target, pyver: str, release_tag: str | None = None,
+    release_finder=None,
+) -> dict:
     candidates = []
     for asset in release.get("assets", []):
         name = asset.get("name", "")
         if not (
-            name.startswith(f"cpython-{pyver}.")
+            name.startswith(f"cpython-{pyver}+")
             and target.triple in name
             and "freethreaded" not in name
             and "full" in name
@@ -67,7 +73,12 @@ def select_full_asset(release: dict, target: Target, pyver: str) -> dict:
             continue
         candidates.append(asset)
     if not candidates:
-        raise RuntimeError(f"No PBS full SDK asset for {pyver}/{target.triple}")
+        tag = release_tag or pbs_release()
+        suggested = release_finder(pyver, target, "sdk") if release_finder else None
+        raise no_asset_error(
+            release_tag=tag, target=target, pyver=pyver, kind="sdk", release=release,
+            suggested_release=suggested,
+        )
 
     # Prefer the optimized full build. The archive metadata remains authoritative.
     def rank(asset: dict) -> tuple[int, tuple[int, int, int, str]]:
@@ -150,7 +161,10 @@ def ensure_pbs_sdk(target: Target) -> Path:
             pass
 
     tag, release = resolve_release()
-    asset = select_full_asset(release, target, python_version())
+    finder = lambda pyver, target, kind: find_matching_release(
+        http_json, tag, target, pyver, kind=kind
+    )
+    asset = select_full_asset(release, target, python_version(), tag, finder)
     archive = CACHE / "pbs" / tag / target.key / asset["name"]
     download(asset["browser_download_url"], archive)
     digest = asset.get("digest")

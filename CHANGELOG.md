@@ -1,5 +1,29 @@
 # py_upper Changelog
 
+## 0.16.16 — Improve PBS Python-version diagnostics and ignore runtime caches
+
+### Problem
+- Selecting a target Python version that is not present in the configured PBS release produced a terse `No PBS ... asset` error with no indication of what versions were actually available.
+- The downloaded `runtimes/` tree was a local build artifact but was not explicitly ignored by Git.
+
+### Root cause
+- PBS asset selectors only reported the requested version and target triple, without enumerating matching assets in the selected release.
+- `.gitignore` did not contain the `runtimes/` directory, even though PBS runtime artifacts are machine-local and should not be committed.
+- Global `*.dylib`, `*.so`, and `*.pyd` ignores also conflicted with the supported workflow where prebuilt native libraries under `app/src/` are application inputs.
+
+### Changes
+- Report the requested Python version, PBS release, target triple, and available exact Python versions when a PBS runtime or full SDK asset is missing.
+- Best-effort search recent PBS releases and show a suggested exact-match release tag when one is discoverable; network lookup failure never hides the primary asset error.
+- Keep the build exact: py_upper never silently substitutes another Python version.
+- Add a dedicated `runtimes/` Git ignore entry.
+- Stop globally ignoring native binary extensions so legitimate `app/src/` `.dylib`, `.so`, and `.pyd` inputs can be version-controlled; generated copies remain covered by `build/` and `dist/`.
+- Add regression coverage for PBS runtime/SDK diagnostics and repository ignore rules.
+- Bump the project version to 0.16.16.
+
+### Verification
+- Full local regression suite passes.
+- `git diff --check` passes.
+
 ## 0.16.15 — Fix embedded CPython native-extension symbol resolution
 
 ### Problem

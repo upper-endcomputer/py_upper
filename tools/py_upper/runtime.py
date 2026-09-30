@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import hashlib
 import json
 import os
@@ -9,11 +11,12 @@ import urllib.request
 from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir, user_agent
+from .pbs_assets import find_matching_release, no_asset_error
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
 
-def http_json(url: str) -> dict:
+def http_json(url: str) -> Any:
     req = urllib.request.Request(
         url,
         headers={"User-Agent": user_agent(), "Accept": "application/vnd.github+json"},
@@ -56,7 +59,10 @@ def safe_extract(tar_path: Path, dest: Path) -> None:
         tf.extractall(dest)
 
 
-def select_asset(release: dict, target: Target, pyver: str) -> dict:
+def select_asset(
+    release: dict, target: Target, pyver: str, release_tag: str | None = None,
+    release_finder=None,
+) -> dict:
     candidates = []
     for asset in release.get("assets", []):
         name = asset.get("name", "")
@@ -69,7 +75,12 @@ def select_asset(release: dict, target: Target, pyver: str) -> dict:
         ):
             candidates.append(asset)
     if not candidates:
-        raise RuntimeError(f"No PBS install_only_stripped asset for {pyver}/{target.triple}")
+        tag = release_tag or pbs_release()
+        suggested = release_finder(pyver, target, "runtime") if release_finder else None
+        raise no_asset_error(
+            release_tag=tag, target=target, pyver=pyver, kind="runtime", release=release,
+            suggested_release=suggested,
+        )
     return max(candidates, key=lambda a: a["name"])
 
 
@@ -87,7 +98,10 @@ def ensure_pbs_runtime(target: Target) -> Path:
             pass
 
     tag, release = resolve_release()
-    asset = select_asset(release, target, python_version())
+    finder = lambda pyver, target, kind: find_matching_release(
+        http_json, tag, target, pyver, kind=kind
+    )
+    asset = select_asset(release, target, python_version(), tag, finder)
     archive = CACHE / "pbs" / tag / target.key / asset["name"]
     download(asset["browser_download_url"], archive)
     digest = asset.get("digest")

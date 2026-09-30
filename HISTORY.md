@@ -1,3 +1,13 @@
+# v0.16.16
+
+**Problem solved:** Selecting a target Python patch version that is absent from the configured PBS release produced an opaque asset-not-found error, and the local `runtimes/` directory was not explicitly protected from Git commits.
+
+**Root cause:** PBS selectors only reported the missing requested asset; `.gitignore` had no `runtimes/` entry and globally ignored native binary extensions even though `app/src/` can legitimately contain prebuilt native inputs.
+
+**Implementation:** Added detailed PBS runtime/SDK asset diagnostics that enumerate available Python versions for the requested target, best-effort search recent PBS releases for a suggested exact-match release, and preserve exact-version semantics. Added `runtimes/` to `.gitignore`, and narrowed native-binary ignore behavior so application-owned `.dylib`, `.so`, and `.pyd` files under `app/src/` can be tracked while generated outputs stay ignored through `build/` and `dist/`. Added regression tests.
+
+**Verification:** Full local test suite passed; `git diff --check` passed.
+
 # v0.16.15
 
 ### Problem
@@ -170,9 +180,9 @@ Fixes a macOS build failure where Cython exited successfully but the expected ge
 
 # py_upper Git history
 
-This repository preserves the complete release evolution from v0.9.1 through v0.16.15.
+This repository preserves the complete release evolution from v0.9.1 through v0.16.16.
 
-Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.15 is the current embedded-CPython native-extension loading release.
+Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.16 is the current PBS-version diagnostics and runtime-cache release.
 
 
 ## v0.16.2

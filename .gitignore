@@ -1,11 +1,9 @@
 __pycache__/
 *.py[cod]
-*.pyd
-*.so
-*.dylib
 .pytest_cache/
 .venv/
 .cache/
+runtimes/
 build/
 dist/
 *.egg-info/
