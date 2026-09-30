@@ -54,6 +54,15 @@ def load_app_config() -> dict:
     with (APP / "pyproject.toml").open("rb") as f:
         return tomllib.load(f)
 
+def project_version() -> str:
+    value = str(load_app_config()["project"].get("version") or "")
+    if not value:
+        raise RuntimeError("[project].version is required")
+    return value
+
+def user_agent() -> str:
+    return f"PyStand2/{project_version()}"
+
 def host_target() -> Target:
     system = platform.system()
     machine = platform.machine().lower()

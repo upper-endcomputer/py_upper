@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import APP, Target, staging_dir, target_runtime_dir, runtime_spec
+from .config import APP, DIST, Target, staging_dir, target_runtime_dir, runtime_spec
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import verify_arch
 from .python_build import module_name, selected_sources
@@ -53,11 +53,11 @@ def verify(t: Target) -> int:
         checks.append((not (site / rel).exists(), f"source removed {mod}"))
 
     if t.os in {"windows", "linux"}:
-        out = Path("dist/MyApp")
+        out = DIST / "MyApp"
         exe = out / ("MyApp.exe" if t.os == "windows" else "MyApp")
         checks += [(x.exists(), n) for x, n in [(exe, exe.name), (out / "MyApp.int", "MyApp.int"), (out / "runtime", "runtime")]]
     else:
-        out = Path("dist/MyApp.app")
+        out = DIST / "MyApp.app"
         checks += [(x.exists(), n) for x, n in [(out / "Contents/MacOS/MyApp", "launcher"), (out / "Contents/Resources/MyApp.int", "MyApp.int")]]
         exe = out / "Contents/MacOS/MyApp"
 

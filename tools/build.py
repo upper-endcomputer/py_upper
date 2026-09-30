@@ -11,6 +11,7 @@ from pstand.runtime_provider import ensure_runtime
 from pstand.wheel import resolve_wheels
 from pstand.lock import write_lock, verify_lock
 from pstand.verify import verify
+from pstand.release_artifacts import write_release_manifest
 
 def main(argv=None):
     p = argparse.ArgumentParser(
@@ -105,7 +106,11 @@ def main(argv=None):
             exe = out / "MyApp.exe" if t.os == "windows" else out / "MyApp" if t.os == "linux" else out / "Contents/MacOS/MyApp"
             return subprocess.call([str(exe)])
         if action_name == "release":
-            return release(t, a.identity, a.notary_profile)
+            rc = release(t, a.identity, a.notary_profile)
+            if rc:
+                return rc
+            print("Release manifest:", write_release_manifest(t))
+            return 0
         print("READY:", out)
         return 0
 

@@ -19,3 +19,9 @@ def test_all_release_targets_are_declared():
         "macos-x86_64", "macos-arm64",
         "linux-x86_64", "linux-arm64",
     }
+
+
+def test_project_version_and_user_agent():
+    from pstand.config import project_version, user_agent
+    assert project_version() == "0.16.0"
+    assert user_agent() == "PyStand2/0.16.0"

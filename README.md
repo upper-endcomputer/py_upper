@@ -2,6 +2,8 @@
 
 Standalone Python application packaging for Windows, macOS and Linux.
 
+Current development line: **0.16.0**.
+
 ## Use
 
 One public entry point:
@@ -20,6 +22,7 @@ python tools/build.py --lock --target linux-x86_64
 python tools/build.py --locked --target linux-x86_64
 python tools/build.py --doctor
 python tools/build.py --clean
+python tools/build.py --release --target linux-x86_64
 ```
 
 ## Python environments
@@ -103,3 +106,9 @@ A runtime manifest is portable: it describes runtime identity and ABI rather tha
 ## CI artifacts
 
 Every integration job uploads the resulting `dist/` directory as a workflow artifact. The same `python tools/build.py --run` command is used in CI and local development.
+
+## Release manifests
+
+A signed/local release writes `dist/release-manifest.json` after signing. It records the target, project version, every packaged file, its size, and SHA-256 checksum. CI also aggregates the native target artifacts into one release manifest so the six integration outputs can be audited without trusting filenames alone.
+
+The application version is read from `[project].version` in `app/pyproject.toml`; launcher packaging, the PBS HTTP User-Agent, and the sample application's version string no longer carry independent hard-coded release versions.

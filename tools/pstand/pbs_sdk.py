@@ -9,7 +9,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version
+from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version, user_agent
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
@@ -17,7 +17,7 @@ RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/re
 def http_json(url: str) -> dict:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "PyStand2/0.14.0", "Accept": "application/vnd.github+json"},
+        headers={"User-Agent": user_agent(), "Accept": "application/vnd.github+json"},
     )
     with urllib.request.urlopen(req) as r:
         return json.load(r)
@@ -36,7 +36,7 @@ def download(url: str, dst: Path) -> None:
     if dst.exists():
         return
     print(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "PyStand2/0.14.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent()})
     with urllib.request.urlopen(req) as r, dst.open("wb") as f:
         shutil.copyfileobj(r, f)
 

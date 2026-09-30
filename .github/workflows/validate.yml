@@ -16,6 +16,8 @@ jobs:
             target: linux-arm64
           - os: windows-2025
             target: windows-x86_64
+          - os: windows-11-arm
+            target: windows-arm64
           - os: macos-15-intel
             target: macos-x86_64
           - os: macos-14
@@ -34,7 +36,7 @@ jobs:
           path: |
             .cache/pbs
             build/wheels
-          key: pystand-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('app/pyproject.toml') }}
+          key: pystand-v0.16-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('app/pyproject.toml') }}
 
       - name: Install Python build tools
         run: python -m pip install -U pip setuptools wheel 'Cython>=3.1,<3.2' pytest
@@ -49,7 +51,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cmake --version
-          ninja --version || brew install ninja
+          if ! command -v ninja >/dev/null 2>&1; then brew install ninja; fi
+          ninja --version
 
       - name: Verify Windows toolchain
         if: runner.os == 'Windows'
@@ -67,9 +70,88 @@ jobs:
       - name: Full integration build and run
         run: python tools/build.py --run --target ${{ matrix.target }}
 
+      - name: Validate packaged release manifest inputs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root = Path('dist')
+          files = [p for p in root.rglob('*') if p.is_file()]
+          assert files, 'dist is empty'
+          for p in files:
+              h = hashlib.sha256(p.read_bytes()).hexdigest()
+              assert len(h) == 64
+          print(f'validated {len(files)} packaged files')
+          PY
+
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
           name: pystand-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
+          retention-days: 14
+
+  aggregate-artifacts:
+    needs: native-integration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pystand-*
+          path: collected
+          merge-multiple: false
+
+      - name: Build aggregate release manifest
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import tomllib
+
+          root = Path('collected')
+          project = tomllib.loads(Path('app/pyproject.toml').read_text(encoding='utf-8'))['project']
+          entries = []
+          for artifact in sorted(p for p in root.iterdir() if p.is_dir()):
+              target = artifact.name.removeprefix('pystand-')
+              dist = artifact / 'dist'
+              if not dist.exists():
+                  dist = artifact
+              files = []
+              for path in sorted(p for p in dist.rglob('*') if p.is_file()):
+                  files.append({
+                      'path': path.relative_to(dist).as_posix(),
+                      'size': path.stat().st_size,
+                      'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                  })
+              entries.append({'target': target, 'files': files})
+
+          data = {
+              'format': 1,
+              'project': 'PyStand2',
+              'version': str(project['version']),
+              'targets': entries,
+          }
+          Path('collected/release-manifest.json').write_text(
+              json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps({'version': data['version'], 'targets': [x['target'] for x in entries]}, indent=2))
+          assert len(entries) == 6, f'expected 6 native targets, got {len(entries)}'
+          PY
+
+      - name: Upload aggregate validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pystand-release-manifest
+          path: collected/release-manifest.json
+          if-no-files-found: error
+          retention-days: 30
