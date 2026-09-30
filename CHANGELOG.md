@@ -1,3 +1,25 @@
+# v0.16.8
+
+### Problem
+- Every build from a development Python without Cython could trigger a `ModuleNotFoundError: No module named 'Cython'` under VS Code/debugpy before the bootstrap logic recovered.
+- The v0.16.7 bootstrap path also used an unconditional `pip --upgrade`, which could reinstall Cython on every build instead of reusing the project cache.
+
+### Root cause
+- The Cython availability probe executed `import Cython` in a child Python process. A debugger can pause on that expected exception even though the parent process captures the non-zero exit status.
+- Cache probing did not distinguish an already-populated supported Cython cache from a missing dependency before invoking pip.
+
+### Changes
+- Probe the installed Cython distribution through `importlib.metadata` without importing the `Cython` package.
+- Reuse a py_upper-owned Cython cache when a supported 3.1.x distribution is already present.
+- Remove the unconditional pip `--upgrade` flag from the bootstrap path.
+- Keep the developer Python environment untouched.
+- Add regression coverage for cache reuse and non-reinstall behavior.
+
+### Verification
+- 20 local tests passed.
+- `py_upper doctor` passed for linux-x86_64.
+- `git diff --check` passed.
+
 # v0.16.7
 
 ### Problem

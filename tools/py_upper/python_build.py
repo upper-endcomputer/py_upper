@@ -77,8 +77,22 @@ def _python_library(root: Path, target: Target) -> tuple[Path | None, str | None
 
 
 def _cython_version(host_python: Path, env: dict[str, str] | None = None) -> str | None:
+    """Read Cython's installed distribution version without importing Cython.
+
+    The build tool may be launched under a debugger. Importing a missing
+    Cython package in a child ``python -c`` process causes debuggers to stop
+    on the expected ModuleNotFoundError before the bootstrap code can recover.
+    ``importlib.metadata`` lets us probe the installed distribution without
+    raising that exception.
+    """
     probe = subprocess.run(
-        [str(host_python), "-c", "import Cython; print(Cython.__version__)"],
+        [
+            str(host_python),
+            "-c",
+            "import importlib.metadata as m; "
+            "d=next(m.distributions(name=\"Cython\"), None); "
+            "print(d.version if d else \"\")",
+        ],
         capture_output=True,
         text=True,
         env=env,
@@ -89,51 +103,60 @@ def _cython_version(host_python: Path, env: dict[str, str] | None = None) -> str
     return probe.stdout.strip() or None
 
 
+def _supported_cython(version: str | None) -> bool:
+    if not version:
+        return False
+    parts = version.split(".")
+    try:
+        return (int(parts[0]), int(parts[1])) == (3, 1)
+    except (ValueError, IndexError):
+        return False
+
+
+def _cython_cache_dir(host_python: Path) -> Path:
+    return BUILD / "host-tools" / f"cython-{host_python.stem}-{host_python.parent.name}"
+
+
 def _cython_env(host_python: Path) -> dict[str, str]:
     """Return an environment where a supported Cython is importable.
 
     The build tool deliberately does not require the developer to pre-install
     Cython into their selected Python. If it is missing (or outside the
-    supported 3.1.x range), bootstrap it into a py_upper-owned cache instead
-    of modifying the user's Python environment.
+    supported 3.1.x range), bootstrap it once into a py_upper-owned cache
+    instead of modifying the user's Python environment.
+
+    The cache is checked before running pip, so repeated builds do not
+    reinstall Cython. The version probe never imports Cython, which also keeps
+    VS Code/debugpy from stopping on an expected missing-module exception.
     """
     env = dict(os.environ)
-    version = _cython_version(host_python, env)
-    if version:
-        parts = version.split(".")
-        try:
-            major, minor = int(parts[0]), int(parts[1])
-        except (ValueError, IndexError):
-            major = minor = -1
-        if (major, minor) == (3, 1):
-            return env
+    host_version = _cython_version(host_python, env)
+    if _supported_cython(host_version):
+        return env
 
-    cache = BUILD / "host-tools" / f"cython-{host_python.stem}-{host_python.parent.name}"
-    cache.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            str(host_python), "-m", "pip", "install",
-            "--disable-pip-version-check", "--no-input", "--upgrade",
-            "--target", str(cache), CYTHON_REQUIREMENT,
-        ],
-    )
+    cache = _cython_cache_dir(host_python)
+    cache_env = dict(env)
+    cache_env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    cache_version = _cython_version(host_python, cache_env) if cache.exists() else None
+    if not _supported_cython(cache_version):
+        cache.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                str(host_python), "-m", "pip", "install",
+                "--disable-pip-version-check", "--no-input",
+                "--target", str(cache), CYTHON_REQUIREMENT,
+            ],
+        )
+        cache_env = dict(env)
+        cache_env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        cache_version = _cython_version(host_python, cache_env)
+        if not _supported_cython(cache_version):
+            raise RuntimeError(
+                f"Cython bootstrap completed but a supported Cython is still unavailable under {host_python}. "
+                f"Expected {CYTHON_REQUIREMENT}; cache={cache}"
+            )
+
     env["PYTHONPATH"] = str(cache) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    version = _cython_version(host_python, env)
-    if not version:
-        raise RuntimeError(
-            f"Cython bootstrap completed but Cython is still unavailable under {host_python}. "
-            f"Expected {CYTHON_REQUIREMENT}; cache={cache}"
-        )
-    parts = version.split(".")
-    try:
-        supported = (int(parts[0]), int(parts[1])) == (3, 1)
-    except (ValueError, IndexError):
-        supported = False
-    if not supported:
-        raise RuntimeError(
-            f"Unsupported Cython version {version!r} under {host_python}; "
-            f"expected {CYTHON_REQUIREMENT}, cache={cache}"
-        )
     return env
 
 

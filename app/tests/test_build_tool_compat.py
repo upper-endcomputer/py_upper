@@ -36,7 +36,27 @@ def test_cython_bootstrap_uses_project_cache_when_missing(monkeypatch, tmp_path)
     assert calls[0][0][0] == str(Path(sys.executable))
     assert calls[0][0][3] == "install"
     assert "Cython>=3.1,<3.2" in calls[0][0]
+    assert "--upgrade" not in calls[0][0]
     assert env["PYTHONPATH"].startswith(str(tmp_path / "build" / "host-tools"))
+
+
+def test_cython_bootstrap_reuses_existing_project_cache(monkeypatch, tmp_path):
+    from py_upper import python_build
+
+    cache = tmp_path / "build" / "host-tools" / "cython-python3.10-3.10.10"
+    cache.mkdir(parents=True)
+    calls = []
+    versions = iter([None, "3.1.3"])
+
+    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(python_build, "_cython_cache_dir", lambda host: cache)
+    monkeypatch.setattr(python_build, "_cython_version", lambda host, env=None: next(versions))
+    monkeypatch.setattr(python_build, "run", lambda cmd, cwd=None, env=None: calls.append(cmd))
+
+    env = python_build._cython_env(Path(sys.executable))
+
+    assert not calls
+    assert env["PYTHONPATH"].startswith(str(cache))
 
 
 def test_selected_sources_compile_all_application_modules_except_package_markers():
