@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.16.6"
+version = "0.16.7"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 dependencies = []
@@ -44,8 +44,8 @@ python = "3.13"
 release = "20260929"
 
 [tool.py_upper.cython]
-include = ["core.*", "services.*", "models.*"]
-exclude = ["config", "logging"]
+include = ["*"]
+exclude = []
 
 [tool.py_upper.windows]
 architectures = ["x86", "x86_64", "arm64"]

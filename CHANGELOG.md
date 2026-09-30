@@ -1,3 +1,22 @@
+# v0.16.7
+
+### Problem
+- The packaged macOS application still copied application `.py` sources into `Contents/Resources/site-packages` for modules outside the narrow Cython include list, while `main.py` remained a Python entry module. Generated `.c` files could also pollute `app/src`.
+
+### Root cause
+- The source selector explicitly skipped `main.py` and only selected `core.*`, `services.*`, and `models.*`; `utils` was therefore copied as source. The staging step copied the entire source tree before removing only selected modules.
+
+### Changes
+- Compile every application `.py` module by default, including `main.py` and `utils.paths`; only package `__init__.py` markers remain as Python files.
+- Remove the default Cython exclusion list.
+- Generate C files under `build/cython` instead of writing them into `app/src`.
+- Exclude `__pycache__`, `.pyc`, `.pyo`, and generated C/C++ files from staging.
+- Add regression tests for module selection, clean C generation, and source removal.
+
+### Verification
+- Local regression suite passes.
+- `git diff --check` passes.
+
 # v0.16.6
 
 - Fixed Mach-O byte-order detection for macOS native dependency inspection. The previous parser reversed the arm64 CPU type and reported `0x0c000001`, rejecting valid Apple Silicon dylibs such as `libtcl9.0.dylib`. Universal Mach-O binaries are now checked for the requested architecture instead of being accepted unconditionally.

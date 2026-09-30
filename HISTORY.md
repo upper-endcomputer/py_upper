@@ -1,3 +1,13 @@
+# v0.16.7
+
+**Problem solved:** The package staging logic left Python source files in the final application because only a subset of modules was Cythonized and `main.py` was explicitly excluded.
+
+**Root cause:** `selected_sources()` limited compilation to `core.*`, `services.*`, and `models.*`, while `copy_python_tree()` copied all source files before deleting only the selected modules.
+
+**Implementation:** Compile all non-`__init__.py` application modules by default, including the entry module and utility modules; keep only package marker `__init__.py` files as Python; move generated C output into `build/cython`; and filter development caches/bytecode from staging.
+
+**Impact:** The packaged `Contents/Resources/site-packages` no longer contains application implementation `.py` files for the default configuration.
+
 # v0.16.6
 
 - Fixed Mach-O byte-order detection for macOS native dependency inspection. The previous parser reversed the arm64 CPU type and reported `0x0c000001`, rejecting valid Apple Silicon dylibs such as `libtcl9.0.dylib`. Universal Mach-O binaries are now checked for the requested architecture instead of being accepted unconditionally.
