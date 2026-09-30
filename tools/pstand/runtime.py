@@ -10,25 +10,21 @@ from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir
 
-LATEST_URL = "https://raw.githubusercontent.com/astral-sh/python-build-standalone/latest-release/latest-release.json"
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
 
 def http_json(url: str) -> dict:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "PyStand2/0.4", "Accept": "application/vnd.github+json"},
+        headers={"User-Agent": "PyStand2/0.10.0", "Accept": "application/vnd.github+json"},
     )
     with urllib.request.urlopen(req) as r:
         return json.load(r)
 
 
 def resolve_release() -> tuple[str, dict]:
-    data = http_json(LATEST_URL)
-    tag = data.get("tag")
-    if not tag:
-        raise RuntimeError("PBS latest-release.json has no tag")
-    return str(tag), http_json(RELEASE_API.format(tag=tag))
+    tag = pbs_release()
+    return tag, http_json(RELEASE_API.format(tag=tag))
 
 
 def sha256(path: Path) -> str:
@@ -44,7 +40,7 @@ def download(url: str, dst: Path) -> None:
     if dst.exists():
         return
     print(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "PyStand2/0.4"})
+    req = urllib.request.Request(url, headers={"User-Agent": "PyStand2/0.10.0"})
     with urllib.request.urlopen(req) as r, dst.open("wb") as f:
         shutil.copyfileobj(r, f)
 
@@ -77,7 +73,7 @@ def select_asset(release: dict, target: Target, pyver: str) -> dict:
     return max(candidates, key=lambda a: a["name"])
 
 
-def ensure_runtime(target: Target) -> Path:
+def ensure_pbs_runtime(target: Target) -> Path:
     out = target_runtime_dir(target)
     marker = out / ".pystand2-runtime.json"
     if marker.exists():
@@ -125,3 +121,8 @@ def ensure_runtime(target: Target) -> Path:
         encoding="utf-8",
     )
     return out
+
+
+def ensure_runtime(target: Target) -> Path:
+    """Backward-compatible PBS-only entrypoint."""
+    return ensure_pbs_runtime(target)

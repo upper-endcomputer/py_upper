@@ -11,14 +11,13 @@ from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version
 
-LATEST_URL = "https://raw.githubusercontent.com/astral-sh/python-build-standalone/latest-release/latest-release.json"
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
 
 def http_json(url: str) -> dict:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "PyStand2/0.9.5", "Accept": "application/vnd.github+json"},
+        headers={"User-Agent": "PyStand2/0.10.0", "Accept": "application/vnd.github+json"},
     )
     with urllib.request.urlopen(req) as r:
         return json.load(r)
@@ -37,7 +36,7 @@ def download(url: str, dst: Path) -> None:
     if dst.exists():
         return
     print(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "PyStand2/0.9.5"})
+    req = urllib.request.Request(url, headers={"User-Agent": "PyStand2/0.10.0"})
     with urllib.request.urlopen(req) as r, dst.open("wb") as f:
         shutil.copyfileobj(r, f)
 
@@ -138,7 +137,7 @@ def _validate_layout(root: Path) -> dict:
     }
 
 
-def ensure_sdk(target: Target) -> Path:
+def ensure_pbs_sdk(target: Target) -> Path:
     out = pbs_sdk_dir(target)
     marker = out / ".pystand2-sdk.json"
     if marker.exists():
@@ -209,3 +208,8 @@ def target_include_dir(root: Path) -> Path:
         if p.exists():
             return p
     raise RuntimeError(f"Python include directory not found under {root}")
+
+
+def ensure_sdk(target: Target) -> Path:
+    """Backward-compatible PBS-only entrypoint."""
+    return ensure_pbs_sdk(target)

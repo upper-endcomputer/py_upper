@@ -1,14 +1,14 @@
 from __future__ import annotations
 import argparse, os, shutil, subprocess, platform
 
-from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python
+from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider
 from pstand.host_platform import host_description
 from pstand.toolchain import describe_toolchain
-from pstand.pbs_sdk import ensure_sdk, sdk_info
+from pstand.runtime_provider import ensure_sdk, sdk_info
 from pstand.python_build import build_python_package
 from pstand.launcher_build import build_launcher
 from pstand.package import package
-from pstand.runtime import ensure_runtime
+from pstand.runtime_provider import ensure_runtime
 from pstand.wheel import resolve_wheels
 from pstand.lock import write_lock, verify_lock
 from pstand.verify import verify
@@ -52,7 +52,9 @@ def main(argv=None):
         print("host:", host_description())
         print("target:", t.key, t.triple)
         print("target-python:", python_version())
-        print("PBS release:", pbs_release())
+        print("runtime-provider:", runtime_provider())
+        if runtime_provider() == "pbs":
+            print("PBS release:", pbs_release())
         try:
             dev = require_local_python()
             probe = subprocess.run([str(dev), "-c", "import sys; print(sys.version)"] , capture_output=True, text=True, check=True).stdout.strip()

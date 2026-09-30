@@ -143,7 +143,8 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
     for p in build_root.rglob("*.pyd" if target.os == "windows" else "*.so"):
         outputs.append(p)
     if target.os == "windows":
-        target_suffix = f".cp{target_python.python_major_minor.replace('.', '')}-{'win_amd64' if target.arch == 'x86_64' else 'win_arm64'}.pyd"
+        target_tag = {'x86': 'win32', 'x86_64': 'win_amd64', 'arm64': 'win_arm64'}[target.arch]
+        target_suffix = f".cp{target_python.python_major_minor.replace('.', '')}-{target_tag}.pyd"
         renamed = []
         for out in outputs:
             if out.name.endswith(target_suffix):

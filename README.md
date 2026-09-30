@@ -170,3 +170,32 @@ For Python 3.8 development environments, the build requirements intentionally al
 ### Windows XP / legacy Python
 
 Do not assume that selecting `python = "3.8.10"` makes a Windows XP package. Official CPython 3.8.10 Windows binaries do not support Windows XP, and current Python-build-standalone distributions for CPython 3.13 and earlier require Windows 8.1 or newer. A Windows XP product therefore needs a separately built/custom Python 3.8.x runtime, matching headers/import library, and an XP-compatible compiler/toolchain. The build system keeps development Python, target Python, and runtime provider as separate concepts so such a legacy provider can be added without constraining modern targets.
+
+
+## Runtime provider
+
+The Python used to run `tools/build.py` is only the development/build Python. It does not have to match the bundled runtime Python. Set `PYSTAND_PYTHON` or select any supported interpreter in VS Code.
+
+The bundled runtime is configured separately in `app/pyproject.toml`:
+
+```toml
+[tool.pstand.runtime]
+provider = "pbs"
+python = "3.13"
+```
+
+For a legacy or custom runtime, use `provider = "local"` and provide both a target runtime and its matching SDK:
+
+```toml
+[tool.pstand.runtime]
+provider = "local"
+python = "3.8.10"
+runtime = "runtimes/{target}/{python}"
+sdk = "runtimes/{target}/{python}-sdk"
+```
+
+The local SDK must contain the CPython headers and target libraries, and the local runtime must contain the target Python executable. This is intended for runtimes not supplied by PBS, including custom legacy Windows builds.
+
+### Windows XP note
+
+Python.org documents that CPython 3.8.10 itself cannot run on Windows XP. A Windows XP artifact therefore requires a separately maintained XP-compatible CPython build; PyStand's `local` runtime provider is designed to make that possible without changing the modern PBS path.

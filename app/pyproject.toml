@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myapp"
-version = "0.9.6"
+version = "0.10.0"
 description = "PyStand2 example application"
 requires-python = ">=3.8,<3.14"
 dependencies = []
@@ -26,6 +26,17 @@ where = ["src"]
 python = "3.13"
 entry = "myapp"
 
+[tool.pstand.runtime]
+# Runtime is independent from the Python used to run tools/build.py.
+# provider = "pbs" uses python-build-standalone.
+# provider = "local" lets you supply a prebuilt target runtime + SDK.
+provider = "pbs"
+python = "3.13"
+
+# Used only by provider = "local". Paths may contain {target}, {arch}, {python}.
+# runtime = "runtimes/{target}/{python}"
+# sdk = "runtimes/{target}/{python}-sdk"
+
 [tool.pstand.pbs]
 release = "20260929"
 
@@ -34,7 +45,7 @@ include = ["myapp.core.*", "myapp.services.*", "myapp.models.*"]
 exclude = ["myapp.config", "myapp.logging"]
 
 [tool.pstand.windows]
-architectures = ["x86_64", "arm64"]
+architectures = ["x86", "x86_64", "arm64"]
 
 [tool.pstand.macos]
 architectures = ["arm64", "x86_64"]

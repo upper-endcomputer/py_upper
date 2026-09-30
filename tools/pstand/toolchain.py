@@ -52,6 +52,8 @@ def _vs_install() -> Path | None:
 
 
 def _windows_vcvars(target: Target) -> list[str]:
+    if target.arch == "x86":
+        return ["x86"]
     if target.arch == "x86_64":
         return ["amd64"]
     if target.arch == "arm64":
@@ -130,5 +132,5 @@ def describe_toolchain(target: Target) -> dict[str, str]:
         "cxx": tc.cxx,
         "linker": tc.linker,
         "deployment_target": tc.deployment_target or "",
-        "vcvars_target": "amd64_arm64" if target.os == "windows" and target.arch == "arm64" else "amd64" if target.os == "windows" else "",
+        "vcvars_target": ("amd64_arm64" if target.arch == "arm64" else "amd64" if target.arch == "x86_64" else "x86") if target.os == "windows" else "",
     }

@@ -16,7 +16,7 @@ jobs:
           - os: windows-2025
             target: windows-x86_64
             cross: false
-          - os: macos-13
+          - os: macos-15-intel
             target: macos-x86_64
             cross: false
           - os: macos-14

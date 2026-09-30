@@ -25,6 +25,7 @@ class Target:
         return f"{self.os}-{self.arch}"
 
 TARGETS = {
+    "windows-x86": Target("windows", "x86", "i686-pc-windows-msvc"),
     "windows-x86_64": Target("windows", "x86_64", "x86_64-pc-windows-msvc"),
     "windows-arm64": Target("windows", "arm64", "aarch64-pc-windows-msvc"),
     "macos-x86_64": Target("macos", "x86_64", "x86_64-apple-darwin"),
@@ -61,11 +62,37 @@ def validate_target(name: str | None) -> Target:
         raise SystemExit(f"Unknown target: {name}; available: {', '.join(TARGETS)}")
     return TARGETS[name]
 
-def python_version() -> str:
-    return str(load_app_config()["tool"]["pstand"]["python"])
-
 def pstand_config() -> dict:
     return load_app_config()["tool"].get("pstand", {})
+
+def runtime_config() -> dict:
+    cfg = pstand_config().get("runtime", {})
+    return cfg if isinstance(cfg, dict) else {}
+
+def python_version() -> str:
+    cfg = runtime_config()
+    return str(cfg.get("python") or pstand_config().get("python") or "")
+
+def runtime_provider() -> str:
+    provider = str(runtime_config().get("provider") or "pbs").lower()
+    if provider not in {"pbs", "local"}:
+        raise RuntimeError(f"Unsupported runtime provider: {provider!r}; use 'pbs' or 'local'")
+    return provider
+
+def local_runtime_path(target: Target) -> Path:
+    value = runtime_config().get("runtime")
+    if not value:
+        raise RuntimeError("[tool.pstand.runtime].runtime is required when provider = 'local'")
+    return _expand_target_path(str(value), target)
+
+def local_sdk_path(target: Target) -> Path:
+    value = runtime_config().get("sdk")
+    if not value:
+        raise RuntimeError("[tool.pstand.runtime].sdk is required when provider = 'local'")
+    return _expand_target_path(str(value), target)
+
+def _expand_target_path(value: str, target: Target) -> Path:
+    return (ROOT / value.format(target=target.key, os=target.os, arch=target.arch, python=python_version())).resolve()
 
 def pbs_release() -> str:
     value = pstand_config().get("pbs", {}).get("release")
@@ -77,6 +104,8 @@ def cython_config() -> dict:
     return pstand_config().get("cython", {})
 
 def target_runtime_dir(target: Target) -> Path:
+    if runtime_provider() == "local":
+        return local_runtime_path(target)
     return RUNTIMES / target.key / python_version()
 
 def staging_dir(target: Target) -> Path:
@@ -86,6 +115,8 @@ def wheel_dir(target: Target) -> Path:
     return BUILD / "wheels" / target.key
 
 def pbs_sdk_dir(target: Target) -> Path:
+    if runtime_provider() == "local":
+        return local_sdk_path(target)
     return CACHE / "pbs-sdk" / target.key / python_version()
 
 def python_executable() -> Path:
