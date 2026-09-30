@@ -12,3 +12,8 @@ def test_toml_compatibility_layer():
     data = tomllib.loads('name = "py_upper"\n[tool.py_upper]\nentry = "main.py"\n')
     assert data["name"] == "py_upper"
     assert data["tool"]["py_upper"]["entry"] == "main.py"
+
+
+def test_runtime_imports_user_agent():
+    from py_upper import runtime
+    assert callable(runtime.user_agent)

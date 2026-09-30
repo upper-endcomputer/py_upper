@@ -8,7 +8,7 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir, project_version
+from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir, user_agent
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 

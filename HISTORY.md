@@ -1,3 +1,17 @@
+## v0.16.3
+
+### Problem
+- The v0.16.2 PBS runtime resolver called `user_agent()` without importing it, so a normal PBS-backed build failed with `NameError` before downloading the runtime.
+
+### Changes
+- Import `user_agent` explicitly in `tools/py_upper/runtime.py`.
+- Add a regression test covering the runtime module's User-Agent dependency.
+- Keep the v0.16.2 Python 3.8+ compatibility changes unchanged.
+
+### Verification
+- 12 tests passed locally.
+- `python tools/build.py --doctor --target linux-x86_64` passed.
+
 # py_upper Git history
 
 This repository preserves the complete release evolution from v0.9.1 through v0.16.2.
