@@ -38,6 +38,26 @@ python = "3.13"
 
 The development environment does not need to be a venv. In VS Code use **Python: Select Interpreter** to choose any supported environment (venv, conda, pyenv, Poetry-managed Python, system Python, etc.). `PYSTAND_PYTHON` is available for explicit builds.
 
+## Runtime manifests
+
+Every target runtime is now accompanied by a `manifest.json`. The manifest is the build contract between the runtime, SDK, target ABI and PyStand. It records the provider, target triple, Python version/ABI/platform tag, runtime root, SDK root and (for PBS) the release asset and SHA256.
+
+The build/verify/lock flow is intentionally closed:
+
+```text
+runtime + SDK
+    ↓
+manifest.json
+    ↓
+lock (manifest SHA256)
+    ↓
+build
+    ↓
+verify
+```
+
+A `local` runtime must provide a valid manifest; a PBS runtime gets its manifest generated from the PBS `PYTHON.json` metadata. PBS documents `PYTHON.json` as the machine-readable distribution description intended for downstream consumers.
+
 ## Runtime providers
 
 Modern targets normally use `pbs`:
@@ -105,7 +125,7 @@ Generated C is produced by the development Python/Cython environment, but native
 
 ## Locking
 
-`pystand.lock.json` records the target runtime provider, target Python, PBS release/assets/checksums when PBS is used, and exact wheel hashes. `--locked` verifies these inputs before doing any build work and is intentionally offline.
+`pystand.lock.json` records the target runtime provider, target Python, runtime manifest SHA256, PBS release/assets/checksums when PBS is used, and exact wheel hashes. `--locked` verifies these inputs before doing any build work and is intentionally offline.
 
 ## VS Code
 

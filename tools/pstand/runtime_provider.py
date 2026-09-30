@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from .config import RuntimeSpec, Target, pbs_sdk_dir, runtime_provider, runtime_spec, target_runtime_dir, python_version
+from .manifest import build_manifest, read_manifest, validate_manifest, write_manifest
 
 
 def _metadata(root: Path) -> dict:
@@ -50,34 +51,34 @@ def _local_info(target: Target) -> dict:
         raise RuntimeError(f"Local runtime does not exist: {root}")
     if not sdk.exists():
         raise RuntimeError(f"Local runtime SDK does not exist: {sdk}")
-    exe = _find_python(root, target)
-    include = _find_include(sdk)
-    version = _version_from_runtime(root) or _version_from_runtime(sdk) or spec.python
-    if not version.startswith(spec.python):
-        raise RuntimeError(f"Local runtime Python {version} does not match configured target Python {spec.python}")
-    data = _metadata(root)
-    triple = str(data.get("target_triple") or "")
-    if triple and triple != target.triple:
-        raise RuntimeError(f"Local runtime target {triple} does not match {target.triple}")
+    manifest = read_manifest(root)
+    validate_manifest(manifest, target, spec)
     return {
         "provider": "local",
         "target": target.key,
         "target_triple": target.triple,
         "root": str(root),
         "sdk_root": str(sdk),
-        "python_executable": str(exe),
-        "include_dir": str(include),
-        "python": version,
-        "python_major_minor": ".".join(version.split(".")[:2]),
-        "libpython_link_mode": None,
-        "metadata": data,
+        "python_executable": manifest["python_executable"],
+        "include_dir": manifest["include_dir"],
+        "python": manifest["python"],
+        "python_major_minor": manifest["python_major_minor"],
+        "python_tag": manifest.get("python_abi"),
+        "python_platform_tag": manifest.get("python_platform_tag"),
+        "manifest": manifest,
     }
 
 
 def ensure_runtime(target: Target) -> Path:
     if runtime_provider() == "pbs":
         from .runtime import ensure_pbs_runtime
-        return ensure_pbs_runtime(target)
+        root = ensure_pbs_runtime(target)
+        sdk = ensure_sdk(target)
+        info = sdk_info(target)
+        manifest = build_manifest(runtime_spec(target), info, root)
+        validate_manifest(manifest, target, runtime_spec(target))
+        write_manifest(root, manifest)
+        return root
     return Path(_local_info(target)["root"])
 
 

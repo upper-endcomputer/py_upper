@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import ROOT, Target, load_app_config, pbs_release, pbs_sdk_dir, python_version, wheel_dir, target_runtime_dir, runtime_provider
 from .runtime_provider import sdk_info
+from .manifest import manifest_hash, read_manifest
 
 LOCK = ROOT / "pystand.lock.json"
 
@@ -60,8 +61,11 @@ def write_lock(target: Target) -> Path:
     data["runtime_provider"] = runtime_provider()
     if runtime_provider() == "pbs":
         data["pbs_release"] = pbs_release()
+    runtime_record = _runtime_record(target)
+    manifest = read_manifest(target_runtime_dir(target))
     target_data = {
-        "runtime": _runtime_record(target),
+        "runtime": runtime_record,
+        "runtime_manifest_sha256": manifest_hash(manifest),
         "wheels": _wheel_records(target),
     }
     if runtime_provider() == "pbs":
@@ -115,6 +119,11 @@ def verify_lock(target: Target) -> None:
                 locked = (ROOT / locked).resolve()
             if current != locked:
                 raise RuntimeError(f"Local runtime lock mismatch for {target.key}: {key}")
+
+    locked_manifest_hash = target_data.get("runtime_manifest_sha256")
+    manifest = read_manifest(target_runtime_dir(target))
+    if locked_manifest_hash and manifest_hash(manifest) != locked_manifest_hash:
+        raise RuntimeError(f"Runtime manifest checksum mismatch for {target.key}")
 
     locked_runtime = target_data.get("runtime", {})
     if runtime_provider() == "pbs":

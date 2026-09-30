@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import APP, Target, staging_dir, target_runtime_dir, runtime_spec
+from .manifest import read_manifest, validate_manifest
+from .runtime_provider import sdk_info
 from .native.inspect import verify_arch
 from .python_build import module_name, selected_sources
 
@@ -19,6 +21,13 @@ def verify(t: Target) -> int:
         (runtime.exists(), "runtime"),
         ((stage / "site-packages" / "myapp").exists(), "myapp"),
     ]
+    if runtime.exists():
+        try:
+            manifest = read_manifest(runtime)
+            validate_manifest(manifest, t, runtime_spec(t))
+            checks.append((True, f"runtime manifest format={manifest.get('format')}"))
+        except Exception as exc:
+            checks.append((False, f"runtime manifest: {exc}"))
 
     site = stage / "site-packages" / "myapp"
     for source in selected_sources():
