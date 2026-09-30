@@ -222,3 +222,45 @@ def test_make_executable_adds_only_execute_bits(tmp_path):
     package._make_executable(path)
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o755
+
+
+def test_native_dependency_resolver_finds_nested_libraries(tmp_path):
+    from py_upper.native.deps import resolve_dependency
+
+    runtime = tmp_path / "runtime"
+    nested = runtime / "lib" / "tcl9.0"
+    nested.mkdir(parents=True)
+    names = [
+        "libtcl9thread3.0.6.dylib",
+        "libthread3.0.6.dylib",
+        "libitcl4.3.8.dylib",
+        "libtcl9itcl4.3.8.dylib",
+    ]
+    for name in names:
+        (nested / name).write_bytes(b"dylib")
+
+    owner = tmp_path / "site-packages" / "_tkinter.cpython.so"
+    owner.parent.mkdir(parents=True)
+    owner.write_bytes(b"dylib")
+
+    for name in names:
+        assert resolve_dependency(name, [tmp_path / "site-packages", runtime], owner) == (nested / name).resolve()
+
+
+def test_native_dependency_resolver_uses_macos_rpath(monkeypatch, tmp_path):
+    from py_upper.native.deps import resolve_dependency
+
+    runtime_lib = tmp_path / "runtime" / "lib"
+    runtime_lib.mkdir(parents=True)
+    lib = runtime_lib / "libitcl4.3.8.dylib"
+    lib.write_bytes(b"dylib")
+    owner = tmp_path / "runtime" / "lib" / "itcl4.3.8" / "libtcl9itcl4.3.8.dylib"
+    owner.parent.mkdir(parents=True)
+    owner.write_bytes(b"dylib")
+
+    monkeypatch.setattr("py_upper.native.deps._mac_rpaths", lambda path: ["@loader_path/../"])
+    assert resolve_dependency(
+        "@rpath/libitcl4.3.8.dylib",
+        [tmp_path / "runtime"],
+        owner,
+    ) == lib.resolve()

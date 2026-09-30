@@ -1,3 +1,24 @@
+# v0.16.11
+
+### Problem
+- macOS native dependency bundling could report valid PBS Tcl/Thread/Itcl libraries as unresolved.
+
+### Root cause
+- Native dependency resolution only checked the top level of each search root and did not emulate macOS `@rpath` entries. PBS places Tcl/Thread/Itcl dylibs below `runtime/lib`, so names such as `libtcl9thread3.0.6.dylib` were not found. The previous rewrite step also ignored dependencies that already used `@rpath`.
+
+### Changes
+- Recursively resolve native libraries by basename while preserving search-root priority.
+- Parse Mach-O `LC_RPATH` entries and use them for `@rpath` resolution.
+- Rewrite resolved macOS native dependencies to `@loader_path`-relative paths, including existing `@rpath` references.
+- Copy externally resolved native dependencies by content only.
+- Add regressions for nested Tcl-style dylibs and `@rpath` resolution.
+- Bump the project version to 0.16.11.
+
+### Verification
+- Full local regression suite passed.
+- `py_upper doctor --target linux-x86_64` passed.
+- `git diff --check` passed.
+
 # v0.16.10
 
 ### Problem
@@ -86,9 +107,9 @@ Fixes a macOS build failure where Cython exited successfully but the expected ge
 
 # py_upper Git history
 
-This repository preserves the complete release evolution from v0.9.1 through v0.16.10.
+This repository preserves the complete release evolution from v0.9.1 through v0.16.11.
 
-Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.10 is the current packaging reliability release.
+Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.11 is the current native dependency resolution release.
 
 
 ## v0.16.2

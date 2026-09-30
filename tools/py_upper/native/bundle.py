@@ -50,7 +50,8 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
                 verify_arch(resolved, target)
                 destination = source.parent / resolved.name
                 if not destination.exists():
-                    shutil.copy2(resolved, destination)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(resolved, destination)
                     queue.append(destination)
                 resolved = destination.resolve()
             deps.append(Dependency(source, name, resolved, False))
@@ -76,13 +77,22 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
         for binary in seen:
             if binary.suffix.lower() == ".so":
                 subprocess.run(["patchelf", "--set-rpath", "$ORIGIN", str(binary)], check=True)
-    if target.os == "macos" and shutil.which("install_name_tool") and shutil.which("otool"):
-        for binary in seen:
-            if binary.suffix.lower() not in {".so", ".dylib"}:
+    if target.os == "macos" and shutil.which("install_name_tool"):
+        for dependency in deps:
+            if dependency.external or dependency.resolved is None:
                 continue
-            result = subprocess.run(["otool", "-L", str(binary)], capture_output=True, text=True, check=True)
-            for line in result.stdout.splitlines()[1:]:
-                dep = line.strip().split(" ", 1)[0] if line.strip() else ""
-                if dep and not _system_dependency(dep, target) and not dep.startswith("@"):
-                    subprocess.run(["install_name_tool", "-change", dep, "@loader_path/" + Path(dep).name, str(binary)], check=True)
+            binary = dependency.owner
+            if binary.suffix.lower() not in {".so", ".dylib"} and binary.name != app_name():
+                continue
+            try:
+                rel = os.path.relpath(dependency.resolved, binary.parent)
+            except ValueError:
+                continue
+            new_name = "@loader_path/" + rel.replace(os.sep, "/")
+            if dependency.name == new_name:
+                continue
+            subprocess.run(
+                ["install_name_tool", "-change", dependency.name, new_name, str(binary)],
+                check=True,
+            )
     return deps

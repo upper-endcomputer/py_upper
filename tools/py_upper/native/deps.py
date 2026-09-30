@@ -149,24 +149,108 @@ def _name_key(value: str) -> str:
     return os.path.basename(value).lower()
 
 
+def _mac_rpaths(path: Path) -> list[str]:
+    """Return LC_RPATH entries from a Mach-O image."""
+    otool = shutil.which("otool")
+    if not otool:
+        return []
+    p = subprocess.run([otool, "-l", str(path)], capture_output=True, text=True, check=True)
+    lines = p.stdout.splitlines()
+    result: list[str] = []
+    for index, line in enumerate(lines):
+        if line.strip() != "cmd LC_RPATH":
+            continue
+        for candidate in lines[index + 1 : index + 5]:
+            value = candidate.strip()
+            if value.startswith("path "):
+                result.append(value[5:].split(" ", 1)[0])
+                break
+    return result
+
+
+def _expand_mac_path(value: str, owner: Path, search_roots: list[Path]) -> list[Path]:
+    if not value:
+        return []
+    if value.startswith("@loader_path/"):
+        return [owner.parent / value.split("/", 1)[1]]
+    if value == "@loader_path":
+        return [owner.parent]
+    executable_dirs: list[Path] = []
+    for root in search_roots:
+        candidate = root / "Contents" / "MacOS"
+        if candidate.is_dir():
+            executable_dirs.append(candidate)
+            break
+    if value.startswith("@executable_path/"):
+        rel = value.split("/", 1)[1]
+        return [base / rel for base in executable_dirs]
+    if value == "@executable_path":
+        return executable_dirs
+    if value.startswith("$ORIGIN/") or value.startswith("${ORIGIN}/"):
+        return [owner.parent / value.split("/", 1)[1]]
+    return [Path(value)]
+
+
+def _recursive_name_matches(search_roots: list[Path], key: str) -> list[Path]:
+    matches: list[Path] = []
+    seen: set[Path] = set()
+    for root in search_roots:
+        root = root.resolve()
+        if root in seen or not root.exists():
+            continue
+        seen.add(root)
+        direct = root / key
+        candidates = [direct] if direct.is_file() else []
+        candidates.extend(
+            candidate for candidate in root.rglob("*")
+            if candidate.is_file() and candidate.name.lower() == key and candidate != direct
+        )
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved not in seen:
+                seen.add(resolved)
+                matches.append(resolved)
+    return matches
+
+
 def resolve_dependency(name: str, search_roots: list[Path], owner: Path | None = None) -> Path | None:
+    """Resolve a native dependency using its platform-aware load path semantics.
+
+    In particular, macOS ``@rpath`` is resolved from the owner's ``LC_RPATH``
+    entries, then from the bundle search roots.  PBS places Tcl/Tk dylibs in
+    nested directories under ``runtime/lib``, so basename lookup must recurse
+    rather than checking only the top-level runtime directory.
+    """
     key = _name_key(name)
     candidates: list[Path] = []
+
     if owner is not None:
-        if name.startswith(("$ORIGIN/", "${ORIGIN}/")):
-            rel = name.split("/", 1)[1]
-            candidates.append(owner.parent / rel)
-        elif name.startswith("@loader_path/"):
-            candidates.append(owner.parent / name.split("/", 1)[1])
+        if name.startswith(("$ORIGIN/", "${ORIGIN}/", "@loader_path/")):
+            prefix = name.split("/", 1)[1]
+            candidates.append(owner.parent / prefix)
+        elif name == "@loader_path":
+            candidates.append(owner.parent)
         elif name.startswith("@rpath/"):
             rel = name.split("/", 1)[1]
-            candidates.extend([owner.parent / rel, *(r / rel for r in search_roots)])
+            for rpath in _mac_rpaths(owner):
+                for base in _expand_mac_path(rpath, owner, search_roots):
+                    candidates.append(base / rel)
+            candidates.extend(r / rel for r in search_roots)
+
     if Path(name).is_absolute():
         candidates.append(Path(name))
-    candidates.extend([r / key for r in search_roots])
+
+    candidates.extend(_recursive_name_matches(search_roots, key))
     for candidate in candidates:
-        if candidate.is_file() and candidate.name.lower() == key:
-            return candidate.resolve()
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved.is_file() and resolved.name.lower() == key:
+            return resolved
     return None
 
 
