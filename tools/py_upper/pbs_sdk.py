@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version, user_agent
-from .pbs_assets import find_matching_release, no_asset_error, resolve_pbs_release
+from .pbs_assets import find_matching_release, matching_assets, no_asset_error, resolve_pbs_release
 
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
 
@@ -59,18 +59,7 @@ def select_full_asset(
     release: dict, target: Target, pyver: str, release_tag: str | None = None,
     release_finder=None,
 ) -> dict:
-    candidates = []
-    for asset in release.get("assets", []):
-        name = asset.get("name", "")
-        if not (
-            name.startswith(f"cpython-{pyver}+")
-            and target.triple in name
-            and "freethreaded" not in name
-            and "full" in name
-            and name.endswith(".tar.zst")
-        ):
-            continue
-        candidates.append(asset)
+    candidates = matching_assets(release, target, pyver, kind="sdk")
     if not candidates:
         tag = release_tag or pbs_release()
         suggested = release_finder(pyver, target, "sdk") if release_finder else None

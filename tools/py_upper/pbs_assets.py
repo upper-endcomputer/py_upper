@@ -15,6 +15,8 @@ def asset_python_version(name: str) -> str | None:
 
 
 def _is_matching_asset(name: str, target: Target, pyver: str, *, kind: str) -> bool:
+    name = str(name).strip()
+    pyver = str(pyver).strip()
     if asset_python_version(name) != pyver or target.triple not in name or "freethreaded" in name:
         return False
     if kind == "runtime":
@@ -24,28 +26,28 @@ def _is_matching_asset(name: str, target: Target, pyver: str, *, kind: str) -> b
     raise ValueError(f"Unknown PBS asset kind: {kind}")
 
 
-def release_has_asset(release: dict[str, Any], target: Target, pyver: str, *, kind: str) -> bool:
-    return any(
-        _is_matching_asset(str(asset.get("name") or ""), target, pyver, kind=kind)
+def matching_assets(
+    release: dict[str, Any], target: Target, pyver: str, *, kind: str
+) -> list[dict[str, Any]]:
+    """Return exactly the PBS assets accepted for a Python/target/kind tuple."""
+    return [
+        asset
         for asset in release.get("assets", []) or []
-    )
+        if _is_matching_asset(str(asset.get("name") or ""), target, pyver, kind=kind)
+    ]
 
 
-def available_python_versions(release: dict, target: Target, *, kind: str) -> list[str]:
+def release_has_asset(release: dict[str, Any], target: Target, pyver: str, *, kind: str) -> bool:
+    return bool(matching_assets(release, target, pyver, kind=kind))
+
+
+def available_python_versions(release: dict[str, Any], target: Target, *, kind: str) -> list[str]:
     """Return sorted CPython versions available for a target in a PBS release."""
     versions: set[str] = set()
-    for asset in release.get("assets", []):
-        name = str(asset.get("name") or "")
+    for asset in release.get("assets", []) or []:
+        name = str(asset.get("name") or "").strip()
         version = asset_python_version(name)
-        if not version or target.triple not in name or "freethreaded" in name:
-            continue
-        if kind == "runtime":
-            wanted = "install_only_stripped" in name and name.endswith(".tar.gz")
-        elif kind == "sdk":
-            wanted = "full" in name and name.endswith(".tar.zst")
-        else:
-            raise ValueError(f"Unknown PBS asset kind: {kind}")
-        if wanted:
+        if version and _is_matching_asset(name, target, version, kind=kind):
             versions.add(version)
 
     def key(value: str) -> tuple[int, int, int]:

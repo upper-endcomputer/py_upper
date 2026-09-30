@@ -1,3 +1,13 @@
+## v0.16.18
+
+**Problem solved:** py_upper could report an exact Python version as available in a PBS release while the runtime selector still rejected the corresponding asset.
+
+**Root cause:** the diagnostic/release matcher and the runtime/SDK selectors were not using one shared asset predicate; the runtime and SDK selectors assumed a `cpython-X.Y.Z+...` prefix while the shared version parser also accepted a hyphen separator.
+
+**Implementation:** introduced a single `matching_assets()` path used by runtime and SDK selection, release detection, and version diagnostics. Asset names and requested Python versions are normalized before matching. Added regression tests covering both PBS filename separators and selector/diagnostic consistency.
+
+**Verification:** full local regression suite passed; `git diff --check` passed.
+
 ## v0.16.17
 
 **Problem solved:** Projects had to manually coordinate a target Python patch version with a PBS release tag, and the runtime asset matcher rejected valid PBS filenames such as `cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz`.

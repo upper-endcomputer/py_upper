@@ -1,3 +1,10 @@
+## 0.16.18
+
+- Unify PBS asset matching across runtime selection, SDK selection, release detection, and diagnostics.
+- Accept both `+` and `-` separators after the exact CPython patch version in PBS asset names.
+- Normalize requested Python versions before asset matching.
+- Add regression coverage preventing diagnostics from listing an available version that the selector cannot actually choose.
+
 ## 0.16.17
 
 - Allow projects to configure only the exact target Python version when using PBS.

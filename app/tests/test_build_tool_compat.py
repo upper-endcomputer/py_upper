@@ -602,3 +602,51 @@ def test_pbs_release_is_optional(monkeypatch):
         config, "py_upper_config", lambda: {"pbs": {"release": "20241016"}, "runtime": {"provider": "pbs"}}
     )
     assert config.pbs_release() == "20241016"
+
+
+def test_pbs_runtime_selector_and_available_versions_use_same_match_rule():
+    from py_upper.config import TARGETS
+    from py_upper.pbs_assets import available_python_versions, matching_assets
+    from py_upper.runtime import select_asset
+
+    release = {
+        "assets": [
+            {
+                "name": "cpython-3.11.10-20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
+                "browser_download_url": "https://example.invalid/runtime",
+            },
+            {
+                "name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
+                "browser_download_url": "https://example.invalid/runtime-plus",
+            },
+        ]
+    }
+    target = TARGETS["macos-arm64"]
+    assert available_python_versions(release, target, kind="runtime") == ["3.11.10"]
+    assert len(matching_assets(release, target, "3.11.10", kind="runtime")) == 2
+    selected = select_asset(release, target, " 3.11.10 ", "20241016")
+    assert selected in matching_assets(release, target, "3.11.10", kind="runtime")
+
+
+def test_pbs_sdk_selector_and_available_versions_use_same_match_rule():
+    from py_upper.config import TARGETS
+    from py_upper.pbs_assets import available_python_versions, matching_assets
+    from py_upper.pbs_sdk import select_full_asset
+
+    release = {
+        "assets": [
+            {
+                "name": "cpython-3.11.10-20241016-aarch64-apple-darwin-full.tar.zst",
+                "browser_download_url": "https://example.invalid/sdk",
+            },
+            {
+                "name": "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst",
+                "browser_download_url": "https://example.invalid/sdk-pgo",
+            },
+        ]
+    }
+    target = TARGETS["macos-arm64"]
+    assert available_python_versions(release, target, kind="sdk") == ["3.11.10"]
+    assert len(matching_assets(release, target, "3.11.10", kind="sdk")) == 2
+    selected = select_full_asset(release, target, "3.11.10", "20241016")
+    assert selected in matching_assets(release, target, "3.11.10", kind="sdk")
