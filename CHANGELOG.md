@@ -1,3 +1,22 @@
+# v0.16.10
+
+### Problem
+- macOS packaging could still fail while copying an ordinary read-only PBS runtime file, with `PermissionError: [Errno 1] Operation not permitted` from `os.chmod()`.
+
+### Root cause
+- The v0.16.9 custom copier stopped `copytree()`/`copy2()` metadata replay but still applied the full source POSIX mode to every copied file. A source mode such as `0444` caused the build to attempt a restrictive `chmod()` on the new file, which can be rejected by macOS in the app-bundle destination.
+
+### Changes
+- Make package-tree copies content-only; do not replay source POSIX modes or other filesystem metadata.
+- Preserve executable status only for the launcher through an explicit platform packaging step.
+- Keep runtime/native library copying independent of source executable/read-only modes.
+- Add regressions for read-only runtime files, symlinks, and launcher executable mode.
+- Bump the project version to 0.16.10.
+
+### Verification
+- Full local regression suite passed.
+- `git diff --check` passed.
+
 # v0.16.9
 
 ### Problem

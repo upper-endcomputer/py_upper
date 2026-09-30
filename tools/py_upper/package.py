@@ -14,18 +14,15 @@ def _write_resource_app_config(path: Path, name: str) -> None:
 
 
 def _copy_file_contents(source: Path, destination: Path) -> None:
-    """Copy file contents and POSIX mode only, never macOS metadata/flags.
+    """Copy only file bytes; never replay source filesystem metadata.
 
-    PBS archives can carry filesystem flags that macOS may refuse to reproduce
-    inside an app bundle.  The packaged runtime only needs the file bytes and
-    executable/readability mode; timestamps, ACLs, xattrs and flags should not
-    be cloned from the cache/runtime source tree.
+    A packaged runtime must not inherit read-only modes, ACLs, timestamps,
+    extended attributes, or filesystem flags from the PBS extraction tree.
+    The launcher is made executable explicitly by the platform-specific
+    package path below. Native libraries only need to be readable for dlopen.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    mode = stat.S_IMODE(source.stat().st_mode)
-    os.chmod(destination, mode)
-
 
 def _copy_tree_contents(source: Path, destination: Path) -> None:
     """Recursively copy a tree without copying source filesystem metadata."""
@@ -48,6 +45,12 @@ def _copy_tree_contents(source: Path, destination: Path) -> None:
             _copy_file_contents(src, dst)
 
 
+def _make_executable(path: Path) -> None:
+    """Make a packaged launcher executable without copying source metadata."""
+    mode = stat.S_IMODE(path.stat().st_mode)
+    os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
 ENTRY = '''from main import main\n\nif __name__ == "__main__":\n    raise SystemExit(main())\n'''
 
 
@@ -68,6 +71,8 @@ def package(target: Target, launcher: Path) -> Path:
         (out / "resources").mkdir(parents=True)
         executable = f"{name}.exe" if target.os == "windows" else name
         _copy_file_contents(launcher, out / executable)
+        if target.os == "linux":
+            _make_executable(out / executable)
         _copy_tree_contents(runtime, out / "runtime")
         _copy_tree_contents(stage / "site-packages", out / "site-packages")
         _copy_tree_contents(APP / "resources", out / "resources")
@@ -85,7 +90,7 @@ def package(target: Target, launcher: Path) -> Path:
         (res / "resources").mkdir()
         macos.mkdir(parents=True)
         _copy_file_contents(launcher, macos / name)
-        os.chmod(macos / name, 0o755)
+        _make_executable(macos / name)
         _copy_tree_contents(runtime, res / "runtime")
         _copy_tree_contents(stage / "site-packages", res / "site-packages")
         _copy_tree_contents(APP / "resources", res / "resources")
