@@ -1,3 +1,7 @@
+## 0.16.4
+
+Fixes a macOS build failure where Cython exited successfully but the expected generated `app.c` file was not found. Cython is now invoked from each source directory using relative paths and `--force`, with clearer diagnostics when generation still does not produce the requested file.
+
 ## v0.16.3
 
 ### Problem

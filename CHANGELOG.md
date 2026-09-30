@@ -1,3 +1,15 @@
+## 0.16.4
+
+### Fixed
+
+- Fix Cython source translation failing on macOS when an absolute source/output path did not materialize the requested `.c` file.
+- Run Cython from the source directory with relative paths and `--force`, then validate the generated artifact with actionable diagnostics.
+
+### Verification
+
+- Local regression tests pass.
+- `git diff --check` passes.
+
 ## v0.16.3
 
 ### Problem

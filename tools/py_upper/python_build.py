@@ -72,11 +72,28 @@ def _python_library(root: Path, target: Target) -> tuple[Path | None, str | None
 
 
 def cythonize_to_c(sources: list[Path], host_python: Path) -> None:
+    """Translate selected Python modules to C using the build-host Python.
+
+    Run Cython from each source directory and use relative input/output paths.
+    This avoids path canonicalisation/symlink issues on macOS and also makes
+    the generated-file contract explicit. ``--force`` prevents a stale Cython
+    cache or timestamp decision from silently skipping generation.
+    """
     for source in sources:
         c = source.with_suffix(".c")
-        run([str(host_python), "-m", "cython", "-3", "-o", str(c), str(source)], cwd=APP)
+        c.unlink(missing_ok=True)
+        run(
+            [str(host_python), "-m", "cython", "--force", "-3", "-o", c.name, source.name],
+            cwd=source.parent,
+        )
         if not c.exists():
-            raise RuntimeError(f"Cython did not generate {c}")
+            candidates = sorted(source.parent.glob(f"{source.stem}.*"))
+            generated = ", ".join(p.name for p in candidates if p.suffix in {".c", ".cpp"}) or "none"
+            raise RuntimeError(
+                f"Cython completed successfully but did not generate {c}. "
+                f"source={source}, cwd={source.parent}, generated={generated}, "
+                f"host_python={host_python}"
+            )
 
 
 def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
