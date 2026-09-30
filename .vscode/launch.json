@@ -16,7 +16,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/tools/build.py",
             "cwd": "${workspaceFolder}",
-            "args": ["build"],
+            "args": [],
             "console": "integratedTerminal",
             "justMyCode": false
         }

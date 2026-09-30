@@ -8,7 +8,7 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-from .config import CACHE, Target, python_version, target_runtime_dir
+from .config import CACHE, Target, pbs_release, python_version, target_runtime_dir
 
 LATEST_URL = "https://raw.githubusercontent.com/astral-sh/python-build-standalone/latest-release/latest-release.json"
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
@@ -83,7 +83,7 @@ def ensure_runtime(target: Target) -> Path:
     if marker.exists():
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
-            if data.get("format") == 4:
+            if data.get("format") == 5:
                 return out
         except Exception:
             pass
@@ -113,7 +113,7 @@ def ensure_runtime(target: Target) -> Path:
     marker.write_text(
         json.dumps(
             {
-                "format": 4,
+                "format": 5,
                 "tag": tag,
                 "asset": asset["name"],
                 "sha256": actual,

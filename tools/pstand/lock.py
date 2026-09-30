@@ -5,7 +5,7 @@ import json
 import platform
 from pathlib import Path
 
-from .config import ROOT, Target, load_app_config, pbs_sdk_dir, python_version, wheel_dir, target_runtime_dir
+from .config import ROOT, Target, load_app_config, pbs_release, pbs_sdk_dir, python_version, wheel_dir, target_runtime_dir
 from .pbs_sdk import sdk_info
 
 LOCK = ROOT / "pystand.lock.json"
@@ -43,10 +43,12 @@ def write_lock(target: Target) -> Path:
             "project": load_app_config()["project"]["name"],
             "python": python_version(),
             "generated_by": "PyStand2",
+            "pbs_release": pbs_release(),
             "host": {"system": platform.system(), "machine": platform.machine()},
             "targets": {},
         }
     data["python"] = python_version()
+    data["pbs_release"] = pbs_release()
     data["targets"][target.key] = {
         "pbs_sdk": {
             "tag": sdk_info(target).get("tag"),
@@ -66,6 +68,8 @@ def verify_lock(target: Target) -> None:
     data = json.loads(LOCK.read_text(encoding="utf-8"))
     if str(data.get("python")) != python_version():
         raise RuntimeError(f"Lock Python {data.get('python')} != app Python {python_version()}")
+    if str(data.get("pbs_release")) != pbs_release():
+        raise RuntimeError(f"Lock PBS release {data.get('pbs_release')} != app PBS release {pbs_release()}")
     target_data = data.get("targets", {}).get(target.key)
     if not target_data:
         raise RuntimeError(f"Target {target.key} is not present in {LOCK}")

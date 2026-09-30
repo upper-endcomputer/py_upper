@@ -9,7 +9,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-from .config import CACHE, Target, pbs_sdk_dir, python_version
+from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version
 
 LATEST_URL = "https://raw.githubusercontent.com/astral-sh/python-build-standalone/latest-release/latest-release.json"
 RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
@@ -18,7 +18,7 @@ RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/re
 def http_json(url: str) -> dict:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "PyStand2/0.4", "Accept": "application/vnd.github+json"},
+        headers={"User-Agent": "PyStand2/0.9.5", "Accept": "application/vnd.github+json"},
     )
     with urllib.request.urlopen(req) as r:
         return json.load(r)
@@ -37,17 +37,14 @@ def download(url: str, dst: Path) -> None:
     if dst.exists():
         return
     print(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "PyStand2/0.4"})
+    req = urllib.request.Request(url, headers={"User-Agent": "PyStand2/0.9.5"})
     with urllib.request.urlopen(req) as r, dst.open("wb") as f:
         shutil.copyfileobj(r, f)
 
 
 def resolve_release() -> tuple[str, dict]:
-    latest = http_json(LATEST_URL)
-    tag = latest.get("tag")
-    if not tag:
-        raise RuntimeError("PBS latest-release.json has no tag")
-    return str(tag), http_json(RELEASE_API.format(tag=tag))
+    tag = pbs_release()
+    return tag, http_json(RELEASE_API.format(tag=tag))
 
 
 def _version_key(name: str) -> tuple[int, int, int, str]:

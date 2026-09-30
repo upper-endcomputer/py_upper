@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse, os, shutil, subprocess, platform
 
-from pstand.config import BUILD, DIST, TARGETS, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python
+from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python
 from pstand.host_platform import host_description
 from pstand.toolchain import describe_toolchain
 from pstand.pbs_sdk import ensure_sdk, sdk_info
@@ -52,6 +52,7 @@ def main(argv=None):
         print("host:", host_description())
         print("target:", t.key, t.triple)
         print("Python:", python_version())
+        print("PBS release:", pbs_release())
         try:
             print("dev-python:", require_local_python())
         except Exception as e:

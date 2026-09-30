@@ -37,6 +37,8 @@ python tools/build.py --clean
 
 The old positional forms (`build`, `run`, `verify`, etc.) remain accepted for compatibility, but the flag form is the preferred interface.
 
+The PBS release is pinned in `app/pyproject.toml` under `[tool.pstand.pbs]`. Each lock records the selected PBS release, exact asset and SHA256, so a locked build cannot silently move to a newer PBS release.
+
 ## What `build` does
 
 `build` is the single normal workflow:
@@ -82,7 +84,7 @@ PBS's full archives contain `PYTHON.json` plus build/install artifacts; the buil
 
 `pystand.lock.json` is intentionally a **PyStand build lock**, not a replacement for Python's package lock format. It records the PBS SDK/runtime artifacts and resolved wheel hashes for each target.
 
-Python dependency lock files follow the standard `pylock.toml` format where appropriate; PyPA defines `pylock.toml` as the reproducible-environment format. 
+Python dependency lock files follow the standard `pylock.toml` format where appropriate; PyPA defines `pylock.toml` as the reproducible-environment format. The PyStand lock additionally covers non-Python build inputs such as PBS.
 
 
 ## Locked/offline builds
@@ -150,8 +152,9 @@ Cross-target builds are build-only on the host. `--run` requires target == host.
 Linux x86_64 has been exercised in this environment at the launcher/CMake level. A full PBS-backed package build could not be completed here because this execution environment currently cannot resolve external network hosts, so PBS download was not falsely reported as tested.
 
 The repository now includes `.github/workflows/validate.yml`, which runs the
-full native build/run workflow on Linux x86_64, Windows x86_64, macOS x86_64,
+full native build/run workflow on Linux x86_64, Linux arm64 cross-build, Windows x86_64, macOS x86_64,
 and macOS arm64. These CI jobs are the authoritative cross-platform
 validation path; this development environment cannot execute Windows or
-macOS binaries locally. GitHub currently provides Windows 2025 x64 and macOS
-14 arm64 hosted runners, so the workflow uses those supported runner labels.
+macOS binaries locally. GitHub currently provides Windows 2025 x64 and macOS 14 arm64 hosted runners,
+so the workflow uses those supported runner labels. The Linux arm64 job is a
+cross-build validation and does not attempt to execute the ARM64 artifact on the x86_64 runner.

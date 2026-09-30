@@ -67,6 +67,12 @@ def python_version() -> str:
 def pstand_config() -> dict:
     return load_app_config()["tool"].get("pstand", {})
 
+def pbs_release() -> str:
+    value = pstand_config().get("pbs", {}).get("release")
+    if not value:
+        raise RuntimeError("[tool.pstand.pbs].release is required for reproducible builds")
+    return str(value)
+
 def cython_config() -> dict:
     return pstand_config().get("cython", {})
 

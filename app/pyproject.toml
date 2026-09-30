@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myapp"
-version = "0.9.4"
+version = "0.9.5"
 description = "PyStand2 example application"
 requires-python = ">=3.13,<3.14"
 dependencies = []
@@ -18,6 +18,9 @@ where = ["src"]
 [tool.pstand]
 python = "3.13"
 entry = "myapp"
+
+[tool.pstand.pbs]
+release = "20260929"
 
 [tool.pstand.cython]
 include = ["myapp.core.*", "myapp.services.*", "myapp.models.*"]
