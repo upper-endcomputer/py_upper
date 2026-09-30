@@ -1,5 +1,5 @@
 from __future__ import annotations
-from .config import APP, DIST, Target, app_name, runtime_spec, staging_dir, target_runtime_dir
+from .config import APP, DIST, Target, app_name, runtime_spec, staging_dir, target_runtime_dir, target_extension_suffix
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import verify_arch
 from .python_build import module_name, selected_sources
@@ -37,14 +37,7 @@ def verify(t: Target) -> int:
             except Exception as exc:
                 checks.append((False, f"native arch {mod}: {exc}"))
             spec = runtime_spec(t)
-            if t.os == "windows":
-                platform_tag = {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[t.arch]
-                expected = f".cp{spec.major_minor.replace('.', '')}-{platform_tag}.pyd"
-            elif t.os == "linux":
-                arch = {"x86_64": "x86_64", "arm64": "aarch64"}[t.arch]
-                expected = f".cp{spec.major_minor.replace('.', '')}-{arch}-linux-gnu.so"
-            else:
-                expected = f".cp{spec.major_minor.replace('.', '')}-darwin.so"
+            expected = target_extension_suffix(t, spec.major_minor, spec.abi_tag)
             checks.append((candidates[0].name.endswith(expected), f"Python extension tag {mod}={expected}"))
         rel = source.relative_to(APP / "src")
         py = site / rel

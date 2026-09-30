@@ -1,3 +1,13 @@
+# v0.16.14
+
+**Problem solved:** The packaged macOS/Linux application could fail with `ModuleNotFoundError: No module named 'main'` after Cythonized modules were placed in `site-packages`.
+
+**Root cause:** Unix Cython extension files were renamed with a `cp313-...` suffix that the target CPython import machinery does not recognize.
+
+**Implementation:** Added a target-aware extension suffix derived from the CPython naming convention (`.cpython-313-darwin.so`, `.cpython-313-x86_64-linux-gnu.so`, etc.) and reused it in packaging verification. Windows retains the `.cp313-...pyd` convention.
+
+**Verification:** Full local regression suite passed; `git diff --check` passed.
+
 # v0.16.13
 
 **Problem solved:** Verification could fail with `FAIL core` and make a successful package return `SystemExit: 1` when the user's source tree did not contain a `core` package.

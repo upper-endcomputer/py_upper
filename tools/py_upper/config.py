@@ -162,6 +162,17 @@ def pbs_release() -> str:
 def cython_config() -> dict:
     return py_upper_config().get("cython", {})
 
+def target_extension_suffix(target: Target, python_major_minor: str, abi_tag: str) -> str:
+    """Return the extension-module suffix recognized by target CPython."""
+    if target.os == "windows":
+        platform_tag = {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[target.arch]
+        return f".{abi_tag}-{platform_tag}.pyd"
+    if target.os == "linux":
+        arch = {"x86_64": "x86_64", "arm64": "aarch64"}[target.arch]
+        return f".cpython-{python_major_minor.replace('.', '')}-{arch}-linux-gnu.so"
+    return f".cpython-{python_major_minor.replace('.', '')}-darwin.so"
+
+
 def target_runtime_dir(target: Target) -> Path:
     if runtime_provider() == "local":
         return local_runtime_path(target)
@@ -238,6 +249,10 @@ def resolve_target_python(target: Target):
             if self.target.os == "linux":
                 return {"x86_64": "manylinux_2_17_x86_64", "arm64": "manylinux_2_17_aarch64"}[self.target.arch]
             return "macosx_11_0_arm64" if self.target.arch == "arm64" else "macosx_10_15_x86_64"
+
+        @property
+        def extension_suffix(self) -> str:
+            return target_extension_suffix(self.target, self.python_major_minor, self.abi_tag)
 
     from .runtime_provider import ensure_sdk, sdk_info
     spec = runtime_spec(target)

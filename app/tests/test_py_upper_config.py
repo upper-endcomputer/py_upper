@@ -23,8 +23,8 @@ def test_all_release_targets_are_declared():
 
 def test_project_version_and_user_agent():
     from py_upper.config import project_version, user_agent
-    assert project_version() == "0.16.13"
-    assert user_agent() == "py_upper/0.16.13"
+    assert project_version() == "0.16.14"
+    assert user_agent() == "py_upper/0.16.14"
 
 
 def test_app_name_is_configurable(monkeypatch):
@@ -35,3 +35,13 @@ def test_app_name_is_configurable(monkeypatch):
     })
     assert config.app_name() == "Demo Tool"
     assert config.app_identifier() == "com.example.demo"
+
+
+def test_target_extension_suffix_matches_cpython_importer_conventions():
+    from py_upper.config import TARGETS, target_extension_suffix
+
+    assert target_extension_suffix(TARGETS["windows-x86_64"], "3.13", "cp313") == ".cp313-win_amd64.pyd"
+    assert target_extension_suffix(TARGETS["linux-x86_64"], "3.13", "cp313") == ".cpython-313-x86_64-linux-gnu.so"
+    assert target_extension_suffix(TARGETS["linux-arm64"], "3.13", "cp313") == ".cpython-313-aarch64-linux-gnu.so"
+    assert target_extension_suffix(TARGETS["macos-arm64"], "3.13", "cp313") == ".cpython-313-darwin.so"
+    assert target_extension_suffix(TARGETS["macos-x86_64"], "3.13", "cp313") == ".cpython-313-darwin.so"

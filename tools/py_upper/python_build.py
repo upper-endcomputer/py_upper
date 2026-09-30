@@ -271,13 +271,7 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
     # suffix describes the host Python. Normalize it to the *target* ABI.
     # This is essential when, for example, a Python 3.13 build host produces
     # a Python 3.8 runtime package.
-    if target.os == "windows":
-        target_suffix = f".{target_python.abi_tag}-{target_python.platform_tag}.pyd"
-    elif target.os == "linux":
-        arch = {"x86_64": "x86_64", "arm64": "aarch64"}[target.arch]
-        target_suffix = f".{target_python.abi_tag}-{arch}-linux-gnu.so"
-    else:
-        target_suffix = f".{target_python.abi_tag}-darwin.so"
+    target_suffix = target_python.extension_suffix
     renamed = []
     for out in outputs:
         stem = out.name.split(".", 1)[0]

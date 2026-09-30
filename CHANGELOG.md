@@ -1,5 +1,24 @@
 # py_upper Changelog
 
+## 0.16.14 — Use CPython-recognized extension suffixes
+
+### Problem
+- A packaged application could fail at startup with `ModuleNotFoundError: No module named 'main'` even though `main` had been Cythonized and copied into `site-packages`.
+
+### Root cause
+- Unix extensions were renamed to `.cp313-darwin.so` or `.cp313-x86_64-linux-gnu.so`. Those names do not match the target CPython importer's standard extension suffixes; the standard importer exposes `EXTENSION_SUFFIXES` as the authoritative list of recognized extension-module suffixes.
+
+### Changes
+- Derive target Unix extension filenames using CPython's `cpython-<major><minor>-...` ABI naming convention.
+- Keep Windows `.cp<version>-<platform>.pyd` naming because that is the Windows CPython convention.
+- Reuse the same target extension suffix rule in verification.
+- Add regression coverage for target-specific extension suffixes.
+- Bump the project version to 0.16.14.
+
+### Verification
+- Full local regression suite passed.
+- `git diff --check` passed.
+
 ## 0.16.13 — Make verification project-layout agnostic
 
 ### Problem
