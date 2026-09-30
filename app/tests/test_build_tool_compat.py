@@ -164,3 +164,27 @@ def test_remove_cython_sources_leaves_only_package_markers(tmp_path, monkeypatch
     assert not (site / "utils" / "paths.py").exists()
     assert (site / "core" / "__init__.py").exists()
     assert (site / "utils" / "__init__.py").exists()
+
+
+def test_package_tree_copy_does_not_clone_filesystem_metadata(monkeypatch, tmp_path):
+    from py_upper import package
+
+    source = tmp_path / "runtime"
+    destination = tmp_path / "bundle-runtime"
+    (source / "lib" / "pkg").mkdir(parents=True)
+    (source / "lib" / "pkg" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    (source / "bin").mkdir()
+    executable = source / "bin" / "python"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    def fail_copystat(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(package.shutil, "copystat", fail_copystat)
+
+    package._copy_tree_contents(source, destination)
+
+    assert (destination / "lib" / "pkg" / "module.py").read_text(encoding="utf-8") == "value = 1\n"
+    assert (destination / "bin" / "python").read_text(encoding="utf-8") == "#!/bin/sh\n"
+    assert destination.joinpath("bin", "python").stat().st_mode & 0o111

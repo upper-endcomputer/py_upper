@@ -1,3 +1,13 @@
+# v0.16.9
+
+**Problem solved:** macOS app packaging failed during runtime tree copying with `Errno 1: Operation not permitted`.
+
+**Root cause:** `shutil.copytree()` copied filesystem metadata/flags via its metadata-preserving copy path; macOS can reject reproducing those attributes in the destination app bundle.
+
+**Implementation:** Added a packaging-specific recursive copier that transfers file contents, executable/readable mode, and symlink targets without cloning ACLs, xattrs, timestamps, or filesystem flags. Applied it to the runtime, site-packages, resources, and launcher.
+
+**Verification:** 21 tests passed locally, including a regression test that makes `copystat()` fail with `EPERM`.
+
 # v0.16.8
 
 ### Problem

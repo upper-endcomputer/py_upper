@@ -1,3 +1,24 @@
+# v0.16.9
+
+### Problem
+- macOS packaging could fail while copying the PBS runtime into `Contents/Resources/runtime` with `shutil.Error` / `Errno 1: Operation not permitted`.
+- The failure affected ordinary Python runtime files and vendored packages, including `pip/_vendor/urllib3`, even though the source files were readable.
+
+### Root cause
+- `shutil.copytree()` uses metadata-preserving file copies by default and also applies directory metadata. On macOS, reproducing source filesystem flags/metadata can be rejected with `EPERM` inside the destination app bundle.
+
+### Changes
+- Replace package-time `shutil.copytree()` calls with a controlled recursive copier.
+- Copy file contents and POSIX mode only; do not clone ACLs, extended attributes, timestamps, or filesystem flags.
+- Preserve symlink targets so runtime and package links continue to work.
+- Use the safe copier for the bundled runtime, compiled site-packages, app resources, and launcher.
+- Add a regression test that simulates `copystat()` returning `EPERM`.
+- Bump the project version to 0.16.9.
+
+### Verification
+- 21 local tests passed.
+- `git diff --check` passed.
+
 # v0.16.8
 
 ### Problem
