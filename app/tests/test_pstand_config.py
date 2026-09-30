@@ -12,3 +12,10 @@ def test_development_python_is_independent(monkeypatch):
     monkeypatch.setenv("PYSTAND_PYTHON", sys.executable)
     from pstand.config import require_local_python
     assert require_local_python().resolve() == Path(sys.executable).resolve()
+
+def test_all_release_targets_are_declared():
+    assert set(TARGETS) == {
+        "windows-x86", "windows-x86_64", "windows-arm64",
+        "macos-x86_64", "macos-arm64",
+        "linux-x86_64", "linux-arm64",
+    }
