@@ -158,3 +158,15 @@ validation path; this development environment cannot execute Windows or
 macOS binaries locally. GitHub currently provides Windows 2025 x64 and macOS 14 arm64 hosted runners,
 so the workflow uses those supported runner labels. The Linux arm64 job is a
 cross-build validation and does not attempt to execute the ARM64 artifact on the x86_64 runner.
+
+## Python environment
+
+The Python used to run `tools/build.py` is a **development/build Python**, not necessarily the Python shipped with the application. Configure it with `PYSTAND_PYTHON`, or select any suitable interpreter in VS Code. A project-local `.venv` is optional.
+
+The bundled target Python is controlled independently by `[tool.pstand].python` in `app/pyproject.toml`. Cython runs on the development Python and generates C; the generated C is compiled against the target Python SDK. Therefore the two Python versions do not have to match.
+
+For Python 3.8 development environments, the build requirements intentionally allow an older setuptools line because current setuptools releases have raised their minimum Python version. Cython 3.1 supports CPython 3.8+.
+
+### Windows XP / legacy Python
+
+Do not assume that selecting `python = "3.8.10"` makes a Windows XP package. Official CPython 3.8.10 Windows binaries do not support Windows XP, and current Python-build-standalone distributions for CPython 3.13 and earlier require Windows 8.1 or newer. A Windows XP product therefore needs a separately built/custom Python 3.8.x runtime, matching headers/import library, and an XP-compatible compiler/toolchain. The build system keeps development Python, target Python, and runtime provider as separate concepts so such a legacy provider can be added without constraining modern targets.

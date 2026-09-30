@@ -51,10 +51,13 @@ def main(argv=None):
     if action_name == "doctor":
         print("host:", host_description())
         print("target:", t.key, t.triple)
-        print("Python:", python_version())
+        print("target-python:", python_version())
         print("PBS release:", pbs_release())
         try:
-            print("dev-python:", require_local_python())
+            dev = require_local_python()
+            probe = subprocess.run([str(dev), "-c", "import sys; print(sys.version)"] , capture_output=True, text=True, check=True).stdout.strip()
+            print("dev-python:", dev)
+            print("dev-python-version:", probe)
         except Exception as e:
             print("dev-python: UNAVAILABLE:", e)
         print("SDK:", pbs_sdk_dir(t))

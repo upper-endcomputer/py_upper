@@ -1,12 +1,17 @@
 [build-system]
-requires = ["setuptools>=77", "wheel", "Cython>=3.1"]
+requires = [
+    "setuptools>=71,<72; python_version < '3.9'",
+    "setuptools>=77; python_version >= '3.9'",
+    "wheel",
+    "Cython>=3.1,<3.2",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "myapp"
-version = "0.9.5"
+version = "0.9.6"
 description = "PyStand2 example application"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.8,<3.14"
 dependencies = []
 
 [tool.setuptools]
@@ -16,6 +21,8 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.pstand]
+# Bundled target/runtime Python. This is independent from the Python used to
+# run tools/build.py. Set it to the exact runtime you want to ship.
 python = "3.13"
 entry = "myapp"
 

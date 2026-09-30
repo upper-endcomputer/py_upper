@@ -113,14 +113,23 @@ def python_executable() -> Path:
     raise RuntimeError("No development Python found. Set PYSTAND_PYTHON or install Python.")
 
 def require_local_python() -> Path:
+    """Return the configurable host/development Python.
+
+    The host Python is only a build tool: Cython generates C with it and the
+    target Python headers/runtime are used for the actual extension build. It
+    therefore does *not* need to equal the bundled target Python version.
+    This is important for legacy targets such as Python 3.8.x.
+    """
     p = python_executable()
     if not p.exists():
         raise RuntimeError(f"Development Python not found: {p}. Set PYSTAND_PYTHON to a valid interpreter.")
-    expected = python_version().split(".")
     probe = __import__("subprocess").run(
-        [str(p), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+        [str(p), "-c", "import sys; print(sys.version_info[0], sys.version_info[1], sys.executable)"],
         capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    if probe != ".".join(expected[:2]):
-        raise RuntimeError(f"Development Python {probe} does not match project Python {'.'.join(expected[:2])}: {p}")
+    ).stdout.strip().split()
+    if len(probe) < 2:
+        raise RuntimeError(f"Could not determine development Python version: {p}")
+    major, minor = int(probe[0]), int(probe[1])
+    if (major, minor) < (3, 8):
+        raise RuntimeError(f"Development Python {major}.{minor} is too old; Python 3.8+ is required: {p}")
     return p
