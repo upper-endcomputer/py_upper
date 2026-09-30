@@ -55,9 +55,11 @@ def write_lock(target: Target) -> Path:
             "host": {"system": platform.system(), "machine": platform.machine()},
             "targets": {},
         }
-    data["format"] = 2
+    data["format"] = 3
     data["python"] = python_version()
     data["runtime_provider"] = runtime_provider()
+    if runtime_provider() == "pbs":
+        data["pbs_release"] = pbs_release()
     target_data = {
         "runtime": _runtime_record(target),
         "wheels": _wheel_records(target),
@@ -99,8 +101,19 @@ def verify_lock(target: Target) -> None:
     else:
         info = sdk_info(target)
         locked_runtime = target_data.get("runtime", {})
-        for key in ("provider", "python", "root", "sdk_root"):
-            if locked_runtime.get(key) and str(info.get("root") if key == "root" else info.get("sdk_root") if key == "sdk_root" else info.get(key)) != str(locked_runtime[key]):
+        if str(locked_runtime.get("provider")) != "local":
+            raise RuntimeError(f"Local runtime lock provider mismatch for {target.key}")
+        if locked_runtime.get("python") and str(info.get("python")) != str(locked_runtime["python"]):
+            raise RuntimeError(f"Local runtime Python lock mismatch for {target.key}")
+        if locked_runtime.get("target_triple") and str(info.get("target_triple")) != str(locked_runtime["target_triple"]):
+            raise RuntimeError(f"Local runtime target lock mismatch for {target.key}")
+        current_root = Path(str(info["root"])).resolve()
+        current_sdk = Path(str(info["sdk_root"])).resolve()
+        for key, current in (("root", current_root), ("sdk_root", current_sdk)):
+            locked = Path(str(locked_runtime[key]))
+            if not locked.is_absolute():
+                locked = (ROOT / locked).resolve()
+            if current != locked:
                 raise RuntimeError(f"Local runtime lock mismatch for {target.key}: {key}")
 
     locked_runtime = target_data.get("runtime", {})

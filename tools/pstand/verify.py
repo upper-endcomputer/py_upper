@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import APP, Target, staging_dir, target_runtime_dir
+from .config import APP, Target, staging_dir, target_runtime_dir, runtime_spec
 from .native.inspect import verify_arch
 from .python_build import module_name, selected_sources
 
@@ -31,9 +31,16 @@ def verify(t: Target) -> int:
                 checks.append((True, f"native arch {mod}={info.arch}"))
             except Exception as exc:
                 checks.append((False, f"native arch {mod}: {exc}"))
+            spec = runtime_spec(t)
             if t.os == "windows":
-                expected = f".cp313-{'win_amd64' if t.arch == 'x86_64' else 'win_arm64'}.pyd"
-                checks.append((candidates[0].name.endswith(expected), f"Python extension tag {mod}"))
+                platform_tag = {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[t.arch]
+                expected = f".cp{spec.major_minor.replace('.', '')}-{platform_tag}.pyd"
+            elif t.os == "linux":
+                arch = {"x86_64": "x86_64", "arm64": "aarch64"}[t.arch]
+                expected = f".cp{spec.major_minor.replace('.', '')}-{arch}-linux-gnu.so"
+            else:
+                expected = f".cp{spec.major_minor.replace('.', '')}-darwin.so"
+            checks.append((candidates[0].name.endswith(expected), f"Python extension tag {mod}={expected}"))
         rel = source.relative_to(APP / "src").with_suffix(".py")
         checks.append((not (site / rel).exists(), f"source removed {mod}"))
 

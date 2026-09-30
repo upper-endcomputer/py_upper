@@ -24,6 +24,21 @@ class Target:
     def key(self) -> str:
         return f"{self.os}-{self.arch}"
 
+@dataclass(frozen=True)
+class RuntimeSpec:
+    provider: str
+    python: str
+    target: Target
+    root: Path
+    sdk_root: Path
+    @property
+    def major_minor(self) -> str:
+        parts = self.python.split(".")
+        return ".".join(parts[:2])
+    @property
+    def abi_tag(self) -> str:
+        return f"cp{self.major_minor.replace('.', '')}"
+
 TARGETS = {
     "windows-x86": Target("windows", "x86", "i686-pc-windows-msvc"),
     "windows-x86_64": Target("windows", "x86_64", "x86_64-pc-windows-msvc"),
@@ -71,7 +86,21 @@ def runtime_config() -> dict:
 
 def python_version() -> str:
     cfg = runtime_config()
-    return str(cfg.get("python") or pstand_config().get("python") or "")
+    value = cfg.get("python") or pstand_config().get("python") or ""
+    value = str(value)
+    if not value:
+        raise RuntimeError("[tool.pstand.runtime].python is required")
+    return value
+
+def runtime_spec(target: Target) -> RuntimeSpec:
+    provider = runtime_provider()
+    if provider == "local":
+        root = local_runtime_path(target)
+        sdk = local_sdk_path(target)
+    else:
+        root = target_runtime_dir(target)
+        sdk = pbs_sdk_dir(target)
+    return RuntimeSpec(provider, python_version(), target, root, sdk)
 
 def runtime_provider() -> str:
     provider = str(runtime_config().get("provider") or "pbs").lower()

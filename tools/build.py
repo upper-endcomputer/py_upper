@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse, os, shutil, subprocess, platform
 
-from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider
+from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider, runtime_spec
 from pstand.host_platform import host_description
 from pstand.toolchain import describe_toolchain
 from pstand.runtime_provider import ensure_sdk, sdk_info
@@ -51,8 +51,10 @@ def main(argv=None):
     if action_name == "doctor":
         print("host:", host_description())
         print("target:", t.key, t.triple)
-        print("target-python:", python_version())
-        print("runtime-provider:", runtime_provider())
+        spec = runtime_spec(t)
+        print("target-python:", spec.python)
+        print("target-abi:", spec.abi_tag)
+        print("runtime-provider:", spec.provider)
         if runtime_provider() == "pbs":
             print("PBS release:", pbs_release())
         try:

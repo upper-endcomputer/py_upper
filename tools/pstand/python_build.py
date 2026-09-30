@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import APP, BUILD, Target, cython_config, require_local_python, staging_dir
+from .config import APP, BUILD, Target, cython_config, require_local_python, staging_dir, runtime_spec
 from .pbs_sdk import sdk_info
 from .target_python import resolve_target_python
 from .toolchain import resolve_toolchain
@@ -142,19 +142,25 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
     outputs = []
     for p in build_root.rglob("*.pyd" if target.os == "windows" else "*.so"):
         outputs.append(p)
+    # setuptools runs under the development interpreter, so its extension
+    # suffix describes the host Python. Normalize it to the *target* ABI.
+    # This is essential when, for example, a Python 3.13 build host produces
+    # a Python 3.8 runtime package.
     if target.os == "windows":
-        target_tag = {'x86': 'win32', 'x86_64': 'win_amd64', 'arm64': 'win_arm64'}[target.arch]
-        target_suffix = f".cp{target_python.python_major_minor.replace('.', '')}-{target_tag}.pyd"
-        renamed = []
-        for out in outputs:
-            if out.name.endswith(target_suffix):
-                renamed.append(out)
-                continue
-            stem = out.name.split(".", 1)[0]
-            dst = out.with_name(stem + target_suffix)
+        target_suffix = f".{target_python.abi_tag}-{target_python.platform_tag}.pyd"
+    elif target.os == "linux":
+        arch = {"x86_64": "x86_64", "arm64": "aarch64"}[target.arch]
+        target_suffix = f".{target_python.abi_tag}-{arch}-linux-gnu.so"
+    else:
+        target_suffix = f".{target_python.abi_tag}-darwin.so"
+    renamed = []
+    for out in outputs:
+        stem = out.name.split(".", 1)[0]
+        dst = out if out.name.endswith(target_suffix) else out.with_name(stem + target_suffix)
+        if out != dst:
             out.rename(dst)
-            renamed.append(dst)
-        outputs = renamed
+        renamed.append(dst)
+    outputs = renamed
     if len(outputs) != len(sources):
         raise RuntimeError(f"Expected {len(sources)} native extensions, got {len(outputs)} in {build_root}")
     return outputs

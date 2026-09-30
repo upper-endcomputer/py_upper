@@ -79,7 +79,9 @@ def ensure_pbs_runtime(target: Target) -> Path:
     if marker.exists():
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
-            if data.get("format") == 5:
+            if (data.get("format") == 5 and data.get("tag") == pbs_release()
+                    and str(data.get("python")) == python_version()
+                    and data.get("target") == target.key):
                 return out
         except Exception:
             pass

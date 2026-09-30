@@ -141,7 +141,13 @@ def ensure_pbs_sdk(target: Target) -> Path:
     out = pbs_sdk_dir(target)
     marker = out / ".pystand2-sdk.json"
     if marker.exists():
-        return out
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            if (data.get("tag") == pbs_release() and str(data.get("python_major_minor") or data.get("python")) .startswith(python_version())
+                    and data.get("target") == target.key):
+                return out
+        except Exception:
+            pass
 
     tag, release = resolve_release()
     asset = select_full_asset(release, target, python_version())

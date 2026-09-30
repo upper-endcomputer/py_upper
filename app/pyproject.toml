@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myapp"
-version = "0.10.0"
+version = "0.11.0"
 description = "PyStand2 example application"
 requires-python = ">=3.8,<3.14"
 dependencies = []
@@ -23,7 +23,6 @@ where = ["src"]
 [tool.pstand]
 # Bundled target/runtime Python. This is independent from the Python used to
 # run tools/build.py. Set it to the exact runtime you want to ship.
-python = "3.13"
 entry = "myapp"
 
 [tool.pstand.runtime]

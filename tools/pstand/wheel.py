@@ -5,14 +5,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .config import APP, BUILD, Target, load_app_config, python_version, require_local_python
+from .config import APP, BUILD, Target, load_app_config, python_version, require_local_python, runtime_spec
 from .target_python import resolve_target_python
 
 
 def _pip_args(target: Target) -> list[str]:
     pyver = python_version()
     if target.os == "windows":
-        platform_tag = "win_amd64" if target.arch == "x86_64" else "win_arm64"
+        platform_tag = {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[target.arch]
     elif target.os == "macos":
         # macOS wheels are versioned by minimum deployment target. 11.0 is the
         # baseline for arm64; x86_64 wheels using 10.9+ remain broadly usable.
@@ -21,6 +21,8 @@ def _pip_args(target: Target) -> list[str]:
         platform_tag = "manylinux_2_17_aarch64" if target.arch == "arm64" else "manylinux_2_17_x86_64"
     else:
         raise RuntimeError(f"Unsupported wheel target: {target.key}")
+    # pip accepts a full X.Y version for cross-target resolution. ABI is left
+    # unconstrained so compatible abi3 wheels remain eligible.
     return [
         "--platform", platform_tag,
         "--python-version", pyver,
