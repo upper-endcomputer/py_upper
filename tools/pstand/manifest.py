@@ -7,7 +7,7 @@ from typing import Any
 
 from .config import ROOT, RuntimeSpec, Target
 
-FORMAT = 1
+FORMAT = 2
 FILENAME = "manifest.json"
 
 
@@ -60,20 +60,36 @@ def validate_manifest(data: dict[str, Any], target: Target, spec: RuntimeSpec) -
         value = data.get(field)
         if not isinstance(value, dict) or not value.get("root"):
             raise RuntimeError(f"Runtime manifest missing {field}.root")
-    runtime_root = Path(data["runtime"]["root"]).resolve()
-    sdk_root = Path(data["sdk"]["root"]).resolve()
-    if runtime_root != spec.root.resolve():
-        raise RuntimeError(f"Runtime manifest runtime.root {runtime_root} != configured {spec.root.resolve()}")
-    if sdk_root != spec.sdk_root.resolve():
-        raise RuntimeError(f"Runtime manifest sdk.root {sdk_root} != configured {spec.sdk_root.resolve()}")
+    runtime_root = spec.root.resolve()
+    sdk_root = spec.sdk_root.resolve()
     if not runtime_root.exists():
         raise RuntimeError(f"Runtime directory missing: {runtime_root}")
     if not sdk_root.exists():
         raise RuntimeError(f"SDK directory missing: {sdk_root}")
-    if not data.get("python_executable"):
-        raise RuntimeError("Runtime manifest missing python_executable")
-    if not data.get("include_dir"):
-        raise RuntimeError("Runtime manifest missing include_dir")
+    runtime_info = data.get("runtime")
+    sdk_info = data.get("sdk")
+    if not isinstance(runtime_info, dict) or runtime_info.get("root") != ".":
+        raise RuntimeError("Runtime manifest runtime.root must be '.'")
+    if not isinstance(sdk_info, dict) or sdk_info.get("root") != "configured":
+        raise RuntimeError("Runtime manifest sdk.root must be 'configured'")
+    for field in ("python_executable", "include_dir"):
+        value = data.get(field)
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(f"Runtime manifest missing {field}")
+        if Path(value).is_absolute():
+            raise RuntimeError(f"Runtime manifest {field} must be relative to the SDK root")
+
+
+def _relative_to_sdk(value: Any, sdk_root: Path) -> str:
+    if not value:
+        return ""
+    p = Path(str(value))
+    if p.is_absolute():
+        try:
+            return p.resolve().relative_to(sdk_root.resolve()).as_posix()
+        except ValueError:
+            return p.name
+    return p.as_posix()
 
 
 def build_manifest(spec: RuntimeSpec, sdk: dict[str, Any], runtime_root: Path) -> dict[str, Any]:
@@ -101,9 +117,11 @@ def build_manifest(spec: RuntimeSpec, sdk: dict[str, Any], runtime_root: Path) -
         "python_abi": python_abi,
         "python_platform_tag": platform_tag,
         "python_implementation": sdk.get("python_implementation_name", "cpython"),
-        "runtime": {"root": str(runtime_root.resolve())},
-        "sdk": {"root": str(spec.sdk_root.resolve())},
-        "python_executable": str(sdk.get("python_executable") or ""),
-        "include_dir": str(sdk.get("include_dir") or ""),
+        # Keep the manifest portable: physical cache/workspace paths are build
+        # inputs, not runtime identity. The configured provider resolves them.
+        "runtime": {"root": "."},
+        "sdk": {"root": "configured"},
+        "python_executable": _relative_to_sdk(sdk.get("python_executable"), spec.sdk_root),
+        "include_dir": _relative_to_sdk(sdk.get("include_dir"), spec.sdk_root),
         "pbs": ({"release": sdk.get("tag"), "asset": sdk.get("asset"), "sha256": sdk.get("sha256")} if spec.provider == "pbs" else None),
     }

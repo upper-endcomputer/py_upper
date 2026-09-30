@@ -1,2 +1,2 @@
 def make_message() -> str:
-    return "Hello from PyStand2 v0.9.4"
+    return "Hello from PyStand2 v0.14.0"

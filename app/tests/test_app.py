@@ -1,7 +1,6 @@
-from myapp.core.app import Application
+from myapp.core.app import run_application
 
 
-def test_application():
-    app = Application()
-    assert app.run() == 0
-    assert app.state.started is True
+def test_application(capsys):
+    run_application()
+    assert "PyStand2" in capsys.readouterr().out

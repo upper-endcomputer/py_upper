@@ -80,7 +80,7 @@ runtime + SDK
     -> verify
 ```
 
-Cython generates C using the development environment; the native extension is compiled against the target Python SDK. citeturn0search1
+Cython generates C using the development environment; the native extension is compiled against the target Python SDK. 
 
 ## Reproducibility
 
@@ -93,3 +93,9 @@ The workspace contains only the useful development/debug configuration under `.v
 ## Validation
 
 CI covers Linux x86_64, Linux ARM64 cross-build verification, Windows x86_64, macOS Intel and macOS ARM64. Native targets are executed; cross-built artifacts are verified without execution.
+
+## Integration validation
+
+CI runs the same build entry point used locally. Native Linux x86_64, Windows x86_64, macOS Intel, and macOS ARM64 targets are built and launched; Linux ARM64 is cross-built and verified without execution.
+
+A runtime manifest is portable: it describes runtime identity and ABI rather than embedding a developer machine's absolute cache paths. `--locked` verifies the manifest hash and all pinned artifacts before building.

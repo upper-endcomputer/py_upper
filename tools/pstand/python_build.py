@@ -108,16 +108,22 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
     name_repr = ",\n    ".join(repr(n) for n in ext_names)
     setup.write_text(
         "from setuptools import setup, Extension\n"
-        "from pathlib import Path\n"
+        "from setuptools.command.build_ext import build_ext as _build_ext\n"
+        "import sysconfig\n"
+        f"TARGET_INCLUDE={str(include)!r}\n"
+        f"TARGET_LIBDIR={str(libdir) if libdir else None!r}\n"
+        f"TARGET_LIBRARIES={libraries}\n"
         f"sources=[{source_repr}]\n"
         f"names=[{name_repr}]\n"
-        f"include={str(include)!r}\n"
-        f"libdir={libdir_arg}\n"
-        f"libraries={libraries}\n"
-        "ext=[]\n"
-        "for src,name in zip(sources,names):\n"
-        "    ext.append(Extension(name, [src], include_dirs=[include], library_dirs=[libdir] if libdir else [], libraries=libraries))\n"
-        "setup(name='pystand2-target-native', ext_modules=ext)\n",
+        "class TargetBuildExt(_build_ext):\n"
+        "    def finalize_options(self):\n"
+        "        super().finalize_options()\n"
+        "        host_inc = sysconfig.get_path('include')\n"
+        "        self.include_dirs = [d for d in (self.include_dirs or []) if d != host_inc]\n"
+        "        if TARGET_INCLUDE not in self.include_dirs: self.include_dirs.insert(0, TARGET_INCLUDE)\n"
+        "        if TARGET_LIBDIR and TARGET_LIBDIR not in (self.library_dirs or []): self.library_dirs.insert(0, TARGET_LIBDIR)\n"
+        "ext=[Extension(name, [src], include_dirs=[TARGET_INCLUDE], library_dirs=[TARGET_LIBDIR] if TARGET_LIBDIR else [], libraries=TARGET_LIBRARIES) for src,name in zip(sources,names)]\n"
+        "setup(name='pystand2-target-native', ext_modules=ext, cmdclass={'build_ext': TargetBuildExt})\n",
         encoding="utf-8",
     )
     build_root = BUILD / "native" / target.key

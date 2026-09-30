@@ -2,9 +2,6 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools"))
-
 from pstand.config import TARGETS, runtime_spec
 
 def test_targets_and_abi():

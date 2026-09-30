@@ -32,11 +32,14 @@ def _runtime_record(target: Target) -> dict:
     provider = runtime_provider()
     if provider == "local":
         info = sdk_info(target)
+        root = Path(str(info["root"])).resolve()
+        sdk_root = Path(str(info["sdk_root"])).resolve()
         return {
             "provider": "local",
             "python": info.get("python"),
-            "root": info.get("root"),
-            "sdk_root": info.get("sdk_root"),
+            "target_triple": info.get("target_triple"),
+            "root": root.relative_to(ROOT.resolve()).as_posix() if root.is_relative_to(ROOT.resolve()) else None,
+            "sdk_root": sdk_root.relative_to(ROOT.resolve()).as_posix() if sdk_root.is_relative_to(ROOT.resolve()) else None,
         }
     marker = target_runtime_dir(target) / ".pystand2-runtime.json"
     if not marker.exists():
@@ -114,9 +117,10 @@ def verify_lock(target: Target) -> None:
         current_root = Path(str(info["root"])).resolve()
         current_sdk = Path(str(info["sdk_root"])).resolve()
         for key, current in (("root", current_root), ("sdk_root", current_sdk)):
-            locked = Path(str(locked_runtime[key]))
-            if not locked.is_absolute():
-                locked = (ROOT / locked).resolve()
+            locked_value = locked_runtime.get(key)
+            if not locked_value:
+                raise RuntimeError(f"Local runtime lock missing {key} for {target.key}")
+            locked = (ROOT / str(locked_value)).resolve()
             if current != locked:
                 raise RuntimeError(f"Local runtime lock mismatch for {target.key}: {key}")
 
