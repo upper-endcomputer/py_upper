@@ -61,3 +61,45 @@ def test_cythonize_uses_relative_source_paths_and_force(monkeypatch, tmp_path):
 
     assert calls
     assert (source.parent / "app.c").exists()
+
+
+def test_macho_arm64_header_is_detected_with_correct_byte_order(tmp_path):
+    from py_upper.native.inspect import inspect
+
+    # Mach-O arm64 little-endian header: magic bytes CF FA ED FE,
+    # cputype 0x0100000c encoded little-endian.
+    binary = tmp_path / "libarm64.dylib"
+    binary.write_bytes(bytes.fromhex("cffaedfe0c0000010000000000000000"))
+
+    info = inspect(binary)
+    assert info.format == "Mach-O"
+    assert info.arch == "arm64"
+
+
+def test_macho_universal_header_must_contain_target_arch(tmp_path):
+    from py_upper.config import TARGETS
+    from py_upper.native.inspect import verify_arch
+
+    binary = tmp_path / "universal.dylib"
+    # FAT_MAGIC, two slices: x86_64 then arm64.
+    header = bytearray()
+    header += bytes.fromhex("cafebabe")
+    header += (2).to_bytes(4, "big")
+    for cputype in (0x01000007, 0x0100000C):
+        header += cputype.to_bytes(4, "big")
+        header += (3).to_bytes(4, "big")  # CPU subtype
+        header += (0).to_bytes(4, "big")  # offset
+        header += (0).to_bytes(4, "big")  # size
+        header += (0).to_bytes(4, "big")  # alignment
+    binary.write_bytes(header)
+
+    assert verify_arch(binary, TARGETS["macos-arm64"]).arch == "universal"
+
+    x86_only = tmp_path / "x86-universal.dylib"
+    x86_only.write_bytes(header[:4] + (1).to_bytes(4, "big") + header[8:28])
+    try:
+        verify_arch(x86_only, TARGETS["macos-arm64"])
+    except RuntimeError as exc:
+        assert "expected arm64" in str(exc)
+    else:
+        raise AssertionError("x86_64-only universal binary was accepted for arm64")
