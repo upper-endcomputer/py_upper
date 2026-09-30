@@ -34,7 +34,14 @@ def inspect(path: Path) -> BinaryInfo:
             # Fat binaries are accepted only when they contain the requested slice.
             return BinaryInfo(path, "Mach-O universal", "universal")
     if len(data) >= 20 and data[:4] == b"\x7fELF":
-        machine = struct.unpack_from("<H", data, 18)[0]
+        # e_ident[5] selects the ELF byte order. e_machine is at offset 18.
+        if data[5] == 1:
+            endian = "<"
+        elif data[5] == 2:
+            endian = ">"
+        else:
+            raise ValueError(f"Invalid ELF byte order: {path}")
+        machine = struct.unpack_from(endian + "H", data, 18)[0]
         elf = {62: "x86_64", 183: "arm64"}
         return BinaryInfo(path, "ELF", elf.get(machine, f"0x{machine:04x}"))
     raise ValueError(f"Unsupported or invalid native binary: {path}")

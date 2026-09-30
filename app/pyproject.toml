@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myapp"
-version = "0.9.2"
+version = "0.9.3"
 description = "PyStand2 example application"
 requires-python = ">=3.13,<3.14"
 dependencies = []

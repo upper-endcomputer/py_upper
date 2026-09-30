@@ -74,15 +74,24 @@ linux-x86_64
 linux-arm64
 ```
 
-Linux uses PBS GNU/glibc targets `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. PBS documents these target triples and notes a minimum glibc version of 2.17 for most GNU distributions. citeturn0search2
+Linux uses PBS GNU/glibc targets `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. PBS documents these target triples and notes a minimum glibc version of 2.17 for most GNU distributions. 
 
-PBS's full archives contain `PYTHON.json` plus build/install artifacts; the build uses that metadata rather than guessing SDK paths. Final application bundles use install-only runtime artifacts. citeturn0search1
+PBS's full archives contain `PYTHON.json` plus build/install artifacts; the build uses that metadata rather than guessing SDK paths. Final application bundles use install-only runtime artifacts. 
 
 ## Locking
 
 `pystand.lock.json` is intentionally a **PyStand build lock**, not a replacement for Python's package lock format. It records the PBS SDK/runtime artifacts and resolved wheel hashes for each target.
 
-Python dependency lock files follow the standard `pylock.toml` format where appropriate; PyPA defines `pylock.toml` as the reproducible-environment format. citeturn0search0
+Python dependency lock files follow the standard `pylock.toml` format where appropriate; PyPA defines `pylock.toml` as the reproducible-environment format. 
+
+
+## Locked/offline builds
+
+`--locked` validates the existing `pystand.lock.json` and the locally cached PBS SDK/runtime before the build starts. If the cache or lock is incomplete, the build fails instead of silently downloading another PBS artifact.
+
+## Linux native dependencies
+
+Linux `.so` dependencies are read from ELF `DT_NEEDED` entries with `readelf` (or `objdump` as fallback). The packager closes dependencies inside the final bundle and uses `$ORIGIN` RPATH when `patchelf` is available. System glibc/libstdc++/loader libraries are treated as host-provided and are not copied.
 
 ## Development
 

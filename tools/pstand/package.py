@@ -35,7 +35,7 @@ def package(target: Target, launcher: Path) -> Path:
         shutil.copytree(stage / "site-packages", res / "site-packages", dirs_exist_ok=True)
         shutil.copytree(APP / "resources", res / "resources", dirs_exist_ok=True)
         (res / "MyApp.int").write_text(ENTRY, encoding="utf-8")
-        (contents / "Info.plist").write_text(f'''<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>MyApp</string><key>CFBundleIdentifier</key><string>com.example.mypstand2</string><key>CFBundleName</key><string>MyApp</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>0.9.1</string><key>CFBundleShortVersionString</key><string>0.9.1</string></dict></plist>\n''', encoding="utf-8")
+        (contents / "Info.plist").write_text(f'''<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>MyApp</string><key>CFBundleIdentifier</key><string>com.example.mypstand2</string><key>CFBundleName</key><string>MyApp</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>0.9.3</string><key>CFBundleShortVersionString</key><string>0.9.3</string></dict></plist>\n''', encoding="utf-8")
         bundle_native_dependencies(app, target)
         return app
     raise RuntimeError(target.os)

@@ -70,12 +70,18 @@ def verify_lock(target: Target) -> None:
     if not target_data:
         raise RuntimeError(f"Target {target.key} is not present in {LOCK}")
 
-    sdk = sdk_info(target)
+    sdk_marker = pbs_sdk_dir(target) / ".pystand2-sdk.json"
+    if not sdk_marker.exists():
+        raise RuntimeError(f"Locked build requires cached PBS SDK: {pbs_sdk_dir(target)}")
+    sdk = json.loads(sdk_marker.read_text(encoding="utf-8"))
     locked_sdk = target_data.get("pbs_sdk", {})
     for key in ("tag", "asset", "sha256"):
         if locked_sdk.get(key) and sdk.get(key) != locked_sdk[key]:
             raise RuntimeError(f"PBS SDK lock mismatch for {target.key}: {key}")
 
+    runtime_marker = target_runtime_dir(target) / ".pystand2-runtime.json"
+    if not runtime_marker.exists():
+        raise RuntimeError(f"Locked build requires cached PBS runtime: {target_runtime_dir(target)}")
     runtime = _runtime_record(target)
     locked_runtime = target_data.get("runtime", {})
     for key in ("tag", "asset", "sha256", "python"):

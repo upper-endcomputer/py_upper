@@ -79,10 +79,12 @@ def main(argv=None):
     if action_name in {"build", "run", "release"}:
         if action_name == "run" and t != host_target():
             raise SystemExit(f"run requires a native target; host={host_target().key}, target={t.key}")
-        ensure_sdk(t); ensure_runtime(t)
         if a.locked:
+            # Validate the existing lock and cache before any operation that could
+            # attempt a network download. A locked build is deliberately offline.
             verify_lock(t)
             os.environ["PYSTAND_LOCKED"] = "1"
+        ensure_sdk(t); ensure_runtime(t)
         resolve_wheels(t)
         build_python_package(t)
         out = package(t, build_launcher(t))
