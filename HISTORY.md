@@ -1,3 +1,9 @@
+## v0.17.2
+
+The application now opens a real Qt window, and the packaged payload is pruned to the Qt modules the application imports. A PySide6 build on macOS arm64 went from 1.2 GB to 153 MB with the window still working and the bundle still passing signature verification.
+
+Verification: 59 unit tests, the hermetic local end-to-end suite with `PY_UPPER_E2E=1`, and a full PySide6 6.11.0 build on macOS arm64 whose packaged window opens headlessly and whose `codesign --verify --deep --strict` check passes.
+
 ## v0.17.1
 
 Reliability release for the first real third-party dependency set. macOS extension linking, packaging verification, ad-hoc signing order, wheel resolution semantics, pip transfer behaviour, native closure performance and the Windows module search path were all fixed, and the local end-to-end build is now a CI gate on every platform.

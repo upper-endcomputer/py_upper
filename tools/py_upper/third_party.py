@@ -329,7 +329,7 @@ def resolve_wheels(target: Target) -> Path:
     return out
 
 
-def optimize_site(site: Path) -> dict[str, int]:
+def optimize_site(site: Path, target: Target | None = None) -> dict[str, int]:
     cfg = optimize_config()
     profile = str(cfg.get("profile") or "safe").lower()
     if profile not in {"safe", "aggressive"}:
@@ -361,6 +361,18 @@ def optimize_site(site: Path) -> dict[str, int]:
         if path.is_dir() and path.name.lower() in removable_dirs:
             shutil.rmtree(path)
             removed_dirs += 1
+
+    if target is not None:
+        from .qt_prune import prune as prune_qt
+
+        qt = prune_qt(site, target)
+        if qt:
+            print(
+                f"Qt pruning: removed {qt['files']} file(s) and {qt['dirs']} director(ies), "
+                f"freed {qt['bytes'] / 1_000_000:.0f} MB"
+            )
+            removed_files += qt["files"]
+            removed_dirs += qt["dirs"]
     return {"removed_files": removed_files, "removed_dirs": removed_dirs}
 
 
@@ -370,7 +382,7 @@ def install_wheels(target: Target, staging: Path) -> Path:
     site.mkdir(parents=True, exist_ok=True)
     for wheel in _wheel_files(out):
         _extract_wheel(wheel, site, staging)
-    optimize = optimize_site(site)
+    optimize = optimize_site(site, target)
     _write_manifest(target, _wheel_files(out), site)
     if optimize["removed_files"] or optimize["removed_dirs"]:
         print(f"Third-party optimization: removed {optimize['removed_files']} files and {optimize['removed_dirs']} directories")

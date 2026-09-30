@@ -1,3 +1,27 @@
+## 0.17.2
+
+### Problem
+- A packaged PySide6 application shipped the entire Qt payload: 1.2 GB, of which `QtWebEngineCore` alone is about 450 MB of Chromium. Applications packaged by other tools are far smaller because they only bundle the Qt modules the application imports.
+- The application had no window, so a broken Qt payload could only be detected by importing modules, not by using Qt.
+
+### Root cause
+- `[project].dependencies` installed whole wheels and the optimizer had no notion of which parts of a dependency an application actually uses.
+
+### Changes
+- Add a Qt main window to the application entry point. `PY_UPPER_HEADLESS=1` builds the same window on the offscreen platform, so CI and the build smoke can prove Qt works without a window server.
+- Add import-driven Qt pruning, enabled with `[tool.py_upper.optimize].qt = "imports"`: read the `PySide6.Qt*` modules referenced by `app/src`, resolve the transitive closure with the target runtime, then drop unused wrapper modules, Qt libraries, plugin categories, the QML tree, shiboken's QML helper, Qt tooling binaries and tooling translations.
+- Drop plugins whose Qt dependencies are not part of the kept module set. This removes the virtual-keyboard input context (which pulls QtQml/QtQuick) and the PDF image format (which pulls QtPdf), with an explicit exception so SVG icon support survives.
+- Accept an explicit module list instead of `"imports"`; the list is expanded through the same runtime closure so it cannot drop a wrapper that the imported modules need.
+- Keep `"all"` as the default, so projects that rely on Qt's dynamic loading keep the full payload.
+
+### Verification
+- macOS arm64 with `PySide6==6.11.0`: the packaged application shrank from 1.2 GB to 153 MB (PySide6 1.1 GB to 104 MB) with the window still opening, `--verify` passing and `codesign --verify --deep --strict` accepting the bundle. `strip_native = true` reaches 141 MB.
+- Full suite on macOS arm64: 59 passed, 2 skipped, plus the hermetic local end-to-end build with `PY_UPPER_E2E=1`.
+
+### Limitations
+- Qt pruning cannot see modules loaded dynamically (for example through `importlib` or a QML file). Use an explicit module list for those applications.
+- Pruning runs only when the target runtime can be executed on the build host; a cross target keeps the full Qt payload.
+
 ## 0.17.1
 
 ### Problem

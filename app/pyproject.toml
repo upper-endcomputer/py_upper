@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.1"
+version = "0.17.2"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 dependencies = ["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]
@@ -55,6 +55,9 @@ exclude = []
 
 [tool.py_upper.optimize]
 profile = "safe"
+# Keep only the Qt modules app/src imports (plus their transitive closure).
+# "all" ships every Qt module, including the ~450 MB QtWebEngine.
+qt = "imports"
 remove_python_caches = true
 remove_tests = false
 remove_docs = false

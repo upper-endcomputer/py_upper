@@ -1,9 +1,4 @@
-from core.app import run_application
-
-
-def main() -> None:
-    run_application()
-
+from core.app import main
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.1**。
+当前稳定开发线：**0.17.2**。
 
 ## 构建模型
 
@@ -189,6 +189,20 @@ app/src/
 
 如果 Cython 扩展在链接阶段直接依赖自有 `.dylib`，仍需让 target compiler 在编译阶段找到该库；发布阶段负责的是复制、闭包和重定位。
 
+## Qt 裁剪
+
+PySide6 的 wheel 会带上整个 Qt，`QtWebEngineCore` 一个就约 450 MB。默认策略是按 **import 裁剪**：读取 `app/src` 里引用的 `PySide6.Qt*` 模块，用目标 runtime 解析出传递闭包，然后删掉没用到的 wrapper 模块、Qt 库、插件类别、QML 树、shiboken 的 QML 辅助库、Qt 工具二进制和工具翻译。
+
+```toml
+[tool.py_upper.optimize]
+qt = "imports"          # 默认 "all"，即完整 Qt
+# qt = ["QtWidgets", "QtCore", "QtGui"]   # 也可以显式指定，会按同样规则展开闭包
+```
+
+实测：PySide6 6.11.0 的 macOS arm64 应用从 **1.2 GB 降到 153 MB**（PySide6 本体 1.1 GB → 104 MB），窗口照常打开、`--verify` 通过、`codesign --verify --deep --strict` 通过；再开 `strip_native = true` 可到 141 MB。
+
+限制：动态加载的模块（`importlib`、QML 文件里 import）静态看不到，这类应用请显式列模块；交叉目标无法执行目标解释器，会保留完整 Qt。
+
 ## 可选 native 组件排除
 
 个别 wheel 会带上无法在 bundle 内满足依赖的可选组件，例如 PySide6 的 macOS wheel 把 ODBC/Mimer/PostgreSQL 三个 Qt SQL 驱动链接到构建机绝对路径，并引用了它自己没有附带的 `QtQuickShapesDesignHelpers` framework。这类组件可以在打包时显式丢弃：
@@ -222,7 +236,9 @@ Windows XP 场景仍必须使用真正兼容 XP 的 custom/local CPython runtime
 
 ## 验证
 
-`--verify` 是静态检查，`--run` 之前的最后一道门是**用目标 Python 真 import**：先由 bundled runtime 导入入口模块和所有直接声明的第三方依赖，再由打包好的 launcher 导入一次。这一步能抓住静态检查看不到的问题（扩展链接方式、stdlib 扩展目录、第三方依赖缺失）。
+应用入口会打开 Qt 主窗口。CI 与 smoke 通过 `PY_UPPER_HEADLESS=1` 用 offscreen 平台构建同一个窗口后立即退出，因此既证明 Qt 可用，又不会卡住无显示环境。
+
+`--verify` 是静态检查，`--run` 之前的最后一道门是**用目标 Python 真 import**：先由 bundled runtime 导入入口模块和所有直接声明的第三方依赖，再由打包好的 launcher 导入一次。这一步能抓住静态检查看不到的问题（扩展链接方式、stdlib 扩展目录、第三方依赖缺失、Qt 裁剪过度）。
 
 CI 在每个原生平台上都跑同一套真实链路：单元测试 → 本地端到端构建（第三方 wheel、应用自带 native 库、lock/`--locked` 往返）→ doctor → 完整 PBS 构建 → 运行。本地 E2E 默认跳过，设置 `PY_UPPER_E2E=1` 打开。
 

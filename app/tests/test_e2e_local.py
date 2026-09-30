@@ -211,6 +211,8 @@ def _run_build(repo: Path, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PY_UPPER_PYTHON"] = sys.executable
     env["PY_UPPER_E2E"] = "1"
+    # --run must not wait for a window server.
+    env["PY_UPPER_HEADLESS"] = "1"
     return subprocess.run(
         [sys.executable, "tools/build.py", *args],
         cwd=repo,
@@ -237,6 +239,8 @@ def test_local_build_end_to_end_with_third_party_dependency():
         assert result.returncode == 0, result.stdout + "\n" + result.stderr
         assert "SMOKE PASS launcher" in result.stdout
         assert "Hello from py_upper" in result.stdout
+        # The Qt window is gated by the integration run, which builds the real
+        # dependency set; this fixture application has no PySide6.
 
         packaged = _packaged_root(repo, target) / "site-packages"
         assert (packaged / "demo_pkg" / "__init__.py").exists()
