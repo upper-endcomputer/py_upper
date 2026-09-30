@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from .config import APP, BUILD, Target, load_app_config, python_version, require_local_python, runtime_spec
-from .target_python import resolve_target_python
+from .config import resolve_target_python
 
 
 def _pip_args(target: Target) -> list[str]:

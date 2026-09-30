@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import APP, BUILD, Target, cython_config, require_local_python, staging_dir, runtime_spec
 from .pbs_sdk import sdk_info
-from .target_python import resolve_target_python
+from .config import resolve_target_python
 from .toolchain import resolve_toolchain
 from .wheel import install_wheels
 

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 
 from .config import BUILD, LAUNCHER, Target
-from .target_python import resolve_target_python
+from .config import resolve_target_python
 from .toolchain import resolve_toolchain
 
 

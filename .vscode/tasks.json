@@ -1,26 +1,19 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "pystand: doctor",
-            "type": "shell",
-            "command": "python",
-            "args": ["tools/build.py", "--doctor"],
-            "problemMatcher": []
-        },
-        {
-            "label": "pystand: build",
-            "type": "shell",
-            "command": "python",
-            "args": ["tools/build.py"],
-            "problemMatcher": []
-        },
-        {
-            "label": "pystand: run",
-            "type": "shell",
-            "command": "python",
-            "args": ["tools/build.py", "--run"],
-            "problemMatcher": []
-        }
-    ]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PyStand2: build",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/build.py"],
+      "problemMatcher": []
+    },
+    {
+      "label": "PyStand2: run",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/build.py", "--run"],
+      "problemMatcher": []
+    }
+  ]
 }

@@ -1,66 +1,41 @@
 # PyStand2
 
-Standalone Python application runtime/packaging for Windows, macOS and Linux.
+Standalone Python application packaging for Windows, macOS and Linux.
 
-## One command
+## Use
 
-The public build interface is intentionally small. **You normally only need `tools/build.py`.**
+One public entry point:
 
 ```bash
 python tools/build.py
+```
+
+Useful options:
+
+```bash
 python tools/build.py --target linux-x86_64
 python tools/build.py --run
 python tools/build.py --verify
-python tools/build.py --doctor
 python tools/build.py --lock --target linux-x86_64
 python tools/build.py --locked --target linux-x86_64
-python tools/build.py --release --target macos-arm64 --identity "Developer ID Application: ..." --notary-profile pystand-notary
+python tools/build.py --doctor
 python tools/build.py --clean
 ```
 
-The old positional forms remain accepted for compatibility.
+## Python environments
 
-## Development Python vs target Python
+Development Python and bundled target Python are independent.
 
-These are intentionally independent.
+Development Python is selected in this order:
 
-- **Development Python** runs `tools/build.py`, Cython, setuptools and pip. It is selected from `PYSTAND_PYTHON`, `app/.venv`, the current interpreter, or `PATH`.
-- **Target Python** is the interpreter bundled into the final application and is configured by `[tool.pstand.runtime].python`.
-- The target compiler uses the target Python headers/libs, so a Python 3.13 development machine can build a Python 3.8 target package when the required target SDK is supplied.
+1. `PYSTAND_PYTHON`
+2. `app/.venv` when present
+3. the Python running `tools/build.py`
+4. `python` / `python3` on `PATH`
 
-Example:
+VS Code uses **Python: Select Interpreter**; no interpreter path is committed to the repository.
 
-```toml
-[tool.pstand.runtime]
-provider = "pbs"
-python = "3.13"
-```
-
-The development environment does not need to be a venv. In VS Code use **Python: Select Interpreter** to choose any supported environment (venv, conda, pyenv, Poetry-managed Python, system Python, etc.). `PYSTAND_PYTHON` is available for explicit builds.
-
-## Runtime manifests
-
-Every target runtime is now accompanied by a `manifest.json`. The manifest is the build contract between the runtime, SDK, target ABI and PyStand. It records the provider, target triple, Python version/ABI/platform tag, runtime root, SDK root and (for PBS) the release asset and SHA256.
-
-The build/verify/lock flow is intentionally closed:
-
-```text
-runtime + SDK
-    ↓
-manifest.json
-    ↓
-lock (manifest SHA256)
-    ↓
-build
-    ↓
-verify
-```
-
-A `local` runtime must provide a valid manifest; a PBS runtime gets its manifest generated from the PBS `PYTHON.json` metadata. PBS documents `PYTHON.json` as the machine-readable distribution description intended for downstream consumers.
-
-## Runtime providers
-
-Modern targets normally use `pbs`:
+The bundled Python is configured separately:
 
 ```toml
 [tool.pstand.runtime]
@@ -71,7 +46,7 @@ python = "3.13"
 release = "20260929"
 ```
 
-A custom runtime can use `local`:
+A custom runtime uses:
 
 ```toml
 [tool.pstand.runtime]
@@ -81,56 +56,40 @@ runtime = "runtimes/{target}/{python}"
 sdk = "runtimes/{target}/{python}-sdk"
 ```
 
-The local provider is intended for runtimes that PBS does not provide or that require a legacy/custom build. For Windows XP, the bundled interpreter must itself be an XP-compatible CPython build; simply selecting the official CPython 3.8.10 release does not make XP supported.
+A local runtime must provide a matching `manifest.json`. This is intended for legacy/custom CPython builds, including an XP-compatible build. Official CPython 3.8.10 itself is not an XP runtime.
 
 ## Targets
 
-```text
-windows-x86
-windows-x86_64
-windows-arm64
-macos-x86_64
-macos-arm64
-linux-x86_64
-linux-arm64
-```
+- Windows: x86, x86_64, arm64
+- macOS: x86_64, arm64
+- Linux: x86_64, arm64
 
-Linux uses GNU/glibc targets by default. PBS documents the corresponding LLVM target triples and currently supports Windows 32-bit (`i686-pc-windows-msvc`) as well as Windows x64/ARM64, macOS Intel/ARM64 and Linux x64/ARM64. 
+PBS currently documents these target families and uses `PYTHON.json` as machine-readable distribution metadata. Linux GNU distributions generally require glibc 2.17 or newer; CPython 3.13 and earlier Windows distributions require Windows 8.1 or newer.
 
-## Build pipeline
+## Build flow
 
 ```text
-pyproject.toml
-    ↓
-runtime provider
-    ↓
-target SDK + runtime
-    ↓
-target wheels
-    ↓
-Cython → C
-    ↓
-target compiler → .pyd/.so
-    ↓
-native dependency closure
-    ↓
-C++ launcher
-    ↓
-package
-    ↓
-verify
+runtime + SDK
+    -> manifest
+    -> lock
+    -> target wheels
+    -> Cython -> C
+    -> target compiler -> native extension
+    -> launcher + runtime
+    -> package
+    -> verify
 ```
 
-Generated C is produced by the development Python/Cython environment, but native extensions are compiled against the target Python SDK. Cython's setuptools integration supports generating C during the build and compiling it through the target extension toolchain.
+Cython generates C using the development environment; the native extension is compiled against the target Python SDK. citeturn0search1
 
-## Locking
+## Reproducibility
 
-`pystand.lock.json` records the target runtime provider, target Python, runtime manifest SHA256, PBS release/assets/checksums when PBS is used, and exact wheel hashes. `--locked` verifies these inputs before doing any build work and is intentionally offline.
+`pystand.lock.json` records the target runtime provider, runtime manifest hash, PBS artifacts/checksums when applicable, and wheel hashes. `--locked` validates these inputs before the build and does not resolve or download replacements.
 
 ## VS Code
 
-The repository includes workspace settings, tasks and launch configurations under `.vscode/`. No absolute Python interpreter path is committed. Select the interpreter from VS Code or set `PYSTAND_PYTHON` before running a task.
+The workspace contains only the useful development/debug configuration under `.vscode/`. Select your own Python interpreter; no `.venv` is required.
 
 ## Validation
 
-CI covers native Linux x86_64, Windows x86_64, macOS Intel and macOS ARM64, plus Linux ARM64 cross-build verification. A host can only execute its native target; cross-built artifacts are verified without execution.
+CI covers Linux x86_64, Linux ARM64 cross-build verification, Windows x86_64, macOS Intel and macOS ARM64. Native targets are executed; cross-built artifacts are verified without execution.

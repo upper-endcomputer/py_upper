@@ -3,6 +3,7 @@ import os
 import platform
 import shutil
 import sys
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,6 +172,50 @@ def python_executable() -> Path:
         if found:
             return Path(found).resolve()
     raise RuntimeError("No development Python found. Set PYSTAND_PYTHON or install Python.")
+
+def host_description() -> str:
+    return f"{platform.system()} {platform.machine()} Python {platform.python_version()}"
+
+
+def resolve_target_python(target: Target):
+    """Resolve the target SDK/runtime contract without executing target Python."""
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class TargetPython:
+        target: Target
+        root: Path
+        executable: Path
+        include_dir: Path
+        python_version: str
+        python_major_minor: str
+        abi_tag: str
+        libpython_link_mode: str | None
+
+        @property
+        def platform_tag(self) -> str:
+            if self.target.os == "windows":
+                return {"x86": "win32", "x86_64": "win_amd64", "arm64": "win_arm64"}[self.target.arch]
+            if self.target.os == "linux":
+                return {"x86_64": "manylinux_2_17_x86_64", "arm64": "manylinux_2_17_aarch64"}[self.target.arch]
+            return "macosx_11_0_arm64" if self.target.arch == "arm64" else "macosx_10_15_x86_64"
+
+    from .runtime_provider import ensure_sdk, sdk_info
+    spec = runtime_spec(target)
+    root = ensure_sdk(target)
+    info = sdk_info(target)
+    exe = Path(info["python_executable"])
+    include = Path(info["include_dir"])
+    if not exe.exists():
+        raise RuntimeError(f"Target Python executable not found: {exe}")
+    if not include.exists():
+        raise RuntimeError(f"Target Python include directory not found: {include}")
+    actual = str(info.get("python") or spec.python)
+    if not actual.startswith(spec.python):
+        raise RuntimeError(f"Target Python {actual} does not match configured runtime Python {spec.python}")
+    major_minor = ".".join(actual.split(".")[:2])
+    return TargetPython(target, root, exe, include, actual, major_minor, f"cp{major_minor.replace('.', '')}", info.get("libpython_link_mode"))
+
 
 def require_local_python() -> Path:
     """Return the configurable host/development Python.

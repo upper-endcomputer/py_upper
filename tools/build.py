@@ -1,8 +1,7 @@
 from __future__ import annotations
 import argparse, os, shutil, subprocess, platform
 
-from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider, runtime_spec
-from pstand.host_platform import host_description
+from pstand.config import BUILD, DIST, TARGETS, pbs_release, pbs_sdk_dir, python_version, target_runtime_dir, validate_target, host_target, require_local_python, runtime_provider, runtime_spec, host_description
 from pstand.toolchain import describe_toolchain
 from pstand.runtime_provider import ensure_sdk, sdk_info
 from pstand.python_build import build_python_package

@@ -4,7 +4,6 @@ from pathlib import Path
 
 from .config import APP, Target, staging_dir, target_runtime_dir, runtime_spec
 from .manifest import read_manifest, validate_manifest
-from .runtime_provider import sdk_info
 from .native.inspect import verify_arch
 from .python_build import module_name, selected_sources
 
