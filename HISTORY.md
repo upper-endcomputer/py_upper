@@ -1,3 +1,9 @@
+## v0.17.3
+
+Fixed Qt pruning dropping the macOS cocoa platform plugin, which made packaged applications fail to start. Only real Qt modules now take part in the plugin decision, and the platform plugin category is never pruned.
+
+Verification: the packaged launcher reports `PLATFORM cocoa` and opens a real window on macOS arm64, `--verify` and `codesign --verify --deep --strict` pass, and 60 tests pass.
+
 ## v0.17.2
 
 The application now opens a real Qt window, and the packaged payload is pruned to the Qt modules the application imports. A PySide6 build on macOS arm64 went from 1.2 GB to 153 MB with the window still working and the bundle still passing signature verification.

@@ -20,6 +20,7 @@ def _fake_pyside(site: Path) -> Path:
         _touch(pyside / "Qt" / "lib" / f"{module}.framework" / "Versions" / "A" / module)
     _touch(pyside / "Qt" / "plugins" / "platforms" / "libqcocoa.dylib")
     _touch(pyside / "Qt" / "plugins" / "sqldrivers" / "libqsqlite.dylib")
+    _touch(pyside / "Qt" / "plugins" / "imageformats" / "libqpdf.dylib")
     _touch(pyside / "Qt" / "qml" / "QtQuick" / "libqtquickplugin.dylib")
     _touch(pyside / "Qt" / "libexec" / "QtWebEngineProcess")
     _touch(pyside / "qmlls")
@@ -37,8 +38,21 @@ def test_qt_module_mapping_covers_platform_layouts():
     assert _qt_module_of("@rpath/libQt6Core.6.dylib") == "QtCore"
     assert _qt_module_of("libQt6Gui.so.6.11.0") == "QtGui"
     assert _qt_module_of("Qt6Widgets.dll") == "QtWidgets"
-    assert _qt_module_of("/usr/lib/libSystem.B.dylib") is None
     assert _qt_module_of("libqcocoa.dylib") is None
+
+
+def test_qt_module_mapping_ignores_system_frameworks():
+    """System frameworks must not look like Qt modules.
+
+    Treating CoreVideo/IOSurface/ColorSync as Qt modules dropped the cocoa
+    platform plugin, because it links system frameworks the Qt wrapper closure
+    never mentions, and the packaged application then could not start.
+    """
+    assert _qt_module_of("/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo") is None
+    assert _qt_module_of("/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface") is None
+    assert _qt_module_of("/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit") is None
+    assert _qt_module_of("/usr/lib/libSystem.B.dylib") is None
+    assert _qt_module_of("/usr/lib/libobjc.A.dylib") is None
 
 
 def test_used_qt_modules_reads_application_sources(tmp_path):
@@ -64,9 +78,19 @@ def test_prune_keeps_only_the_imported_qt_payload(tmp_path, monkeypatch):
         if name == "QtGui.abi3.so":
             return ["@rpath/QtGui.framework/Versions/A/QtGui", "@rpath/QtCore.framework/Versions/A/QtCore"]
         if name == "libqcocoa.dylib":
-            return ["@rpath/QtGui.framework/Versions/A/QtGui", "@rpath/QtCore.framework/Versions/A/QtCore"]
+            # A platform plugin links system frameworks and may even reference
+            # an extra Qt module; it must still be kept.
+            return [
+                "@rpath/QtGui.framework/Versions/A/QtGui",
+                "@rpath/QtCore.framework/Versions/A/QtCore",
+                "@rpath/QtPdf.framework/Versions/A/QtPdf",
+                "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+                "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+            ]
         if name == "libqsqlite.dylib":
             return ["@rpath/QtCore.framework/Versions/A/QtCore"]
+        if name == "libqpdf.dylib":
+            return ["@rpath/QtGui.framework/Versions/A/QtGui", "@rpath/QtPdf.framework/Versions/A/QtPdf"]
         if name == "QtCore.framework":
             return ["/usr/lib/libSystem.B.dylib"]
         if name == "QtGui.framework":
@@ -95,6 +119,9 @@ def test_prune_keeps_only_the_imported_qt_payload(tmp_path, monkeypatch):
     assert not (pyside / "Qt" / "lib" / "QtWebEngineCore.framework").exists()
     assert not (pyside / "Qt" / "lib" / "QtQml.framework").exists()
     assert not (pyside / "Qt" / "plugins" / "sqldrivers").exists()
+    # an image format that needs a Qt module the app never imports goes too
+    assert not (pyside / "Qt" / "plugins" / "imageformats" / "libqpdf.dylib").exists()
+    assert (pyside / "Qt" / "plugins" / "imageformats").exists()
     assert not (pyside / "Qt" / "qml").exists()
     assert not (pyside / "Qt" / "libexec").exists()
     assert not (pyside / "libpyside6qml.abi3.6.11.dylib").exists()

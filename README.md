@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.2**。
+当前稳定开发线：**0.17.3**。
 
 ## 构建模型
 
@@ -46,6 +46,11 @@ Application run
 - `app/src/` 下的 `.dylib/.so/.dll/.pyd` 是正式应用输入，会参加 native dependency closure。
 - `runtimes/` 是机器本地 Runtime 缓存，不进入 Git。
 - 最终验证不仅检查文件存在，还会用 bundled Target Python 真正 import 应用和直接声明的第三方依赖。
+
+## 文档
+
+- 开发使用指南（环境、配置、打包、依赖、Qt、排错）：[docs/DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md)
+- 变更记录：[CHANGELOG.md](CHANGELOG.md) / [HISTORY.md](HISTORY.md)
 
 ## 项目结构
 

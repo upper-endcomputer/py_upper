@@ -1,3 +1,24 @@
+## 0.17.3
+
+### Problem
+- Import-driven Qt pruning removed the macOS cocoa platform plugin, so a packaged application failed to start with `qt.qpa.plugin: Could not find the Qt platform plugin "cocoa"` and only `offscreen`/`minimal` remained.
+- The build's Qt smoke test only exercised the offscreen platform, so the regression passed every gate.
+
+### Root cause
+- The plugin filter compared a plugin's dependencies against the Qt modules reachable from the kept wrappers, but the dependency-to-module mapping also classified system frameworks (`CoreVideo`, `IOSurface`, `ColorSync`, ...) as Qt modules. `libqcocoa.dylib` links those system frameworks, so it looked like it needed Qt modules the application never imports and was dropped.
+
+### Changes
+- Only treat Qt-prefixed frameworks and Qt-prefixed libraries as Qt modules; system frameworks no longer participate in the decision.
+- Keep the whole `platforms` plugin category unconditionally: platform plugins decide whether the application starts at all.
+- Add regression tests for the system-framework mapping and for a platform plugin that references an extra Qt module.
+
+### Verification
+- macOS arm64 with `PySide6==6.11.0`: the packaged launcher reports `PLATFORM cocoa`, the application opens a real window, `--verify` passes (39 PASS / 0 FAIL), `codesign --verify --deep --strict` accepts the bundle, and the pruned payload still measures 154 MB (pruning frees 1101 MB).
+- Full suite: 60 passed, 2 skipped.
+
+### Limitations
+- The offscreen smoke cannot prove the cocoa/windows/xcb platform plugin loads; the unconditional platform-plugin rule is what guarantees it.
+
 ## 0.17.2
 
 ### Problem

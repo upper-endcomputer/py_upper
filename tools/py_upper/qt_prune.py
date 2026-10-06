@@ -163,19 +163,24 @@ def _library_index(pyside: Path) -> dict[str, list[Path]]:
 
 
 def _qt_module_of(dependency: str) -> str | None:
-    """Map a load path back to its Qt module name, or None when it is not Qt."""
+    """Map a load path back to its Qt module name, or None when it is not Qt.
+
+    System frameworks such as ``CoreVideo.framework`` or ``IOSurface.framework``
+    are not Qt modules: treating them as such would drop plugins (for example
+    the cocoa platform plugin) merely because they link a system framework the
+    wrapper closure never mentions.
+    """
     if ".framework/" in dependency:
-        return dependency.split(".framework/", 1)[0].rsplit("/", 1)[-1]
+        name = dependency.split(".framework/", 1)[0].rsplit("/", 1)[-1]
+        return name if name.startswith("Qt") else None
     base = Path(dependency).name
     match = re.match(r"^(?:lib)?(Qt6?[A-Za-z0-9_]+?)(?:\.[0-9.]+)?(?:\.so.*|\.dylib|\.dll)?$", base)
     if not match:
         return None
     name = match.group(1)
-    if name.startswith("Qt") and not name.startswith("Qt6"):
-        return name
     if name.startswith("Qt6"):
         return "Qt" + name[3:]
-    return None
+    return name if name.startswith("Qt") else None
 
 
 def _reachable_libraries(pyside: Path, roots: list[Path]) -> tuple[set[Path], set[str]]:
@@ -257,7 +262,11 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     if plugins.is_dir():
         for plugin in sorted(path for path in plugins.rglob("*") if path.is_file()):
             needed = {name for dep in dependency_names(plugin) if (name := _qt_module_of(dep))}
-            if needed <= allowed_modules or any(token in plugin.name for token in PLUGIN_KEEP_EXCEPTIONS):
+            # Platform plugins decide whether the application starts at all, so
+            # the whole category is kept regardless of its extra dependencies.
+            if "platforms" in plugin.parts or needed <= allowed_modules or any(
+                token in plugin.name for token in PLUGIN_KEEP_EXCEPTIONS
+            ):
                 keep_plugins.append(plugin)
             else:
                 drop(plugin)
