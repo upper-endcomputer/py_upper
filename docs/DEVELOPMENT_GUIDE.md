@@ -2,7 +2,7 @@
 
 本文是 `py_upper` 的完整开发与使用手册：从环境准备、日常开发、打包发布，到 Qt 应用处理、依赖管理和排错。README 讲的是"是什么"，本文讲的是"怎么用、为什么这么设计、出问题怎么查"。
 
-当前稳定线：**0.17.3**。
+当前稳定线：**0.17.4**。
 
 ---
 
@@ -422,14 +422,16 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 |---|---|
 | `config.py` | 目标契约、配置解析、平台标签、pip 传输参数 |
 | `toolchain.py` | 宿主工具链（clang/gcc/MSVC）解析 |
-| `pbs_assets.py` / `pbs_sdk.py` / `runtime.py` | PBS 解析、SDK/runtime 获取与校验 |
-| `third_party.py` | wheel 解析/安装、site 优化、清单 |
+| `pbs.py` | PBS 解析：release 元数据、资产匹配、runtime/SDK 获取与校验 |
+| `runtime.py` | 目标 runtime：provider 分发（pbs/local）、获取、release 安全裁剪 |
+| `third_party.py` | wheel 解析/安装、site 优化、依赖清单 |
 | `qt_prune.py` | 按 import 裁剪 Qt 负载 |
-| `python_build.py` | Cython 化、目标扩展编译、staging |
+| `python_build.py` | Cython 化、目标扩展编译（Unix/Windows）、staging |
 | `native/inspect.py` | 二进制格式与架构识别 |
 | `native/deps.py` | 依赖解析（otool/readelf/dumpbin + 索引/缓存） |
 | `native/bundle.py` | 依赖闭包、install name 重写、ad-hoc 签名 |
-| `package.py` | 产物组装、原生排除 |
-| `verify.py` / `smoke.py` | 静态校验与真 import smoke |
-| `launcher_build.py` / `launcher/` | C++ launcher 构建与实现 |
-| `lock.py` / `manifest.py` / `release_artifacts.py` | 可复现性与发布清单 |
+| `package.py` | launcher 构建、产物组装、原生排除、发布清单 |
+| `verify.py` | 静态校验 + 目标 runtime/launcher 真 import smoke |
+| `launcher/` | C++ launcher 实现（CMake 由 `package.build_launcher` 驱动） |
+| `lock.py` / `manifest.py` | 锁文件与 runtime manifest（可复现性） |
+| `fs.py` / `net.py` / `compat.py` | 文件拷贝与哈希、HTTP 重试下载、tomllib 兼容 |

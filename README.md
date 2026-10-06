@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.3**。
+当前稳定开发线：**0.17.4**。
 
 ## 构建模型
 
@@ -67,7 +67,7 @@ py_upper/
 ├── runtimes/                 # Git ignored，PBS/local runtime cache
 ├── tools/
 │   ├── build.py              # 唯一公共构建入口
-│   └── py_upper/
+│   └── py_upper/             # 构建工具实现（模块清单见开发指南 §14）
 ├── .github/workflows/
 ├── build/                    # Git ignored
 └── dist/                     # Git ignored

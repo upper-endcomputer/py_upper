@@ -1,3 +1,9 @@
+## v0.17.4
+
+Consolidated the build tool from 27 modules to 19 by merging the modules that wrapped the same concept (PBS resolution, target runtime, verification, packaging) and removing a dead facade plus four duplicate hash implementations. No behaviour change; the real PySide6 build, verification, signature check and window launch were re-run after the merge.
+
+Verification: pyflakes clean, 62 tests passed with `PY_UPPER_E2E=1`, full macOS arm64 build with `--run`, `--verify` (39 PASS / 0 FAIL) and `codesign --verify --deep --strict`.
+
 ## v0.17.3
 
 Fixed Qt pruning dropping the macOS cocoa platform plugin, which made packaged applications fail to start. Only real Qt modules now take part in the plugin decision, and the platform plugin category is never pruned.

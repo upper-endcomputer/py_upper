@@ -252,7 +252,6 @@ def _direct_imports_from_requirements(site: Path) -> list[str]:
 
 
 def _write_manifest(target: Target, wheels: list[Path], site: Path) -> Path:
-    out = wheel_dir(target)
     data = {
         "format": MANIFEST_FORMAT,
         "python": python_version(),

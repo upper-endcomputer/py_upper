@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.3"
+version = "0.17.4"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 dependencies = ["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]

@@ -104,8 +104,8 @@ def _make_app_native_tree(repo: Path, target) -> None:
             "__declspec(dllimport) int demo_child(void);\n__declspec(dllexport) int demo_parent(void) { return demo_child(); }\n",
             encoding="utf-8",
         )
-        subprocess.run([cc, "/nologo", "/LD", "/O2", str(child_c), f"/Fe:{native / 'demo_child.dll'}", f"/Fo:{native / 'child.obj'}"], check=True, cwd=repo, env=env)
-        subprocess.run([cc, "/nologo", "/LD", "/O2", str(parent_c), f"/Fe:{native / 'demo_parent.dll'}", f"/Fo:{native / 'parent.obj'}", f"/link", f"/LIBPATH:{native}", "demo_child.lib"], check=True, cwd=repo, env=env)
+        subprocess.run([cc, "/nologo", "/LD", "/O2", str(child_c), "/Fe:" + str(native / "demo_child.dll"), "/Fo:" + str(native / "child.obj")], check=True, cwd=repo, env=env)
+        subprocess.run([cc, "/nologo", "/LD", "/O2", str(parent_c), "/Fe:" + str(native / "demo_parent.dll"), "/Fo:" + str(native / "parent.obj"), "/link", "/LIBPATH:" + str(native), "demo_child.lib"], check=True, cwd=repo, env=env)
         for leftover in native.glob("*.obj"):
             leftover.unlink()
         return
@@ -164,7 +164,6 @@ def _prepare_repo() -> Path:
         ignore=shutil.ignore_patterns(".git", ".cache", "build", "dist", "runtimes", "__pycache__", ".pytest_cache"),
         symlinks=True,
     )
-    target = host_target()
     version = _make_local_runtime(repo)
     wheel_dir = _make_test_wheels(repo)
 

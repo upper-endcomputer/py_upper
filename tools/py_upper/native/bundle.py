@@ -9,7 +9,7 @@ from pathlib import Path
 from ..config import BUILD, app_name, native_exclude_patterns, optimize_config
 from ..fs import copy_file_contents
 from .deps import Dependency, DependencyResolver, _mac_install_name, _system_dependency, dependency_names
-from .inspect import BinaryInfo, inspect, verify_arch
+from .inspect import inspect, verify_arch
 
 
 def is_debug_artifact(path: Path) -> bool:

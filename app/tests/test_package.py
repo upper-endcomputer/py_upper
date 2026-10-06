@@ -1,7 +1,7 @@
 import json
 
 from py_upper.config import TARGETS, project_version
-from py_upper.release_artifacts import write_release_manifest
+from py_upper.package import write_release_manifest
 
 
 def test_release_manifest_is_deterministic_and_hashed(tmp_path):

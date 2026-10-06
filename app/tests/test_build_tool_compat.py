@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import json
-import os
 import stat
-import sys
 from pathlib import Path
 
 
@@ -383,7 +380,7 @@ def test_runtime_and_build_python_are_independent():
 
 
 def test_target_python_smoke_does_not_write_bytecode_into_staging(tmp_path, monkeypatch):
-    from py_upper import smoke
+    from py_upper import verify as smoke
     from py_upper.config import TARGETS
 
     target = TARGETS["macos-arm64"]
@@ -408,8 +405,8 @@ def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkey
     """
     from types import SimpleNamespace
 
+    from py_upper import python_build
     from py_upper.config import TARGETS
-    from py_upper.native import build_ext
     from py_upper.toolchain import Toolchain
 
     target = TARGETS["macos-arm64"]
@@ -426,13 +423,13 @@ def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkey
     generated.write_text("/* generated */\n", encoding="utf-8")
 
     commands: list[list[str]] = []
-    monkeypatch.setattr(build_ext, "APP", app_root)
-    monkeypatch.setattr(build_ext, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(build_ext, "resolve_target_python", lambda value: target_python)
-    monkeypatch.setattr(build_ext, "resolve_toolchain", lambda value: toolchain)
-    monkeypatch.setattr(build_ext.subprocess, "run", lambda cmd, check: commands.append(cmd))
+    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(python_build.subprocess, "run", lambda cmd, **kwargs: commands.append(cmd))
 
-    outputs = build_ext.compile_unix_extensions(target, {source: generated})
+    outputs = python_build.compile_unix_extensions(target, {source: generated})
 
     assert [path.name for path in outputs] == ["demo.cpython-310-darwin.so"]
     assert len(commands) == 1
@@ -482,7 +479,6 @@ def test_package_verification_skips_foreign_format_binaries(tmp_path, monkeypatc
 
 def test_lock_preserves_existing_target_entries(tmp_path, monkeypatch):
     import json
-    from pathlib import Path
     import py_upper.lock as lock
     from py_upper.config import TARGETS
 
@@ -505,7 +501,7 @@ def test_lock_preserves_existing_target_entries(tmp_path, monkeypatch):
 
 
 def test_runtime_optimization_is_applied_to_package_copy(tmp_path, monkeypatch):
-    from py_upper import runtime_optimize
+    from py_upper import runtime as runtime_optimize
     monkeypatch.setattr(runtime_optimize, "optimize_config", lambda: {"remove_python_caches": True, "remove_runtime_pip": True})
     root = tmp_path / "runtime"
     pip = root / "lib/python3.13/site-packages/pip"

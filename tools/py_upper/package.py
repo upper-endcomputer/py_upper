@@ -1,13 +1,50 @@
+"""Packaging: build the launcher, assemble the bundle and record the release manifest."""
 from __future__ import annotations
 
+import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
-from .config import APP, DIST, Target, app_identifier, app_name, entry_module, project_version, staging_dir, target_runtime_dir
-from .fs import copy_file_contents, copy_tree_contents, make_executable
-from .runtime_optimize import optimize_runtime_tree
+from .config import (
+    APP, BUILD, DIST, LAUNCHER, Target, app_identifier, app_name, entry_module,
+    project_version, resolve_target_python, staging_dir, target_runtime_dir,
+)
+from .fs import copy_file_contents, copy_tree_contents, make_executable, sha256
 from .native.bundle import bundle_native_dependencies, prune_excluded_native_files
-from .smoke import smoke_modules
+from .runtime import optimize_runtime_tree
+from .toolchain import resolve_toolchain
+from .verify import smoke_modules
+
+
+def build_launcher(target: Target):
+    sdk = resolve_target_python(target)
+    tc = resolve_toolchain(target)
+    b = BUILD / "launcher" / target.key
+    if b.exists():
+        shutil.rmtree(b)
+    b.mkdir(parents=True)
+    env = dict(os.environ)
+    env.update(tc.env)
+    cmd = [
+        "cmake", "-S", str(LAUNCHER), "-B", str(b), "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=Release",
+        f"-DPYSTAND_PYTHON_INCLUDE={sdk.include_dir}",
+    ]
+    if target.os == "macos":
+        cmd += [f"-DCMAKE_OSX_ARCHITECTURES={target.arch}"]
+        if tc.deployment_target:
+            cmd += [f"-DCMAKE_OSX_DEPLOYMENT_TARGET={tc.deployment_target}"]
+    subprocess.run(cmd, check=True, env=env)
+    subprocess.run(["cmake", "--build", str(b), "--config", "Release"], check=True, env=env)
+    exe = b / ("PyUpper.exe" if target.os == "windows" else "PyUpper")
+    if not exe.exists() and (b / "Release" / exe.name).exists():
+        exe = b / "Release" / exe.name
+    if not exe.exists():
+        raise RuntimeError(f"Launcher build did not produce {exe}")
+    return exe
+
 
 def _entry_script() -> str:
     module = entry_module()
@@ -81,3 +118,27 @@ def package(target: Target, launcher: Path) -> Path:
     (contents / "Info.plist").write_text(_mac_info_plist(name), encoding="utf-8")
     bundle_native_dependencies(app, target)
     return app
+
+
+def write_release_manifest(target: Target, output: Path | None = None) -> Path:
+    root = output or DIST
+    if not root.exists():
+        raise RuntimeError(f"Release output does not exist: {root}")
+    files = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and p.name != "release-manifest.json"):
+        files.append({
+            "path": path.relative_to(root).as_posix(),
+            "size": path.stat().st_size,
+            "sha256": sha256(path),
+        })
+    data = {
+        "format": 1,
+        "project": "py_upper",
+        "version": project_version(),
+        "target": target.key,
+        "target_triple": target.triple,
+        "files": files,
+    }
+    path = root / "release-manifest.json"
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path

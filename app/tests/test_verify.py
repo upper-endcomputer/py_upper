@@ -4,8 +4,7 @@ import json
 
 
 def test_smoke_modules_include_entry_and_direct_dependencies(tmp_path, monkeypatch):
-    import py_upper.smoke as smoke
-    import py_upper.smoke
+    import py_upper.verify as smoke
 
     monkeypatch.setattr(smoke, "selected_sources", lambda: [])
     monkeypatch.setattr(smoke, "entry_module", lambda: "main")

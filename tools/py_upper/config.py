@@ -497,7 +497,7 @@ def _find_target_include(sdk_root: Path) -> Path:
 
 
 def resolve_target_python(target: Target) -> TargetPython:
-    from .runtime_provider import ensure_sdk, sdk_info
+    from .runtime import ensure_sdk, sdk_info
 
     spec = runtime_spec(target)
     ensure_sdk(target)

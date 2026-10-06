@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
@@ -56,3 +57,12 @@ def make_executable(path: Path) -> None:
     """Add execute bits without replaying source metadata."""
     mode = stat.S_IMODE(path.stat().st_mode)
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def sha256(path: Path) -> str:
+    """Content hash used by runtime/SDK/wheel/release integrity checks."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

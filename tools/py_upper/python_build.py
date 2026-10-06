@@ -1,14 +1,17 @@
-from __future__ import annotations
-
+"""Application build: Cython generation, target extension compilation and staging."""
 import fnmatch
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
-from .config import APP, BUILD, Target, cython_config, pip_transfer_args, require_local_python, resolve_target_python, staging_dir
+from .config import (
+    APP, BUILD, Target, cython_config, pip_transfer_args, require_local_python,
+    resolve_target_python, staging_dir,
+)
 from .fs import copy_file_contents, copy_tree_contents
 from .toolchain import resolve_toolchain
+
 
 CYTHON_REQUIREMENT = "Cython>=3.1,<3.3"
 
@@ -120,7 +123,6 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
     host_python = require_local_python()
     generated = cythonize_to_c(sources, host_python)
     if target.os != "windows":
-        from .native.build_ext import compile_unix_extensions
         outputs = compile_unix_extensions(target, generated)
     else:
         # MSVC cross-compilation still uses setuptools because Visual Studio's
@@ -214,3 +216,42 @@ def build_python_package(target: Target) -> Path:
     remove_compiled_source_py(site, sources)
     print(f"Python stage ready: {site}")
     return stage
+
+
+def compile_unix_extensions(target: Target, generated: dict[Path, Path]) -> list[Path]:
+    target_python = resolve_target_python(target)
+    tc = resolve_toolchain(target)
+    out_root = BUILD / "native" / target.key
+    if out_root.exists():
+        shutil.rmtree(out_root)
+    out_root.mkdir(parents=True)
+    for source, c_source in generated.items():
+        rel = source.relative_to(APP / "src").with_suffix("")
+        output = out_root.joinpath(*rel.parts[:-1], rel.name + target_python.extension_suffix)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if target.os == "linux":
+            cmd = [
+                tc.compiler, "-shared", "-fPIC", "-O2", "-DNDEBUG",
+                f"-I{target_python.include_dir}", str(c_source), "-lm", "-o", str(output),
+            ]
+        elif target.os == "macos":
+            # CPython extensions on macOS are Mach-O bundles that leave the
+            # Python C-API symbols unresolved and resolve them from the
+            # embedding launcher, which loads the bundled libpython with
+            # RTLD_GLOBAL. Linking with `-dynamiclib` would instead require
+            # every symbol to be defined at link time and fail with
+            # "symbol(s) not found for architecture <arch>".
+            cmd = [
+                tc.compiler, "-bundle", "-undefined", "dynamic_lookup",
+                "-fPIC", "-O2", "-DNDEBUG",
+                "-arch", target.arch,
+                f"-mmacosx-version-min={tc.deployment_target or '11.0'}",
+                f"-I{target_python.include_dir}", str(c_source), "-o", str(output),
+            ]
+        else:
+            raise RuntimeError("compile_unix_extensions only supports Unix targets")
+        _run(cmd)
+    return [
+        out_root.joinpath(*source.relative_to(APP / "src").with_suffix("").parts[:-1], source.stem + target_python.extension_suffix)
+        for source in generated
+    ]

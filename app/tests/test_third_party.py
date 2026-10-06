@@ -31,8 +31,7 @@ def make_wheel(root: Path, name="demo_pkg", version="1.0.0", payload="ok", requi
 
 
 def test_wheel_extraction_and_direct_import_discovery(tmp_path):
-    from py_upper.third_party import _extract_wheel, _write_manifest, _wheel_files
-    from py_upper.config import TARGETS
+    from py_upper.third_party import _extract_wheel
 
     wheel = make_wheel(tmp_path)
     site = tmp_path / "site-packages"
@@ -113,9 +112,8 @@ def _compile_extension(cc: str, source: Path, binary: Path, include: str) -> Non
 def make_native_wheel(root: Path, name="demo_native", version="1.0.0", platform_tag: str | None = None) -> Path:
     import base64
     import hashlib
-    import subprocess
-    import sysconfig
     import shutil
+    import sysconfig
 
     root.mkdir(parents=True, exist_ok=True)
     import_name = name.replace('-', '_')

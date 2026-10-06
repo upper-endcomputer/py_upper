@@ -1,3 +1,30 @@
+## 0.17.4
+
+### Problem
+- The build tool had grown to 27 modules, several of which were thin layers around the same concept: `runtime.py`/`runtime_provider.py`/`runtime_optimize.py`, `pbs_assets.py`/`pbs_sdk.py`, `verify.py`/`smoke.py`, `package.py`/`launcher_build.py`/`release_artifacts.py`, plus a `wheel.py` facade nothing imported and a four-times-duplicated `sha256` implementation.
+
+### Root cause
+- Each fix landed as its own module instead of extending the module that already owned the concept.
+
+### Changes
+- Merge the PBS asset resolver and the SDK acquisition into `pbs.py`.
+- Merge runtime provider dispatch, PBS runtime acquisition and release-safe optimization into `runtime.py`.
+- Merge the static verification with the target-runtime and launcher smoke tests into `verify.py`.
+- Merge the launcher build, bundle assembly and release manifest into `package.py`.
+- Move the Unix target extension compiler into `python_build.py`, which already owned the Windows path.
+- Delete the unused `wheel.py` compatibility facade and the four duplicate `sha256` implementations; hashing now lives in `fs.sha256`.
+- Rename the test modules that followed the removed names (`test_smoke.py` to `test_verify.py`, `test_release_artifacts.py` to `test_package.py`).
+- Clear every unused import and variable reported by pyflakes across `tools/`, `app/src` and `app/tests`.
+
+### Verification
+- Module count 27 to 19, total lines 3597 to ~3550 with no behaviour change.
+- pyflakes reports no undefined names, unused imports or redefinitions.
+- Full suite on macOS arm64 with `PY_UPPER_E2E=1`: 62 passed.
+- Full PySide6 6.11.0 build on macOS arm64 after the merge: `--run` exit 0, Qt pruning frees 1101 MB, `--verify` 39 PASS / 0 FAIL, `codesign --verify --deep --strict` passes, and the real cocoa window opens.
+
+### Limitations
+- The merge is mechanical: public entry points are unchanged, but any external script importing the removed modules must switch to `pbs`/`runtime`/`verify`/`package`.
+
 ## 0.17.3
 
 ### Problem

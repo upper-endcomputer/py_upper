@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .config import LOCK, Target, load_app_config, runtime_provider, runtime_spec, python_version, target_runtime_dir, wheel_dir
+from .config import LOCK, Target, load_app_config, python_version, runtime_provider, runtime_spec, wheel_dir
 from .manifest import manifest_hash, read_manifest
 from .third_party import dependency_specs
 

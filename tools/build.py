@@ -8,16 +8,14 @@ from pathlib import Path
 
 from py_upper.config import (
     BUILD, DIST, TARGETS, app_name, host_description, host_target, pbs_release,
-    pbs_sdk_dir, python_version, runtime_provider, staging_dir, target_runtime_dir,
+    pbs_sdk_dir, python_version, runtime_provider, target_runtime_dir,
     validate_build_python_version, validate_target, require_local_python,
 )
-from py_upper.launcher_build import build_launcher
 from py_upper.lock import verify_lock, write_lock
-from py_upper.package import package
+from py_upper.package import build_launcher, package, write_release_manifest
 from py_upper.python_build import build_python_package
-from py_upper.release_artifacts import write_release_manifest
-from py_upper.runtime_provider import ensure_runtime, ensure_sdk, sdk_info
-from py_upper.smoke import run_launcher_smoke, run_target_python_smoke
+from py_upper.runtime import ensure_runtime, ensure_sdk
+from py_upper.verify import run_launcher_smoke, run_target_python_smoke
 from py_upper.toolchain import describe_toolchain
 from py_upper.third_party import resolve_wheels
 from py_upper.verify import verify

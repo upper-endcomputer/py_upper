@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 
 
 def _target():
@@ -9,7 +8,7 @@ def _target():
 
 
 def test_exact_pbs_metadata_entry_maps_31110_to_20241016():
-    from py_upper.pbs_assets import metadata_asset, metadata_key
+    from py_upper.pbs import metadata_asset, metadata_key
 
     target = _target()
     data = {
@@ -25,7 +24,7 @@ def test_exact_pbs_metadata_entry_maps_31110_to_20241016():
 
 
 def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
-    from py_upper.pbs_assets import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URL, metadata_key, resolve_pbs_inputs
+    from py_upper.pbs import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URL, metadata_key, resolve_pbs_inputs
 
     target = _target()
     runtime_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10%2B20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"
@@ -36,11 +35,11 @@ def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
         {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz", "browser_download_url": runtime_url},
     ]}
     calls=[]
-    from py_upper import pbs_assets
+    from py_upper import pbs
     # The metadata index is cached on disk. A test must never write its fixture
     # into the project's real cache: a leftover fake index then makes every
     # later build fail with a misleading "No PBS runtime metadata" error.
-    monkeypatch.setattr(pbs_assets, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
+    monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
     def fetch(url):
         calls.append(url)
         if url == PBS_RUNTIME_METADATA_URL:
@@ -55,7 +54,7 @@ def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
 
 
 def test_pbs_explicit_release_reports_available_versions():
-    from py_upper.pbs_assets import resolve_pbs_inputs, PBS_RELEASE_API
+    from py_upper.pbs import resolve_pbs_inputs, PBS_RELEASE_API
 
     release = {"assets": [
         {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz", "browser_download_url": "u1"},
@@ -67,7 +66,7 @@ def test_pbs_explicit_release_reports_available_versions():
 
 
 def test_no_runtime_asset_error_is_actionable():
-    from py_upper.pbs_assets import no_asset_error
+    from py_upper.pbs import no_asset_error
 
     release = {"assets": [
         {"name": "cpython-3.10.15+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"},

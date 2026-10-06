@@ -1,9 +1,13 @@
-from __future__ import annotations
-
+"""Verification: static package checks plus the target-runtime and launcher smoke tests."""
 import json
+import os
+import subprocess
 from pathlib import Path
 
-from .config import APP, BUILD, DIST, Target, app_name, entry_module, optimize_config, runtime_spec, staging_dir, target_extension_suffix
+from .config import (
+    APP, BUILD, DIST, Target, app_name, entry_module, host_target, optimize_config,
+    runtime_executable, runtime_spec, staging_dir, target_extension_suffix, target_runtime_dir,
+)
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import inspect, target_format, verify_arch
 from .python_build import module_name, selected_sources
@@ -25,7 +29,7 @@ def _checks_for_stage(target: Target) -> list[tuple[bool, str]]:
         (site.is_dir(), "application site-packages"),
     ]
     try:
-        manifest = read_manifest(target_runtime_dir := runtime_spec(target).root)
+        manifest = read_manifest(runtime_spec(target).root)
         validate_manifest(manifest, target, runtime_spec(target))
         checks.append((True, f"runtime manifest format={manifest['format']}"))
     except Exception as exc:
@@ -138,3 +142,73 @@ def verify(target: Target) -> int:
         print("PASS" if ok else "FAIL", label)
         failures += int(not ok)
     return int(bool(failures))
+
+
+def runtime_python(target: Target) -> Path:
+    return runtime_executable(target)
+
+
+def direct_dependency_imports(target: Target) -> list[str]:
+    path = wheel_dir(target) / WHEEL_MANIFEST
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    values = data.get("imports", [])
+    return sorted({str(value).strip() for value in values if str(value).strip()}) if isinstance(values, list) else []
+
+
+def smoke_modules(target: Target) -> list[str]:
+    # Import the application entry point and every directly declared third-party
+    # distribution. Imported application modules are exercised transitively by
+    # the entry point; importing every Cython module independently would turn
+    # optional/lazy application modules into false build failures.
+    values = [entry_module()] + direct_dependency_imports(target)
+    return sorted({value for value in values if value})
+
+
+def write_smoke_script(target: Target, destination: Path) -> Path:
+    modules = smoke_modules(target)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "import importlib\n"
+        f"modules = {modules!r}\n"
+        "for name in modules:\n"
+        "    importlib.import_module(name)\n"
+        "print('SMOKE PASS', len(modules))\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
+def run_target_python_smoke(target: Target) -> None:
+    if target != host_target():
+        print("SKIP target runtime smoke: cross target")
+        return
+    stage_root = BUILD / "staging" / target.key
+    site = stage_root / "site-packages"
+    script = write_smoke_script(target, BUILD / "smoke" / target.key / "target.py")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(site)
+    env["PYTHONHOME"] = str(target_runtime_dir(target))
+    env["PYTHONNOUSERSITE"] = "1"
+    # Importing the package markers must not leave __pycache__ inside the
+    # staging tree; a later --verify reports those as leftover build artifacts.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    py = runtime_python(target)
+    print("+", py, script)
+    subprocess.run([str(py), str(script)], env=env, cwd=stage_root, check=True)
+
+
+def run_launcher_smoke(target: Target, launcher: Path) -> None:
+    name = app_name()
+    script_name = f"{name}.smoke.int"
+    if target.os == "macos":
+        expected = launcher.parent.parent / "Resources" / script_name
+    else:
+        expected = launcher.parent / script_name
+    if not expected.exists():
+        raise RuntimeError(f"Packaged launcher smoke script missing: {expected}")
+    env = dict(os.environ)
+    env["PY_UPPER_SMOKE"] = "1"
+    print("+", launcher, "[launcher smoke]")
+    subprocess.run([str(launcher)], env=env, cwd=launcher.parent, check=True)
