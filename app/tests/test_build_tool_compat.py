@@ -359,6 +359,8 @@ def test_windows_version_resource_carries_a_four_part_version(tmp_path):
 
 def test_macos_ad_hoc_signing_seals_the_bundle_last(tmp_path, monkeypatch):
     """Signing the launcher seals the .app, so nested images must be signed first."""
+    from types import SimpleNamespace
+
     from py_upper.config import TARGETS
     from py_upper.native import bundle
     from py_upper.native.inspect import BinaryInfo
@@ -382,7 +384,14 @@ def test_macos_ad_hoc_signing_seals_the_bundle_last(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle, "optimize_config", lambda: {})
     monkeypatch.setattr(bundle, "_strip_native", lambda path, value: None)
     monkeypatch.setattr(bundle, "_ad_hoc_sign", signed.append)
-    monkeypatch.setattr(bundle.shutil, "which", lambda name: "/usr/bin/" + name)
+    # Host tool discovery selects the signing branch. Replace the module
+    # attribute instead of shutil.which itself: the stdlib module is shared
+    # with deps.py, where a faked path would be executed by subprocess and
+    # fail on hosts without otool.
+    monkeypatch.setattr(bundle, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/" + name))
+    # otool is only needed to index install names. This test asserts signing
+    # order, so no host tool should run at all.
+    monkeypatch.setattr(bundle, "_mac_aliases", lambda roots: {})
 
     bundle.bundle_native_dependencies(root, target)
 
