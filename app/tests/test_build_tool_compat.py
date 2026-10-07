@@ -151,6 +151,26 @@ def test_missing_local_configuration_points_at_the_template(tmp_path, monkeypatc
         raise AssertionError("expected a missing-configuration error")
 
 
+def test_missing_local_configuration_survives_a_foreign_drive(tmp_path, monkeypatch):
+    """A configuration outside the project root must still be reported.
+
+    ``os.path.relpath`` raises ValueError when the two paths are on different
+    Windows drives, which is what happens when the working copy lives on D: and
+    the temporary configuration on C:.
+    """
+    from py_upper import config
+
+    def cross_drive(*_args, **_kwargs):
+        raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+    monkeypatch.setattr(config, "APP_CONFIG", tmp_path / "pyproject.toml")
+    monkeypatch.setattr(config, "APP_CONFIG_EXAMPLE", tmp_path / "pyproject.toml.example")
+    monkeypatch.setattr(config.os.path, "relpath", cross_drive)
+    with pytest.raises(RuntimeError) as excinfo:
+        config.load_app_config()
+    assert "pyproject.toml.example" in str(excinfo.value)
+
+
 def test_target_matrix_and_platform_contract(monkeypatch):
     from py_upper import config
     from py_upper.config import TARGETS
@@ -304,6 +324,7 @@ def test_package_copy_does_not_replay_source_metadata(tmp_path, monkeypatch):
     assert stat.S_IMODE(copied.stat().st_mode) & 0o111 == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX execute bits")
 def test_copy_preserves_execute_bits_without_replaying_restrictive_modes(tmp_path):
     """A copied interpreter must stay runnable; 0444 sources must not be replayed."""
     from py_upper import fs

@@ -48,6 +48,10 @@ jobs:
           - os: windows-2025
             target: windows-x86
             run: false
+            # PySide6 publishes no 32-bit Windows wheel, so this job proves the
+            # 32-bit toolchain, launcher and packaging path with the one
+            # application dependency that does resolve for win32.
+            dependencies: '["pyserial==3.5"]'
           - os: windows-2025
             target: windows-x86_64
             run: true
@@ -79,12 +83,17 @@ jobs:
         # heredoc below ("<" is reserved). Bash ships with Git for Windows, so
         # every platform can run the same script.
         shell: bash
+        env:
+          # The application's own dependency set, unless the matrix entry
+          # overrides it because no wheel of it exists for that target.
+          PY_UPPER_CI_DEPENDENCIES: ${{ matrix.dependencies || '["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]' }}
         run: |
           python - <<'PY'
+          import os
           import re
           from pathlib import Path
 
-          dependencies = '["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]'
+          dependencies = os.environ['PY_UPPER_CI_DEPENDENCIES']
           text = Path('app/pyproject.toml.example').read_text(encoding='utf-8')
           text, replaced = re.subn(
               r'^dependencies = \[\]$',

@@ -173,10 +173,24 @@ def _manylinux_tag(baseline: str, arch: str) -> str:
     return f"manylinux2014_{arch}" if baseline == "manylinux2014" else f"{baseline}_{arch}"
 
 
+def _readable_path(path: Path) -> str:
+    """A path for error messages: project-relative when that is expressible.
+
+    ``os.path.relpath`` raises ``ValueError`` when the two paths live on
+    different Windows drives, which happens whenever the configuration is read
+    from a temporary directory. A missing-configuration error must not turn into
+    a path-arithmetic crash, so fall back to the absolute path.
+    """
+    try:
+        return os.path.relpath(path, ROOT)
+    except ValueError:
+        return str(path)
+
+
 def load_app_config() -> dict:
     if not APP_CONFIG.is_file():
-        target = os.path.relpath(APP_CONFIG, ROOT)
-        example = os.path.relpath(APP_CONFIG_EXAMPLE, ROOT)
+        target = _readable_path(APP_CONFIG)
+        example = _readable_path(APP_CONFIG_EXAMPLE)
         raise RuntimeError(
             f"{target} is missing.\n"
             "Create your local configuration from the tracked template:\n"
