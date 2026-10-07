@@ -1,6 +1,9 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+# Local application configuration: copy app/pyproject.toml.example to
+# app/pyproject.toml. The template stays tracked, the working copy does not.
+app/pyproject.toml
 .venv/
 .cache/
 runtimes/

@@ -182,10 +182,13 @@ def _prepare_repo() -> Path:
         "no_index = true\n\n"
     ) + project[end:]
     project, replaced = re.subn(
-        r"dependencies = \[[^\]]*\]",
+        # Anchor to the start of the line: a commented-out example of the key
+        # must never win over the declaration that is actually in effect.
+        r"^dependencies = \[[^\]]*\]",
         'dependencies = ["demo-pkg==1.0.0", "demo-native==1.0.0"]',
         project,
         count=1,
+        flags=re.M,
     )
     assert replaced == 1, "could not rewrite [project].dependencies in the E2E fixture"
     pyproject.write_text(project, encoding="utf-8")

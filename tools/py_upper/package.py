@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 from .config import (
-    APP, BUILD, DIST, LAUNCHER, Target, app_identifier, app_name, entry_module,
-    project_version, resolve_target_python, staging_dir, target_runtime_dir,
+    APP, BUILD, DIST, LAUNCHER, STATIC_ENTRY, Target, app_identifier, app_name,
+    entry_module, project_version, resolve_target_python, staging_dir,
+    target_runtime_dir,
 )
-from .fs import copy_file_contents, copy_tree_contents, make_executable, sha256
+from .fs import copy_file_contents, copy_optional_tree, copy_tree_contents, make_executable, sha256
 from .native.bundle import bundle_native_dependencies, prune_excluded_native_files
 from .runtime import optimize_runtime_tree
 from .toolchain import resolve_toolchain
@@ -31,11 +33,21 @@ def build_launcher(target: Target):
         "cmake", "-S", str(LAUNCHER), "-B", str(b), "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
         f"-DPYSTAND_PYTHON_INCLUDE={sdk.include_dir}",
+        # Compiled into the launcher so a renamed executable still reports the
+        # configured application name instead of its own filename.
+        f"-DPY_UPPER_APP_NAME={app_name()}",
     ]
     if target.os == "macos":
         cmd += [f"-DCMAKE_OSX_ARCHITECTURES={target.arch}"]
         if tc.deployment_target:
             cmd += [f"-DCMAKE_OSX_DEPLOYMENT_TARGET={tc.deployment_target}"]
+    if target.os == "windows":
+        if os.environ.get("PY_UPPER_LAUNCHER_CONSOLE") == "1":
+            # Debugging escape hatch: a console-subsystem launcher keeps stdout
+            # and stderr attached unconditionally, at the cost of a console
+            # window for every user.
+            cmd += ["-DPY_UPPER_LAUNCHER_CONSOLE=ON"]
+        cmd += [f"-DPY_UPPER_RESOURCE_RC={_windows_version_resource(b)}"]
     subprocess.run(cmd, check=True, env=env)
     subprocess.run(["cmake", "--build", str(b), "--config", "Release"], check=True, env=env)
     exe = b / ("PyUpper.exe" if target.os == "windows" else "PyUpper")
@@ -51,11 +63,74 @@ def _entry_script() -> str:
     return f"from {module} import main\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n"
 
 
+def _smoke_script(target: Target) -> str:
+    return "import importlib\nmodules = " + repr(smoke_modules(target)) + "\nfor name in modules: importlib.import_module(name)\nprint('SMOKE PASS launcher')\n"
 
-def _write_resource_app_config(path: Path, name: str) -> None:
-    if path.exists():
-        path.write_text(f"[app]\nname = {name!r}\n", encoding="utf-8")
 
+def write_entry_scripts(root: Path, name: str, target: Target) -> None:
+    """Write the application entry scripts next to the packaged launcher.
+
+    Both names carry the same generated entry: the static one survives renaming
+    the executable, the executable-derived one is the layout the rest of the
+    tooling and hand-made bundles expect.
+    """
+    entry = _entry_script()
+    (root / f"{name}.int").write_text(entry, encoding="utf-8")
+    (root / STATIC_ENTRY).write_text(entry, encoding="utf-8")
+    (root / f"{name}.smoke.int").write_text(_smoke_script(target), encoding="utf-8")
+
+
+def _rc_literal(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _windows_version_resource(directory: Path) -> Path:
+    """Generate the Windows version resource for the launcher.
+
+    Without it a packaged executable has no product name, no version and no
+    description in the file properties, which makes a finished application look
+    like an anonymous binary.
+    """
+    name = app_name()
+    version = project_version()
+    numbers = [int(part) for part in re.findall(r"\d+", version)][:4]
+    numbers += [0] * (4 - len(numbers))
+    numeric = ",".join(str(value) for value in numbers)
+    script = f"""#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION {numeric}
+ PRODUCTVERSION {numeric}
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", {_rc_literal(name)}
+            VALUE "FileVersion", {_rc_literal(version)}
+            VALUE "InternalName", {_rc_literal(name)}
+            VALUE "OriginalFilename", {_rc_literal(name + ".exe")}
+            VALUE "ProductName", {_rc_literal(name)}
+            VALUE "ProductVersion", {_rc_literal(version)}
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+"""
+    path = directory / "py_upper_resource.rc"
+    # rc.exe reads a resource script with the ANSI code page unless the file is
+    # marked, so a UTF-8 byte order mark is what keeps a non-ASCII product name
+    # intact. A plain ASCII script is unaffected by the mark.
+    path.write_text(script, encoding="utf-8-sig")
+    return path
 
 def _mac_info_plist(name: str) -> str:
     return f'''<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>{name}</string><key>CFBundleIdentifier</key><string>{app_identifier()}</string><key>CFBundleName</key><string>{name}</string><key>CFBundleDisplayName</key><string>{name}</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>{project_version()}</string><key>CFBundleShortVersionString</key><string>{project_version()}</string></dict></plist>\n'''
@@ -91,10 +166,9 @@ def package(target: Target, launcher: Path) -> Path:
             copy_tree_contents(runtime_data, out / "runtime", replace=False)
         copy_tree_contents(site, out / "site-packages")
         _report_pruned(out / "site-packages")
-        copy_tree_contents(APP / "resources", out / "resources")
-        _write_resource_app_config(out / "resources" / "config" / "app.toml", name)
-        (out / f"{name}.int").write_text(_entry_script(), encoding="utf-8")
-        (out / f"{name}.smoke.int").write_text("import importlib\nmodules = " + repr(smoke_modules(target)) + "\nfor name in modules: importlib.import_module(name)\nprint('SMOKE PASS launcher')\n", encoding="utf-8")
+        # Resources are optional: a project without app/resources simply ships none.
+        copy_optional_tree(APP / "resources", out / "resources")
+        write_entry_scripts(out, name, target)
         bundle_native_dependencies(out, target)
         return out
 
@@ -111,10 +185,9 @@ def package(target: Target, launcher: Path) -> Path:
         copy_tree_contents(runtime_data, resources / "runtime", replace=False)
     copy_tree_contents(site, resources / "site-packages")
     _report_pruned(resources / "site-packages")
-    copy_tree_contents(APP / "resources", resources / "resources")
-    _write_resource_app_config(resources / "config" / "app.toml", name)
-    (resources / f"{name}.int").write_text(_entry_script(), encoding="utf-8")
-    (resources / f"{name}.smoke.int").write_text("import importlib\nmodules = " + repr(smoke_modules(target)) + "\nfor name in modules: importlib.import_module(name)\nprint('SMOKE PASS launcher')\n", encoding="utf-8")
+    # Resources are optional: a project without app/resources simply ships none.
+    copy_optional_tree(APP / "resources", resources / "resources")
+    write_entry_scripts(resources, name, target)
     (contents / "Info.plist").write_text(_mac_info_plist(name), encoding="utf-8")
     bundle_native_dependencies(app, target)
     return app

@@ -2,7 +2,7 @@
 
 本文是 `py_upper` 的完整开发与使用手册：从环境准备、日常开发、打包发布，到 Qt 应用处理、依赖管理和排错。README 讲的是"是什么"，本文讲的是"怎么用、为什么这么设计、出问题怎么查"。
 
-当前稳定线：**0.17.4**。
+当前稳定线：**0.17.5**。
 
 ---
 
@@ -32,7 +32,7 @@ Target Contract（目标契约：OS / 架构 / Python 版本 / ABI / wheel 标�
 [1/6] Runtime + SDK        下载/复用目标 CPython（PBS 或本地目录）
 [2/6] Third-party wheels   解析并安装目标平台 wheel
 [3/6] Target launcher      CMake + Ninja 编译 C++ 启动器
-[4/6] Package              复制运行时、site-packages、资源 + 原生依赖闭包 + 签名
+[4/6] Package              复制运行时、site-packages、可选资源 + 原生依赖闭包 + 签名
 [5/6] Static verification  文件、架构、ABI 后缀、依赖清单
 [6/6] Runtime smoke        用 bundled Python 真 import + 启动器 smoke + 可选运行
 ```
@@ -83,6 +83,9 @@ pip 的下载缓存放在 `.cache/pip`，重复构建不会重下几百 MB 的 w
 ## 3. 快速开始
 
 ```bash
+# 0. 克隆后先建本地配置（app/pyproject.toml 不入库）
+cp app/pyproject.toml.example app/pyproject.toml
+
 # 1. 写代码：app/src 就是应用源码
 app/src/
 ├── main.py            # 入口（由 [tool.py_upper].entry 指定）
@@ -90,7 +93,7 @@ app/src/
 └── ...
 
 # 2. 声明依赖与目标
-#    app/pyproject.toml
+#    app/pyproject.toml（本地副本，改了不进 Git）
 #    [project] dependencies = ["PySide6==6.11.0"]
 #    [tool.py_upper.runtime] provider = "pbs"  python = "3.10.11"
 
@@ -110,14 +113,14 @@ dist/MyApp.app/Contents/          # macOS
     ├── MyApp.int                 # 入口脚本
     ├── runtime/                  # bundled CPython
     ├── site-packages/            # 你的模块 + 第三方
-    └── resources/                # app/resources 的内容
+    └── resources/                # app/resources 的内容（没有该目录时不生成）
 
 dist/MyApp/                       # Windows / Linux
 ├── MyApp(.exe)                   # launcher
 ├── MyApp.int
 ├── runtime/
 ├── site-packages/
-└── resources/
+└── resources/                    # 同上，可选
 ```
 
 ---
@@ -127,14 +130,15 @@ dist/MyApp/                       # Windows / Linux
 ```text
 py_upper/
 ├── app/
-│   ├── pyproject.toml        # 唯一配置入口
-│   ├── src/                  # ★ 应用源码（直接是包根）
-│   ├── tests/                # 应用测试 + 构建链测试
-│   └── resources/            # 随包资源
+│   ├── pyproject.toml.example # 配置模板（入库）
+│   ├── pyproject.toml         # 本地配置（Git ignored，从模板复制）
+│   ├── src/                   # ★ 应用源码（直接是包根）
+│   ├── tests/                 # 应用测试 + 构建链测试
+│   └── resources/             # 可选：随包资源，没有该目录就不打包
 ├── launcher/                 # C++ 启动器（CMake）
 ├── tools/
 │   ├── build.py              # ★ 唯一公共构建入口
-│   └── py_upper/             # 构建工具实现（见 §14）
+│   └── py_upper/             # 构建工具实现（见 §15）
 ├── runtimes/                 # 本地 runtime 缓存（git 忽略）
 ├── .cache/                   # PBS / pip 缓存（git 忽略）
 ├── build/                    # 中间产物（git 忽略）
@@ -145,10 +149,14 @@ py_upper/
 
 ## 5. 配置参考（`app/pyproject.toml`）
 
+仓库里入库的是模板 `app/pyproject.toml.example`，实际生效的是 Git 忽略的 `app/pyproject.toml`（`cp app/pyproject.toml.example app/pyproject.toml`）。下面的内容对两者都成立：模板改了就进 Git，本地副本改了只影响你这台机器。文件缺失时 Build Tool 会报错并给出复制命令，不会静默使用模板。
+
+模板里的 `[project] dependencies` 是空列表：模板入库、依赖入库就变成"克隆的人继承维护者的 pin"。要装的包写进本地副本即可；CI 构建仓库自带示例应用时自己注入依赖集合（见 §11）。
+
 ```toml
 [project]
 name = "py_upper"
-version = "0.17.2"
+version = "0.17.5"
 requires-python = ">=3.8,<3.14"
 dependencies = ["PySide6==6.11.0", "pyserial==3.5"]
 
@@ -156,7 +164,7 @@ dependencies = ["PySide6==6.11.0", "pyserial==3.5"]
 entry = "main.py"                 # app/src 下的入口文件
 
 [tool.py_upper.app]
-name = "MyApp"                    # 最终应用名（.app / 可执行文件名）
+name = "MyApp"                    # 最终应用名（.app / 可执行文件 / 窗口标题，见 §10.2）
 identifier = "com.example.pyupper" # macOS bundle identifier
 
 [tool.py_upper.runtime]
@@ -215,7 +223,11 @@ architectures = ["x86_64", "arm64"]
 | `PY_UPPER_HTTP_TIMEOUT` / `PY_UPPER_HTTP_RETRIES` | PBS 下载超时/重试 |
 | `PY_UPPER_PIP_TIMEOUT` / `PY_UPPER_PIP_RETRIES` | pip 传输超时/重试 |
 | `PY_UPPER_HEADLESS=1` | 应用以 offscreen 方式建 Qt 窗口后退出（CI/smoke 用） |
+| `PY_UPPER_NO_DIALOG=1` | launcher 不弹原生错误对话框，失败只走 stderr + 退出码（CI/smoke 必须设） |
+| `PY_UPPER_LAUNCHER_CONSOLE=1` | Windows：构建控制台子系统 launcher，用于调试（等价 `-DPY_UPPER_LAUNCHER_CONSOLE=ON`） |
 | `PY_UPPER_E2E=1` | 打开本地端到端测试 |
+
+launcher 运行时还会向应用导出 `PY_UPPER_HOME` / `PY_UPPER_RUNTIME` / `PY_UPPER_SITE_PACKAGES` / `PY_UPPER_SCRIPT` / `PY_UPPER_EXECUTABLE`，见 §10.2。
 
 ---
 
@@ -351,7 +363,56 @@ qt = "imports"
 
 ---
 
-## 10. 验证与 CI
+## 10. 启动器契约（launcher）
+
+`launcher/` 是一个**不链接 libpython** 的 C++ 可执行文件：它在运行时用 `dlopen`/`LoadLibraryEx` 从 bundled runtime 里解析 CPython 符号（`PyConfig_InitIsolatedConfig` 等），因此同一份 launcher 源码可以为任意目标 Python 版本构建，换 runtime 不需要重新链接。
+
+### 10.1 入口解析
+
+launcher 用**自身文件名**（stem）在 bundle 根目录按顺序查找入口：
+
+1. `<stem>.int`（文档化布局）
+2. `<stem>.py`
+3. `<stem>.pyw`
+4. `_py_upper_static.int`（**改名安全兜底**）
+
+打包时 `<App>.int` 与 `_py_upper_static.int` 都会写出，内容相同。把可执行文件改名后，兜底入口仍能让应用启动；`--verify` 里对应 `rename-safe application entry`。`PY_UPPER_SMOKE=1` 时改走 `<stem>.smoke.int`。
+
+### 10.2 导出给应用的变量
+
+| 变量 | 值 |
+|---|---|
+| `PY_UPPER_HOME` | 入口所在目录（macOS：`Contents/Resources`） |
+| `PY_UPPER_RUNTIME` | bundled runtime 根 |
+| `PY_UPPER_SITE_PACKAGES` | `site-packages` |
+| `PY_UPPER_SCRIPT` | 实际选中的入口文件 |
+| `PY_UPPER_EXECUTABLE` | launcher 绝对路径 |
+| `PY_UPPER_APP_NAME` | 打包时编译进 launcher 的应用名（改名不会变） |
+
+应用侧取资源目录用 `utils.paths.resource_root()`：优先 `PY_UPPER_HOME/resources`，没有该变量时才回退到"数父目录"。数父目录只对某一天的目录布局成立，launcher 才知道真实答案。`app/resources` 是**可选**的：目录不存在时产物里就没有 `resources/`，调用方要按"可能不存在"处理。
+
+应用名同理只有一个来源：`app/pyproject.toml` 的 `[tool.py_upper.app].name`。打包链由它派生 `.app`/可执行文件/入口脚本/`Info.plist`/Windows 版本资源的名字，并把它编译进 launcher；运行时应用统一调 `utils.paths.app_name()` 读取（先看 `PY_UPPER_APP_NAME`，开发态没有 launcher 时回读同一个 `pyproject.toml`）。**不要**从 `PY_UPPER_EXECUTABLE` 或 `argv[0]` 推名字——可执行文件是允许改名的，也不要在应用代码里硬编码第二份。
+
+### 10.3 失败可见性
+
+- 致命错误（入口缺失、runtime 加载失败、解释器初始化失败、应用抛未捕获异常）先写 stderr，再按需弹**原生对话框**：Windows `MessageBoxW`、macOS `CFUserNotification`、Linux `zenity`（退回 `xmessage`）。macOS 的对话框有 120 s 超时，无人值守不会挂死。
+- 已经能看到 stderr 时不弹窗：设置了 `PY_UPPER_NO_DIALOG`，或 stdout/stderr 是 tty。**CI 与 smoke 必须设 `PY_UPPER_NO_DIALOG=1`**。
+- 应用抛未捕获异常时，bootstrap 先把 traceback 写进 `TMPDIR/py_upper-<pid>.log`；`Py_FinalizeEx` 之后 launcher 检查该文件并把它作为致命错误上报，然后删除。双击启动（没有终端）也能看到 traceback，且不会在包里留下垃圾文件。
+- 退出码：1 无 argv / 未捕获异常，3 入口缺失，4 libpython 加载失败，5 符号缺失，6 配置失败，7 初始化失败，8 `PyRun_SimpleString` 缺失，9 launcher 内部异常。
+
+### 10.4 平台差异
+
+- **Windows**：默认编译成 GUI 子系统（`WIN32_EXECUTABLE`），双击不弹控制台；从 cmd/PowerShell/CI 启动时用 `AttachConsole(ATTACH_PARENT_PROCESS)` 接管父控制台，**已有的重定向优先**（`> run.log` 不会被抢走）。入口是 `wWinMain`，宽命令行统一转 UTF-8 后再处理，非 ASCII 安装路径不会乱码。链接静态 CRT（`/MT`），目标机不需要 VC++ 运行库。调试时用 `PY_UPPER_LAUNCHER_CONSOLE=1` 构建控制台版本。
+- **macOS**：入口在 `Contents/MacOS`，资源 / runtime / site-packages 都在 `Contents/Resources`；链接 CoreFoundation 以使用 `CFUserNotification`。
+- **Linux**：单目录布局，`libpython3.x.so` 以 `RTLD_GLOBAL` 加载，保证后续导入的扩展能解析 CPython 符号。
+
+### 10.5 Windows 版本资源
+
+打包时生成 `py_upper_resource.rc`（`VERSIONINFO`：FileDescription / FileVersion / ProductName / ProductVersion / OriginalFilename）并交给 CMake 编译，可执行文件属性里能看到产品名与版本。**当前不嵌入图标**：仓库里没有图标资源，`Info.plist` 也没有 `CFBundleIconFile`；需要时新建 `app/resources`（可选目录，存在就会被打进包）把 `.ico`/`.icns` 放进去，再扩展这条链路。
+
+---
+
+## 11. 验证与 CI
 
 两道门：
 
@@ -361,6 +422,8 @@ qt = "imports"
    - 用打包好的 launcher 再导入一次（`PY_UPPER_SMOKE=1`）；
    - 最后才真正运行应用。
 
+launcher 相关步骤一律带 `PY_UPPER_NO_DIALOG=1`：CI 里一次失败必须是退出码，而不是一个没人能点的对话框。
+
 CI（`.github/workflows/validate.yml`）在**每个原生平台**都跑：
 
 ```
@@ -368,9 +431,11 @@ CI（`.github/workflows/validate.yml`）在**每个原生平台**都跑：
 → doctor → 完整 PBS 构建 → 集成运行（headless，断言 GUI OK）
 ```
 
+原生集成 job 从模板生成 `app/pyproject.toml` 时会把仓库自身示例应用的依赖集合填进 `[project] dependencies`（模板里是空列表），否则集成运行没有 PySide6 可用；纯测试与聚合 job 只需要文件存在，直接复制模板。E2E 夹具同样自己重写这一段依赖。
+
 ---
 
-## 11. 发布
+## 12. 发布
 
 ```bash
 python tools/build.py --release --identity "Developer ID Application: ..." --notary-profile <profile>
@@ -384,7 +449,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 
 ---
 
-## 12. 排错手册
+## 13. 排错手册
 
 | 症状 | 根因 | 处理 |
 |---|---|---|
@@ -402,12 +467,18 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | 应用体积 1 GB+ | 完整 Qt 被打包 | 设 `qt = "imports"` |
 | pip 下载大 wheel 超时 | 默认 15s socket 超时 | 设 `timeout`/`retries` 或 `PY_UPPER_PIP_TIMEOUT` |
 | VS Code 调试报 `No module named 'Cython'` | 探测 Cython 时抛预期异常 | ≥0.16.8 改用 `importlib.metadata`，不会停在异常上 |
+| 双击打包好的应用"没反应" | 入口/runtime/初始化失败，而 GUI 子系统没有控制台 | ≥0.17.5 会弹原生错误对话框显示原因；自动化场景设 `PY_UPPER_NO_DIALOG=1` 只取退出码 |
+| 应用启动即退出，看不到 traceback | 未捕获异常被解释器写到不存在的 stderr | ≥0.17.5 bootstrap 先落 `TMPDIR/py_upper-<pid>.log`，launcher 在 `Py_FinalizeEx` 后据此上报；双击时会弹对话框 |
+| 把可执行文件改名后起不来 | 入口名跟随可执行文件名 | ≥0.17.5 打包时同时写 `_py_upper_static.int` 兜底 |
+| Windows 上从 cmd 运行看不到输出 | GUI 子系统没有自己的控制台 | ≥0.17.5 自动 `AttachConsole` 到父控制台（已有重定向优先）；要无条件控制台用 `PY_UPPER_LAUNCHER_CONSOLE=1` 重新构建 |
+| Windows 目标机报缺 `VCRUNTIME140.dll` | launcher 动态链接 CRT | ≥0.17.5 launcher 使用静态 CRT（`/MT`） |
+| 非 ASCII 安装路径下应用起不来 | 窄字符路径按 ANSI 代码页解释 | ≥0.17.5 入口/路径全程 UTF-8，`std::filesystem` 走 `u8path` |
 
 调试技巧：`PY_UPPER_TRACEBACK=1 python tools/build.py`；`python tools/build.py --doctor` 看宿主/目标/工具链；`--verify` 可反复执行定位到具体失败项。
 
 ---
 
-## 13. 版本与提交约定
+## 14. 版本与提交约定
 
 - 每个版本一个提交 + 一个 tag（`v0.17.x`），提交信息包含 Problem / Root cause / Changes / Verification / Impact。
 - `CHANGELOG.md` 记录面向使用者的变更与限制，`HISTORY.md` 记录简版演进。
@@ -416,7 +487,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 
 ---
 
-## 14. 模块职责
+## 15. 模块职责
 
 | 模块 | 职责 |
 |---|---|
@@ -430,7 +501,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | `native/inspect.py` | 二进制格式与架构识别 |
 | `native/deps.py` | 依赖解析（otool/readelf/dumpbin + 索引/缓存） |
 | `native/bundle.py` | 依赖闭包、install name 重写、ad-hoc 签名 |
-| `package.py` | launcher 构建、产物组装、原生排除、发布清单 |
+| `package.py` | launcher 构建（含 Windows 版本资源）、入口脚本、产物组装、原生排除、发布清单 |
 | `verify.py` | 静态校验 + 目标 runtime/launcher 真 import smoke |
 | `launcher/` | C++ launcher 实现（CMake 由 `package.build_launcher` 驱动） |
 | `lock.py` / `manifest.py` | 锁文件与 runtime manifest（可复现性） |

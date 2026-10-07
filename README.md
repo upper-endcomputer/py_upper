@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.4**。
+当前稳定开发线：**0.17.5**。
 
 ## 构建模型
 
@@ -57,31 +57,44 @@ Application run
 ```text
 py_upper/
 ├── app/
-│   ├── pyproject.toml
+│   ├── pyproject.toml.example  # 配置模板（入库）
+│   ├── pyproject.toml          # 本地配置（Git ignored，从模板复制而来）
 │   ├── src/
 │   │   ├── main.py
 │   │   └── ...
 │   ├── tests/
-│   └── resources/
+│   └── resources/            # 可选：随包资源，没有该目录就不打包
 ├── launcher/
 ├── runtimes/                 # Git ignored，PBS/local runtime cache
 ├── tools/
 │   ├── build.py              # 唯一公共构建入口
-│   └── py_upper/             # 构建工具实现（模块清单见开发指南 §14）
+│   └── py_upper/             # 构建工具实现（模块清单见开发指南 §15）
 ├── .github/workflows/
 ├── build/                    # Git ignored
 └── dist/                     # Git ignored
 ```
 
+## 首次使用
+
+应用配置不入库，克隆后先把模板复制成工作副本：
+
+```bash
+cp app/pyproject.toml.example app/pyproject.toml
+```
+
+`app/pyproject.toml` 被 `.gitignore` 忽略：应用名、依赖、runtime 版本这些跟着你机器走的东西写在里面，不会进 Git；`app/pyproject.toml.example` 是入库模板，跟着仓库走。忘了复制的话，构建工具会直接报错并把上面这条命令打出来。
+
 ## App 名称
 
-项目名固定为 `py_upper`，最终 App 名称独立配置：
+项目名固定为 `py_upper`，最终 App 名称在你的本地配置 `app/pyproject.toml` 里独立配置：
 
 ```toml
 [tool.py_upper.app]
 name = "MyApp"
 identifier = "com.example.pyupper"
 ```
+
+`name` 是唯一来源：产物名（`.app` / 可执行文件 / 入口脚本 / `Info.plist` / Windows 版本资源）都由它派生，运行时 launcher 把同一个值编译进去并用 `PY_UPPER_APP_NAME` 导出。应用侧统一调 `utils.paths.app_name()` 读取——开发态没有 launcher 时它会回读这份 `pyproject.toml`——**不要在应用代码里再写一份名字**。
 
 ## 构建
 
@@ -124,7 +137,7 @@ PBS 网络请求对临时 HTTP 408/425/429/5xx 有有限次重试，并使用 `.
 
 ## 第三方依赖
 
-标准 Python 依赖直接写在 `app/pyproject.toml`：
+标准 Python 依赖直接写在你自己的 `app/pyproject.toml`。入库模板 `app/pyproject.toml.example` 的 `dependencies` 是空列表——具体依赖跟着应用走，克隆仓库的人不该继承别人的 pin：
 
 ```toml
 [project]
@@ -238,6 +251,16 @@ python = "3.13.15"
 4. `python` / `python3`
 
 Windows XP 场景仍必须使用真正兼容 XP 的 custom/local CPython runtime；官方 CPython 3.8.10 本身不是 XP runtime。
+
+## 启动器与错误可见性
+
+`launcher/` 是不链接 libpython 的 C++ 可执行文件：运行时从 bundled runtime 解析 CPython 符号，所以换目标 Python 版本不需要重新链接。它按 `<可执行名>.int` → `.py` → `.pyw` → `_py_upper_static.int` 的顺序找入口；打包时会同时写出 `<App>.int` 和 `_py_upper_static.int`，因此**把可执行文件改名后应用照样能起来**。
+
+launcher 还向应用导出 `PY_UPPER_HOME`（入口目录）、`PY_UPPER_RUNTIME`、`PY_UPPER_SITE_PACKAGES`、`PY_UPPER_SCRIPT`、`PY_UPPER_EXECUTABLE`，应用不必靠数父目录猜自己在哪。
+
+致命错误先写 stderr，再按需弹原生对话框（Windows `MessageBoxW`、macOS `CFUserNotification`、Linux `zenity`/`xmessage`）——双击启动没有终端时，这是唯一能看到失败原因的通道。应用抛未捕获异常时，bootstrap 先把 traceback 落到 `TMPDIR/py_upper-<pid>.log`，`Py_FinalizeEx` 之后由 launcher 上报。CI 与自动化设 `PY_UPPER_NO_DIALOG=1`，失败只体现为退出码，不会卡在没人能点的对话框上。
+
+Windows 默认是 GUI 子系统（双击不弹控制台），从 cmd/CI 启动时自动 `AttachConsole` 到父控制台，并且链接静态 CRT（`/MT`），目标机不需要 VC++ 运行库。完整契约与退出码见开发指南 §10。
 
 ## 验证
 

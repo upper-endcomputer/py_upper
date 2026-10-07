@@ -13,6 +13,47 @@ def test_build_python_minimum_and_toml_compatibility():
     assert data["tool"]["py_upper"]["entry"] == "main.py"
 
 
+def test_tracked_pyproject_template_is_complete():
+    """A fresh clone copies this file, so it must be buildable on its own."""
+    import re
+
+    from py_upper.compat import tomllib
+    from py_upper.config import APP_CONFIG_EXAMPLE
+
+    assert APP_CONFIG_EXAMPLE.is_file()
+    data = tomllib.loads(APP_CONFIG_EXAMPLE.read_text(encoding="utf-8"))
+    assert data["project"]["name"] and data["project"]["version"]
+    # The template pins no dependencies: a fork must not inherit the pins of
+    # whoever cloned first. The integration job materializes its own working
+    # copy for the build, so an empty list here still builds.
+    assert data["project"]["dependencies"] == []
+    tool = data["tool"]["py_upper"]
+    assert tool["entry"].endswith(".py")
+    assert tool["app"]["name"] and tool["app"]["identifier"]
+    assert tool["runtime"]["provider"] in {"pbs", "local"}
+    assert re.fullmatch(r"\d+\.\d+\.\d+", tool["runtime"]["python"])
+
+
+def test_local_configuration_is_git_ignored_but_the_template_is_not():
+    root = Path(__file__).parents[2]
+    entries = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "app/pyproject.toml" in entries
+    assert "app/pyproject.toml.example" not in entries
+
+
+def test_missing_local_configuration_points_at_the_template(tmp_path, monkeypatch):
+    from py_upper import config
+
+    monkeypatch.setattr(config, "APP_CONFIG", tmp_path / "pyproject.toml")
+    monkeypatch.setattr(config, "APP_CONFIG_EXAMPLE", tmp_path / "pyproject.toml.example")
+    try:
+        config.load_app_config()
+    except RuntimeError as exc:
+        assert "pyproject.toml.example" in str(exc)
+    else:
+        raise AssertionError("expected a missing-configuration error")
+
+
 def test_target_matrix_and_platform_contract(monkeypatch):
     from py_upper import config
     from py_upper.config import TARGETS
@@ -204,16 +245,116 @@ def test_package_copy_can_reject_collisions(tmp_path):
         raise AssertionError("expected collision")
 
 
+def test_optional_resource_tree_is_skipped_when_absent(tmp_path):
+    """app/resources is optional: a project without it must still package."""
+    from py_upper.fs import copy_optional_tree, copy_tree_contents
+
+    source = tmp_path / "resources"
+    destination = tmp_path / "out" / "resources"
+
+    copy_optional_tree(source, destination)
+    assert not destination.exists()
+
+    source.mkdir()
+    (source / "logo.png").write_bytes(b"\x89PNG")
+    copy_optional_tree(source, destination)
+    assert (destination / "logo.png").read_bytes() == b"\x89PNG"
+
+    # The strict copier keeps failing loudly for payload that must be present.
+    try:
+        copy_tree_contents(tmp_path / "missing", tmp_path / "never")
+    except RuntimeError as exc:
+        assert "does not exist" in str(exc)
+    else:
+        raise AssertionError("expected a missing-source error")
+
+
 def test_launcher_uses_global_python_symbols_and_smoke_switch():
     launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
     text = launcher.read_text(encoding="utf-8")
-    assert "RTLD_NOW | RTLD_GLOBAL" in text
+    # Whitespace-insensitive: the launcher is reformatted from time to time and
+    # the assertion is about the flags, not the spacing.
+    compact = "".join(text.split())
+    assert "RTLD_NOW|RTLD_GLOBAL" in compact
     assert "PY_UPPER_SMOKE" in text
     assert "RTLD_LOCAL" not in text
     # PyConfig_InitIsolatedConfig ignores PYTHONDONTWRITEBYTECODE, so the
     # launcher must disable bytecode caching through the config field. Writing
     # .pyc files into a signed .app mutates the bundle at runtime.
-    assert "config.write_bytecode=0;" in text
+    assert "config.write_bytecode=0;" in compact
+    # A renamed executable must still find its application.
+    assert "_py_upper_static.int" in text
+    # A fatal error in a GUI-subsystem launcher has nowhere to print, so the
+    # dialog is the report channel and the env switch is the way out of it.
+    assert "PY_UPPER_NO_DIALOG" in text
+    # The application name is compiled in: a renamed executable must still
+    # report the configured name, not its own filename.
+    assert "PY_UPPER_APP_NAME" in text
+    cmake = (launcher.parents[1] / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert "PY_UPPER_APP_NAME" in cmake
+
+
+def test_launcher_build_passes_the_configured_app_name(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from py_upper import package
+    from py_upper.config import TARGETS, app_name
+
+    monkeypatch.setattr(package, "BUILD", tmp_path)
+    monkeypatch.setattr(package, "resolve_target_python", lambda target: SimpleNamespace(include_dir=tmp_path / "include"))
+    monkeypatch.setattr(package, "resolve_toolchain", lambda target: SimpleNamespace(env={}, deployment_target=None))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "--build" in cmd:
+            (tmp_path / "launcher" / "macos-arm64" / "PyUpper").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(package.subprocess, "run", fake_run)
+
+    package.build_launcher(TARGETS["macos-arm64"])
+
+    configure = calls[0]
+    assert configure[0] == "cmake"
+    assert f"-DPY_UPPER_APP_NAME={app_name()}" in configure
+
+
+def test_entry_scripts_include_a_rename_safe_static_entry(tmp_path):
+    from py_upper.config import STATIC_ENTRY, TARGETS, entry_module
+    from py_upper.package import write_entry_scripts
+
+    target = TARGETS["windows-x86_64"]
+    write_entry_scripts(tmp_path, "MyApp", target)
+
+    named = tmp_path / "MyApp.int"
+    static = tmp_path / STATIC_ENTRY
+    smoke = tmp_path / "MyApp.smoke.int"
+    assert named.is_file() and static.is_file() and smoke.is_file()
+    # The static entry is the same application entry under a name that survives
+    # renaming the executable.
+    assert named.read_text(encoding="utf-8") == static.read_text(encoding="utf-8")
+    assert f"from {entry_module()} import main" in named.read_text(encoding="utf-8")
+    assert "SMOKE PASS" in smoke.read_text(encoding="utf-8")
+
+
+def test_windows_version_resource_carries_a_four_part_version(tmp_path):
+    import re
+
+    from py_upper.config import app_name, project_version
+    from py_upper.package import _windows_version_resource
+
+    path = _windows_version_resource(tmp_path)
+    # rc.exe reads a resource script with the ANSI code page unless the file is
+    # marked; without the mark a non-ASCII product name would be mangled.
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    text = path.read_text(encoding="utf-8-sig")
+    numbers = [int(part) for part in re.findall(r"\d+", project_version())][:4]
+    numbers += [0] * (4 - len(numbers))
+    numeric = ",".join(str(value) for value in numbers)
+    assert f" FILEVERSION {numeric}" in text
+    assert f" PRODUCTVERSION {numeric}" in text
+    assert f'VALUE "ProductName", "{app_name()}"' in text
+    assert f'VALUE "FileVersion", "{project_version()}"' in text
 
 
 def test_macos_ad_hoc_signing_seals_the_bundle_last(tmp_path, monkeypatch):
@@ -453,6 +594,7 @@ def test_package_verification_skips_foreign_format_binaries(tmp_path, monkeypatc
     (root / "Contents" / "MacOS" / "MyApp").write_bytes(b"\xcf\xfa\xed\xfe")
     resources.mkdir(parents=True)
     (resources / "MyApp.int").write_text("", encoding="utf-8")
+    (resources / "_py_upper_static.int").write_text("", encoding="utf-8")
     stub = resources / "runtime" / "setuptools" / "cli.exe"
     stub.parent.mkdir(parents=True)
     stub.write_bytes(b"MZ")

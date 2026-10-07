@@ -1,3 +1,10 @@
+# py_upper application configuration.
+#
+# This file is the tracked template. Copy it to app/pyproject.toml and edit the
+# copy: the local file is Git-ignored, so your application name, dependencies
+# and runtime choices stay on your machine while this template keeps tracking
+# the repository.
+
 [build-system]
 requires = [
     "setuptools>=71,<72; python_version < '3.9'",
@@ -9,10 +16,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.4"
+version = "0.17.5"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
-dependencies = ["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]
+# Runtime dependencies of your application, as requirement strings, e.g.
+# "PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0".
+# The template ships none: a fork must not inherit the pins of whoever cloned
+# first. Declare yours in the working copy; py_upper resolves the matching
+# wheels for every target and installs them into the bundle.
+dependencies = []
 
 [tool.setuptools]
 package-dir = {"" = "src"}

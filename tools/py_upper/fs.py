@@ -53,6 +53,12 @@ def copy_tree_contents(source: Path, destination: Path, *, replace: bool = True)
             copy_file_contents(src, dst, replace=replace)
 
 
+def copy_optional_tree(source: Path, destination: Path, *, replace: bool = True) -> None:
+    """Copy a tree when it exists; an absent source means the project ships no such payload."""
+    if Path(source).is_dir():
+        copy_tree_contents(source, destination, replace=replace)
+
+
 def make_executable(path: Path) -> None:
     """Add execute bits without replaying source metadata."""
     mode = stat.S_IMODE(path.stat().st_mode)

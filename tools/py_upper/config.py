@@ -19,6 +19,15 @@ RUNTIMES = ROOT / "runtimes"
 LAUNCHER = ROOT / "launcher"
 LOCK = ROOT / "py_upper.lock.json"
 MIN_BUILD_PYTHON = (3, 8)
+# Entry file that does not depend on the executable name, so a renamed launcher
+# still finds its application. The launcher searches for it as a fallback after
+# the executable-derived names; keep both sides in sync (launcher/src/PyUpper.cpp).
+STATIC_ENTRY = "_py_upper_static.int"
+# The tracked template and the Git-ignored working copy of the application
+# configuration. Everything reads the working copy; the template is what a
+# fresh clone starts from.
+APP_CONFIG = APP / "pyproject.toml"
+APP_CONFIG_EXAMPLE = APP / "pyproject.toml.example"
 
 
 @dataclass(frozen=True)
@@ -165,7 +174,15 @@ def _manylinux_tag(baseline: str, arch: str) -> str:
 
 
 def load_app_config() -> dict:
-    with (APP / "pyproject.toml").open("rb") as f:
+    if not APP_CONFIG.is_file():
+        target = os.path.relpath(APP_CONFIG, ROOT)
+        example = os.path.relpath(APP_CONFIG_EXAMPLE, ROOT)
+        raise RuntimeError(
+            f"{target} is missing.\n"
+            "Create your local configuration from the tracked template:\n"
+            f"    cp {example} {target}"
+        )
+    with APP_CONFIG.open("rb") as f:
         return tomllib.load(f)
 
 

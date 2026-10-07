@@ -1,3 +1,36 @@
+## 0.17.5
+
+### Problem
+- The launcher inherited four gaps from PyStand that only show up in a finished application: no entry fallback when the executable is renamed, no way for the application to learn its own bundle root, a fatal error that vanished silently when there was no console, and a Windows build that either opened a console window on every launch or lost its output entirely.
+- A packaged Windows executable had no version resource, so it looked like an anonymous binary in the file properties.
+
+### Root cause
+- Everything was derived from `argv[0]`; diagnostics went to a stream that may not exist; the Windows build used the default (dynamic) CRT and the default subsystem; and the application guessed its resource directory by counting parent directories.
+
+### Changes
+- Entry resolution now tries `<stem>.int`, `<stem>.py`, `<stem>.pyw` and finally the rename-safe `_py_upper_static.int`; the packager writes both `<App>.int` and `_py_upper_static.int` with identical content, and `--verify` checks for the static entry.
+- The launcher exports `PY_UPPER_HOME`, `PY_UPPER_RUNTIME`, `PY_UPPER_SITE_PACKAGES`, `PY_UPPER_SCRIPT` and `PY_UPPER_EXECUTABLE`. `utils.paths.resource_root()` prefers `PY_UPPER_HOME/resources` and only falls back to counting parent directories when the variable is absent.
+- Fatal errors are reported through a native dialog (Windows `MessageBoxW`, macOS `CFUserNotification` with a 120 s timeout, Linux `zenity`/`xmessage`) unless stderr is already visible or `PY_UPPER_NO_DIALOG` is set.
+- Unhandled application exceptions are captured by the bootstrap into `TMPDIR/py_upper-<pid>.log` and reported after `Py_FinalizeEx`, so a double-clicked bundle shows a traceback instead of exiting silently; the report file is deleted on the way out.
+- Windows: wide-character entry point (`wWinMain`, `wmain` in the console build), UTF-8 paths through `std::filesystem::u8path`, `LoadLibraryExW(LOAD_WITH_ALTERED_SEARCH_PATH)`, `AttachConsole(ATTACH_PARENT_PROCESS)` that never steals an existing redirection, static CRT (`/MT`), GUI subsystem by default with `PY_UPPER_LAUNCHER_CONSOLE=1` as the debug build, and a generated `VERSIONINFO` resource.
+- The launcher smoke test and the CI integration run now set `PY_UPPER_NO_DIALOG=1`, so a failure can never block a job on a dialog.
+- Removed the leftover `app/resources/config/app.toml` and the packaging-time writer that regenerated it: nothing ever read the file, and the application name already has one source of truth in `app/pyproject.toml`. `app/resources` is now an optional payload directory — a project without it packages normally, and the tree is copied only when it exists.
+- The application name is usable from the application itself: the packager passes it to CMake (`-DPY_UPPER_APP_NAME`), the launcher exports `PY_UPPER_APP_NAME` (falling back to its own filename stem only when built by hand), and `utils.paths.app_name()` reads it. Running from a source tree there is no launcher, so the helper reads the same `[tool.py_upper.app].name` instead of a second copy. The demo window title now comes from that helper rather than a hardcoded `"py_upper"`.
+- The application configuration is a Git-ignored working copy now: `app/pyproject.toml.example` is the tracked template and `app/pyproject.toml` — application name, dependencies, runtime version — stays on the machine. A missing working copy is a hard error naming the exact `cp` command, not a silent fallback to the template, and CI creates the file before building.
+- The tracked template pins no dependencies: `app/pyproject.toml.example` declares `dependencies = []` and describes a real entry in a comment, so a fork cannot inherit the pins of whoever cloned first. The working copy still carries the real set, and the CI integration job materializes its copy with the repository's own dependencies because the repository's application needs PySide6 to run. The E2E fixture rewrites the same key and now anchors its pattern to the start of the line, so a commented-out example can never win over the declaration that is in effect.
+
+### Verification
+- macOS arm64 with PySide6 6.11.0: full build + `--run` exits 0 and prints `GUI OK offscreen`; `--verify` reports 40 PASS / 0 FAIL; `codesign --verify --deep --strict` passes.
+- Rename probe: the packaged launcher copied to `Renamed.app/Contents/MacOS/Renamed`, with no `Renamed.int` present, starts through `_py_upper_static.int` (exit 0).
+- Failure probes: an entry that raises prints the traceback, exits 1 and leaves no report file behind; a missing entry exits 3 and lists the candidate names.
+- App-name probe: a bundle whose entry prints `PY_UPPER_APP_NAME` reports `MyApp`; the same bundle with the executable renamed to `Renamed` and no `Renamed.int` still reports `MyApp` through `_py_upper_static.int`, and `utils.paths.app_name()` inside the packaged bundle resolves to the same value.
+- Missing-configuration probe: with `app/pyproject.toml` deleted, `--doctor` and the test suite both stop with `app/pyproject.toml is missing` plus the copy command; recreating it from the template restores a clean run. `git check-ignore -v app/pyproject.toml` reports the `.gitignore` rule.
+- Template probe: the CI step's script was run against the tracked template and produced an `app/pyproject.toml` that parses with the repository's dependency set; `test_tracked_pyproject_template_is_complete` fails if the template ever pins a dependency again.
+- `python -m pytest app/tests -q`: 70 passed, 2 skipped (the E2E pair, skipped without `PY_UPPER_E2E=1`); with `PY_UPPER_E2E=1` both pass as well.
+
+### Limitations
+- The Windows launcher is exercised by CI only; the version resource deliberately carries no icon because the repository has no `.ico`/`.icns` asset yet.
+
 ## 0.17.4
 
 ### Problem

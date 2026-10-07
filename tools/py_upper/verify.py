@@ -5,8 +5,9 @@ import subprocess
 from pathlib import Path
 
 from .config import (
-    APP, BUILD, DIST, Target, app_name, entry_module, host_target, optimize_config,
-    runtime_executable, runtime_spec, staging_dir, target_extension_suffix, target_runtime_dir,
+    APP, BUILD, DIST, STATIC_ENTRY, Target, app_name, entry_module, host_target,
+    optimize_config, runtime_executable, runtime_spec, staging_dir,
+    target_extension_suffix, target_runtime_dir,
 )
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import inspect, target_format, verify_arch
@@ -80,14 +81,17 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
         resources = root / "Contents" / "Resources"
         site = resources / "site-packages"
         entry = resources / f"{name}.int"
+        static_entry = resources / STATIC_ENTRY
     else:
         executable = root / (f"{name}.exe" if target.os == "windows" else name)
         site = root / "site-packages"
         entry = root / f"{name}.int"
+        static_entry = root / STATIC_ENTRY
     checks: list[tuple[bool, str]] = [
         (root.is_dir(), "package"),
         (executable.is_file(), "launcher"),
         (entry.is_file(), "application entry"),
+        (static_entry.is_file(), "rename-safe application entry"),
     ]
     if bool(optimize_config().get("remove_runtime_pip", True)):
         runtime_site = resources / "runtime" / "lib" if target.os == "macos" else root / "runtime" / "lib"
@@ -210,5 +214,8 @@ def run_launcher_smoke(target: Target, launcher: Path) -> None:
         raise RuntimeError(f"Packaged launcher smoke script missing: {expected}")
     env = dict(os.environ)
     env["PY_UPPER_SMOKE"] = "1"
+    # The smoke test is non-interactive by definition: a failure must surface as
+    # a non-zero exit code, not as a dialog waiting for a click.
+    env["PY_UPPER_NO_DIALOG"] = "1"
     print("+", launcher, "[launcher smoke]")
     subprocess.run([str(launcher)], env=env, cwd=launcher.parent, check=True)
