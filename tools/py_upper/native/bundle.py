@@ -101,6 +101,29 @@ def ad_hoc_sign(path: Path) -> None:
             raise RuntimeError(f"codesign failed for {path}: {result.stderr.strip()}")
 
 
+def _thin_mach_o(path: Path, arch: str) -> None:
+    """Drop the slices the target architecture cannot load.
+
+    PySide6 publishes universal2 wheels, and ld64 refuses to rewrite the
+    foreign slice of those images: ``install_name_tool`` aborts the whole
+    bundle with "link edit information does not fill the __LINKEDIT segment",
+    because the lipo-assembled slice carries padding past the end of its
+    ``__LINKEDIT`` segment. ``lipo -thin`` writes that slice on its own, which
+    puts the segment back at the end of the file. The bundle declares a single
+    architecture, so the other slice is dead weight anyway.
+    """
+    if inspect(path).arch != "universal":
+        return
+    lipo = shutil.which("lipo")
+    if not lipo:
+        raise RuntimeError(f"thinning {path.name} to {arch} requires lipo")
+    thinned = path.with_name(path.name + ".thin")
+    subprocess.run([lipo, "-thin", arch, "-output", str(thinned), str(path)], check=True)
+    # lipo writes a fresh file, so an executable slice would lose its bits.
+    shutil.copymode(path, thinned)
+    thinned.replace(path)
+
+
 def _mac_aliases(roots: list[Path]) -> dict[str, Path]:
     aliases: dict[str, Path] = {}
     for root in roots:
@@ -219,6 +242,8 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
 
     if target.os == "macos" and shutil.which("install_name_tool"):
         native_images = [path for path in seen if inspect(path).format.startswith("Mach-O")]
+        for binary in native_images:
+            _thin_mach_o(binary, target.arch)
         changed: set[Path] = set()
         for dep in dependencies:
             if dep.external or dep.resolved is None:

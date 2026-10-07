@@ -520,6 +520,127 @@ def test_macos_ad_hoc_signing_seals_the_bundle_last(tmp_path, monkeypatch):
     assert signed[-1] == launcher.resolve()
 
 
+def test_macos_universal_images_are_thinned_to_the_target_architecture(tmp_path, monkeypatch):
+    """ld64 refuses to rewrite the foreign slice of a lipo-assembled image.
+
+    ``install_name_tool`` aborts the whole bundle with "link edit information
+    does not fill the __LINKEDIT segment": the assembled slice carries padding
+    past the end of its ``__LINKEDIT`` segment. ``lipo -thin`` writes that
+    slice on its own, which puts the segment back at the end of the file, and
+    the bundle only ever declares one architecture.
+    """
+    import shutil as real_shutil
+    from types import SimpleNamespace
+
+    from py_upper.native import bundle
+    from py_upper.native.inspect import BinaryInfo
+
+    universal = tmp_path / "QtDBus"
+    universal.write_bytes(b"\xca\xfe\xba\xbe")
+    universal.chmod(0o755)
+    already_thin = tmp_path / "QtCore"
+    already_thin.write_bytes(b"\xcf\xfa\xed\xfe")
+
+    arches = {universal.resolve(): "universal", already_thin.resolve(): "arm64"}
+    monkeypatch.setattr(bundle, "inspect", lambda path: BinaryInfo(path, "Mach-O", arches[Path(path).resolve()]))
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, check=False, **kwargs):
+        calls.append(command)
+        Path(command[command.index("-output") + 1]).write_bytes(b"\xcf\xfa\xed\xfe")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(bundle, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(
+        bundle,
+        "shutil",
+        SimpleNamespace(which=lambda name: "/usr/bin/" + name, copymode=real_shutil.copymode),
+    )
+
+    bundle._thin_mach_o(universal, "arm64")
+    bundle._thin_mach_o(already_thin, "arm64")
+
+    assert calls == [["/usr/bin/lipo", "-thin", "arm64", "-output", str(universal) + ".thin", str(universal)]]
+    assert universal.read_bytes() == b"\xcf\xfa\xed\xfe"
+    # lipo writes a fresh file, so an executable slice would lose its bits.
+    assert stat.S_IMODE(universal.stat().st_mode) == 0o755
+    assert not (tmp_path / "QtDBus.thin").exists()
+
+
+def test_macos_thinning_without_lipo_fails_instead_of_leaving_the_image_universal(tmp_path, monkeypatch):
+    """A universal image left in place only defers the failure to install_name_tool."""
+    import shutil as real_shutil
+    from types import SimpleNamespace
+
+    from py_upper.native import bundle
+    from py_upper.native.inspect import BinaryInfo
+
+    universal = tmp_path / "QtDBus"
+    universal.write_bytes(b"\xca\xfe\xba\xbe")
+    monkeypatch.setattr(bundle, "inspect", lambda path: BinaryInfo(path, "Mach-O", "universal"))
+    monkeypatch.setattr(bundle, "shutil", SimpleNamespace(which=lambda name: None, copymode=real_shutil.copymode))
+
+    with pytest.raises(RuntimeError, match="requires lipo"):
+        bundle._thin_mach_o(universal, "arm64")
+
+
+def test_macos_bundle_thins_universal_images_before_rewriting_install_names(tmp_path, monkeypatch):
+    """Thinning only helps if it runs before the install names are rewritten."""
+    import shutil as real_shutil
+    from types import SimpleNamespace
+
+    from py_upper.config import TARGETS
+    from py_upper.native import bundle, deps
+    from py_upper.native.inspect import BinaryInfo
+
+    target = TARGETS["macos-arm64"]
+    root = (tmp_path / "MyApp.app").resolve()
+    site = root / "Contents" / "Resources" / "site-packages"
+    site.mkdir(parents=True)
+    library = site / "libdemo.dylib"
+    dependency = site / "libdep.dylib"
+    library.write_bytes(b"\xca\xfe\xba\xbe")
+    dependency.write_bytes(b"\xcf\xfa\xed\xfe")
+
+    arches = {library.resolve(): "universal", dependency.resolve(): "arm64"}
+    monkeypatch.setattr(bundle, "inspect", lambda path: BinaryInfo(path, "Mach-O", arches[Path(path).resolve()]))
+    monkeypatch.setattr(bundle, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(bundle, "app_name", lambda: "MyApp")
+    monkeypatch.setattr(bundle, "_native_files", lambda path, value: [library, dependency])
+    monkeypatch.setattr(bundle, "_mac_aliases", lambda roots: {})
+    monkeypatch.setattr(
+        bundle, "dependency_names", lambda path, env: ["@rpath/libdep.dylib"] if Path(path).name == library.name else []
+    )
+    monkeypatch.setattr(bundle, "verify_arch", lambda path, value: None)
+    monkeypatch.setattr(bundle, "optimize_config", lambda: {})
+    monkeypatch.setattr(bundle, "_strip_native", lambda path, value: None)
+    monkeypatch.setattr(bundle, "ad_hoc_sign", lambda path: None)
+    # The fixture dylibs are not real Mach-O files, so otool would fail on them.
+    monkeypatch.setattr(deps, "_mac_rpaths", lambda path: [])
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, check=False, **kwargs):
+        calls.append(command)
+        if "-thin" in command:
+            Path(command[command.index("-output") + 1]).write_bytes(b"\xcf\xfa\xed\xfe")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(bundle, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(
+        bundle,
+        "shutil",
+        SimpleNamespace(which=lambda name: "/usr/bin/" + name, copymode=real_shutil.copymode),
+    )
+
+    bundle.bundle_native_dependencies(root, target)
+
+    tools = [Path(command[0]).name for command in calls]
+    assert "install_name_tool" in tools
+    assert tools.index("lipo") < tools.index("install_name_tool")
+
+
 def test_native_dependency_names_use_binary_format_not_filename_suffix(monkeypatch, tmp_path):
     from py_upper.native import deps
 
