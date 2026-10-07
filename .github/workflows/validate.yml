@@ -71,6 +71,10 @@ jobs:
       # dependency set that application needs; the other jobs only need the file
       # to exist.
       - name: Create the local configuration with the repository's dependencies
+        # The default shell on Windows runners is pwsh, which cannot run the
+        # heredoc below ("<" is reserved). Bash ships with Git for Windows, so
+        # every platform can run the same script.
+        shell: bash
         run: |
           python - <<'PY'
           import re
