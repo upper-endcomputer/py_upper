@@ -954,6 +954,71 @@ def test_windows_launcher_does_not_ask_for_the_python_import_library(tmp_path):
     )
 
 
+def test_packaged_launcher_streams_reach_the_caller(tmp_path):
+    """The build tool must see what the packaged launcher prints.
+
+    The Windows launcher is a GUI-subsystem binary, and Windows attaches no
+    console to such a child. ``subprocess`` started with the default
+    ``stdout=None`` hands it the caller's handle *values* without the handles:
+    the child writes into dangling handles and every line disappears while the
+    exit code stays 0. The smoke step and ``--run`` both assert on that output,
+    so both spawn the launcher through the same helper, which passes the
+    streams explicitly.
+
+    The probe below is a GUI-subsystem executable for the same reason the
+    launcher is one: a console-subsystem probe inherits the streams either way
+    and could not tell the two spawns apart.
+    """
+    import subprocess
+
+    if sys.platform != "win32":
+        pytest.skip("handle inheritance for GUI-subsystem children belongs to Windows")
+
+    from test_third_party import _windows_extension_compiler
+
+    try:
+        cl, _import_lib, env = _windows_extension_compiler()
+    except RuntimeError as exc:
+        pytest.skip(f"MSVC is required to compile the probe: {exc}")
+
+    source = tmp_path / "probe.cpp"
+    source.write_text(
+        "#include <stdio.h>\n"
+        "#include <windows.h>\n"
+        "int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {\n"
+        '    printf("PROBE MARKER\\n");\n'
+        "    fflush(stdout);\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    probe = tmp_path / "probe.exe"
+    build = subprocess.run(
+        [cl, "/nologo", str(source), f"/Fe:{probe}", f"/Fo{tmp_path}\\", "/link", "/SUBSYSTEM:WINDOWS"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=False,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    # The helper writes into this process's streams, and pytest captures those
+    # at the fd level, so the run happens in a child whose stdout is a pipe —
+    # the same shape the build tool has under CI.
+    driver = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, {tools!r})\n"
+        "from py_upper.verify import run_packaged_launcher\n"
+        "run_packaged_launcher(Path({probe!r}), cwd=Path({cwd!r}), check=True)\n"
+    ).format(
+        tools=str(Path(__file__).parents[2] / "tools"),
+        probe=str(probe),
+        cwd=str(tmp_path),
+    )
+    result = subprocess.run([sys.executable, "-c", driver], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PROBE MARKER" in result.stdout
+
+
 def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkeypatch):
     """A macOS CPython extension must not require Python symbols at link time.
 

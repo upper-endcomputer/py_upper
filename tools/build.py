@@ -15,7 +15,7 @@ from py_upper.lock import verify_lock, write_lock
 from py_upper.package import build_launcher, package, write_release_manifest
 from py_upper.python_build import build_python_package
 from py_upper.runtime import ensure_runtime, ensure_sdk
-from py_upper.verify import run_launcher_smoke, run_target_python_smoke
+from py_upper.verify import run_launcher_smoke, run_packaged_launcher, run_target_python_smoke
 from py_upper.toolchain import describe_toolchain
 from py_upper.third_party import resolve_wheels
 from py_upper.verify import verify
@@ -28,7 +28,7 @@ def _run_app(out: Path, target) -> int:
         executable = out / "Contents" / "MacOS" / name
     if not executable.exists():
         raise RuntimeError(f"Packaged executable missing: {executable}")
-    result = subprocess.run([str(executable)], cwd=out, check=False)
+    result = run_packaged_launcher(executable, cwd=out)
     print("Application exit code:", result.returncode)
     return result.returncode
 
