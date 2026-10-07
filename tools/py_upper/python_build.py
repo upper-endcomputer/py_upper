@@ -140,7 +140,15 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
         libdir = next((path for path in candidates if path.exists() and any(path.glob("python*.lib"))), None)
         if libdir is None:
             raise RuntimeError(f"Target Python import library not found under {target_python.root}")
-        python_lib = sorted(libdir.glob("python*.lib"))[0].stem
+        # A CPython tree carries two import libraries: the versioned one
+        # (python313.lib, the ABI of the interpreter being targeted) and the
+        # stable-ABI shim (python3.lib, a subset of the same exports). Link
+        # against the versioned one, so the extension imports the DLL the
+        # runtime actually ships and the closure resolves it as a system
+        # dependency. Sort order used to decide this, and it picked the shim.
+        python_lib = f"python{target_python.python_major_minor.replace('.', '')}"
+        if not (libdir / f"{python_lib}.lib").is_file():
+            raise RuntimeError(f"{python_lib}.lib not found in {libdir}")
         source_repr = ", ".join(repr(str(generated[p])) for p in sources)
         name_repr = ", ".join(repr(module_name(p)) for p in sources)
         setup = BUILD / "target-setup" / target.key / "setup.py"

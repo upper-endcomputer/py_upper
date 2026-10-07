@@ -823,6 +823,72 @@ def test_target_python_smoke_does_not_write_bytecode_into_staging(tmp_path, monk
     assert captured["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
+def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypatch):
+    """Link the versioned import library, not the stable-ABI shim.
+
+    A CPython tree carries both ``python313.lib`` and ``python3.lib``. The shim
+    exports a subset of the same functions and names ``python3.dll`` in the
+    import table, a DLL the dependency closure does not know as part of the
+    runtime. Choosing between the two by sort order picked the shim.
+    """
+    from types import SimpleNamespace
+
+    from py_upper import python_build
+    from py_upper.config import TARGETS
+    from py_upper.toolchain import Toolchain
+
+    target = TARGETS["windows-x86_64"]
+    runtime = tmp_path / "runtime"
+    libs = runtime / "libs"
+    libs.mkdir(parents=True)
+    (libs / "python3.lib").write_bytes(b"")
+    include = tmp_path / "sdk" / "include"
+    include.mkdir(parents=True)
+    target_python = SimpleNamespace(
+        root=runtime,
+        include_dir=include,
+        python_major_minor="3.13",
+        extension_suffix=".cp313-win_amd64.pyd",
+    )
+    toolchain = Toolchain(target, {}, "cl.exe", "cl.exe", "link.exe", None)
+
+    app_root = tmp_path / "app"
+    source = app_root / "src" / "demo.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("x = 1\n", encoding="utf-8")
+    generated = tmp_path / "demo.c"
+    generated.write_text("/* generated */\n", encoding="utf-8")
+
+    build = tmp_path / "build"
+    extension = build / "native" / target.key / "demo.cp313-win_amd64.pyd"
+    generated_setup: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        generated_setup["text"] = Path(cmd[1]).read_text(encoding="utf-8")
+        extension.parent.mkdir(parents=True, exist_ok=True)
+        extension.write_bytes(b"")
+
+    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(python_build, "BUILD", build)
+    monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
+    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+
+    # The shim alone is not an import library this build can use.
+    with pytest.raises(RuntimeError, match="python313.lib not found"):
+        python_build.build_target_extensions(target, [source])
+
+    (libs / "python313.lib").write_bytes(b"")
+    outputs = python_build.build_target_extensions(target, [source])
+
+    assert [path.name for path in outputs] == ["demo.cp313-win_amd64.pyd"]
+    setup_text = generated_setup["text"]
+    assert "TARGET_LIBRARIES=['python313']" in setup_text
+    assert f"TARGET_LIBDIR={str(libs)!r}" in setup_text
+
+
 def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkeypatch):
     """A macOS CPython extension must not require Python symbols at link time.
 
