@@ -1,4 +1,6 @@
 """Target runtime: provider dispatch, PBS acquisition and release-safe optimization."""
+from __future__ import annotations
+
 import json
 import os
 import shutil

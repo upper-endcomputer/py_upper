@@ -1,4 +1,6 @@
 """Application build: Cython generation, target extension compilation and staging."""
+from __future__ import annotations
+
 import fnmatch
 import os
 import shutil

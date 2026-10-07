@@ -13,6 +13,26 @@ def test_build_python_minimum_and_toml_compatibility():
     assert data["tool"]["py_upper"]["entry"] == "main.py"
 
 
+def test_every_build_tool_module_imports():
+    """Compiling is not loading.
+
+    PEP 604 unions and builtin generics in annotations are evaluated when a
+    module is imported, so ``list[str]`` / ``Path | None`` in a signature raise
+    TypeError on 3.8 and 3.9 unless the module opts into PEP 563. ``py_compile``
+    cannot see that, and the toolchain still supports 3.8, so every module is
+    imported here rather than only the two the workflow used to name.
+    """
+    import importlib
+    import pkgutil
+
+    import py_upper
+
+    names = sorted(module.name for module in pkgutil.walk_packages(py_upper.__path__, py_upper.__name__ + "."))
+    assert "py_upper.python_build" in names and "py_upper.pbs" in names
+    for name in names:
+        importlib.import_module(name)
+
+
 def test_tracked_pyproject_template_is_complete():
     """A fresh clone copies this file, so it must be buildable on its own."""
     import re

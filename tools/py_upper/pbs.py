@@ -1,4 +1,6 @@
 """PBS (python-build-standalone) resolution: release metadata, assets, runtime and SDK."""
+from __future__ import annotations
+
 import json
 import re
 import shutil

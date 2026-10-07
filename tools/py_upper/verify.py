@@ -1,4 +1,6 @@
 """Verification: static package checks plus the target-runtime and launcher smoke tests."""
+from __future__ import annotations
+
 import json
 import os
 import subprocess
