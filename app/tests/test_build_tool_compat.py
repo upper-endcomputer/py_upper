@@ -501,7 +501,7 @@ def test_macos_ad_hoc_signing_seals_the_bundle_last(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle, "verify_arch", lambda path, value: macho(path))
     monkeypatch.setattr(bundle, "optimize_config", lambda: {})
     monkeypatch.setattr(bundle, "_strip_native", lambda path, value: None)
-    monkeypatch.setattr(bundle, "_ad_hoc_sign", signed.append)
+    monkeypatch.setattr(bundle, "ad_hoc_sign", signed.append)
     # Host tool discovery selects the signing branch. Replace the module
     # attribute instead of shutil.which itself: the stdlib module is shared
     # with deps.py, where a faked path would be executed by subprocess and

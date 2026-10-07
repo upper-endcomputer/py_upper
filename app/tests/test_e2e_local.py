@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from py_upper.config import host_target
+from py_upper.native.bundle import ad_hoc_sign
 from py_upper.toolchain import resolve_toolchain
 
 
@@ -104,7 +105,15 @@ def _make_local_runtime(repo: Path) -> str:
         # libpython3.X.so) in runtime/lib, so a framework build's bare
         # "Python" filename must be renamed on the way in.
         suffix = ".dylib" if target.os == "macos" else ".so"
-        shutil.copyfile(_host_libpython(), runtime / "lib" / f"libpython{major_minor}{suffix}")
+        bundled_libpython = runtime / "lib" / f"libpython{major_minor}{suffix}"
+        shutil.copyfile(_host_libpython(), bundled_libpython)
+        if target.os == "macos":
+            # A downloaded PBS runtime ships a library whose signature survives
+            # being moved. A framework build does not: its Developer ID
+            # signature is bound to the framework's Info.plist, so dyld rejects
+            # the copy ("code signature invalid") and the launcher cannot load
+            # the runtime it was just handed.
+            ad_hoc_sign(bundled_libpython)
         shutil.copytree(stdlib, runtime / "lib" / f"python{major_minor}", symlinks=True, ignore=ignore)
         executable_name = f"python{major_minor}"
 

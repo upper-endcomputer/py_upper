@@ -85,7 +85,15 @@ def _maybe_remove_signature(path: Path) -> None:
         subprocess.run([codesign, "--remove-signature", str(path)], capture_output=True, check=False)
 
 
-def _ad_hoc_sign(path: Path) -> None:
+def ad_hoc_sign(path: Path) -> None:
+    """Give a Mach-O image a fresh ad-hoc signature.
+
+    Any byte-level rewrite invalidates the existing signature, and dyld then
+    refuses to load the image. Copying a framework binary out of its framework
+    counts as such a rewrite: the original Developer ID signature is bound to
+    the framework's Info.plist, so the copy fails to load even though its bytes
+    are intact.
+    """
     codesign = shutil.which("codesign")
     if codesign:
         result = subprocess.run([codesign, "--force", "--sign", "-", "--timestamp=none", str(path)], capture_output=True, text=True, check=False)
@@ -237,7 +245,7 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
         # so it has to happen last. Deepest path first satisfies both, and
         # matches the order build.py's release path uses.
         for binary in sorted(native_images, key=lambda path: (-len(path.parts), path == launcher)):
-            _ad_hoc_sign(binary)
+            ad_hoc_sign(binary)
     else:
         for binary in seen:
             _strip_native(binary, target)
