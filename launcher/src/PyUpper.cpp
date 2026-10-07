@@ -301,6 +301,9 @@ struct RuntimeLoad {
     fs::path stdlib;
     fs::path zip;
     fs::path extension_dir;
+    // Why every candidate failed. "Could not load" alone sent debugging down a
+    // blind alley more than once; the loader already knows the reason.
+    std::string error;
 };
 
 // Owns the dlopen/LoadLibrary handle for the whole of PyUpper::run so that every
@@ -329,7 +332,9 @@ RuntimeLoad load_python(const fs::path& home) {
         // search at the runtime directory for this load only.
         r.handle = LoadLibraryExW(W(path_to_utf8(p)).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         if (r.handle) break;
+        r.error = path_to_utf8(p) + ": LoadLibraryEx failed with error " + std::to_string(GetLastError());
     }
+    if (!r.handle && r.error.empty()) r.error = "no python DLL in " + path_to_utf8(home);
     r.stdlib = home / "Lib";
     // Windows CPython keeps its dynamic stdlib extensions (zlib, _ssl, _socket,
     // ...) in DLLs; without it on the module search path the packaged app
@@ -360,7 +365,10 @@ RuntimeLoad load_python(const fs::path& home) {
         // must remain globally visible to subsequently imported extensions.
         r.handle = dlopen(p.c_str(), RTLD_NOW | RTLD_GLOBAL);
         if (r.handle) break;
+        const char* reason = dlerror();
+        r.error = path_to_utf8(p) + ": " + (reason ? reason : "dlopen failed");
     }
+    if (!r.handle && r.error.empty()) r.error = "no libpython3.* library in " + path_to_utf8(libdir);
     for (const auto& e : fs::directory_iterator(libdir)) {
         if (e.is_directory() && path_to_utf8(e.path().filename()).rfind("python3.", 0) == 0) {
             r.stdlib = e.path();
@@ -443,7 +451,8 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         RuntimeLoad loaded = load_python(home);
         runtime.handle = loaded.handle;
         if (!loaded.handle) {
-            report_fatal("Could not load the bundled CPython runtime from\n" + path_to_utf8(home));
+            std::string detail = loaded.error.empty() ? "" : "\n" + loaded.error;
+            report_fatal("Could not load the bundled CPython runtime from\n" + path_to_utf8(home) + detail);
             return 4;
         }
 
