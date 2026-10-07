@@ -97,6 +97,20 @@ def _host_wheel_tag() -> str:
     return f"{impl}-{impl}-{platform}"
 
 
+def windows_import_lib_dir() -> Path:
+    """The directory holding the host CPython import libraries.
+
+    A Windows CPython install keeps ``python3XX.lib`` under ``<base_prefix>/
+    libs`` next to the interpreter. The native wheel fixture links against it,
+    and the E2E runtime fixture copies it so the target extensions can be
+    linked against the runtime they are built for.
+    """
+    directory = Path(sys.base_prefix) / "libs"
+    if not directory.is_dir():
+        raise RuntimeError(f"the Python import library directory is missing: {directory}")
+    return directory
+
+
 def _windows_extension_compiler() -> tuple[str, Path, dict[str, str]]:
     """The MSVC compiler, its Python import library, and the environment it needs.
 
@@ -125,7 +139,7 @@ def _windows_extension_compiler() -> tuple[str, Path, dict[str, str]]:
     cl = shutil.which("cl", path=env.get("PATH"))
     if not cl:
         raise RuntimeError("cl.exe is not on the MSVC environment PATH")
-    import_lib = Path(sys.base_prefix) / "libs" / f"python{sysconfig.get_config_var('py_version_nodot')}.lib"
+    import_lib = windows_import_lib_dir() / f"python{sysconfig.get_config_var('py_version_nodot')}.lib"
     if not import_lib.is_file():
         raise RuntimeError(f"the Python import library is missing: {import_lib}")
     return cl, import_lib, env
