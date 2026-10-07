@@ -75,7 +75,17 @@ def used_qt_modules(source_root: Path | None = None) -> set[str]:
 
 
 def _runtime_closure(site: Path, target: Target, modules: set[str]) -> set[str] | None:
-    """Import the modules with the target runtime and return what it loaded."""
+    """Import the modules with the target runtime and return what it loaded.
+
+    ``None`` means the target interpreter cannot run on this host, so the
+    closure is unknown and the caller keeps its requested modules untouched
+    rather than guessing.
+
+    An interpreter that does start and still fails is reported as an error. Its
+    partial closure is a trap: importing QtWidgets alone never mentions QtCore
+    and QtGui, so the payload those two provide is deleted and the bundle only
+    breaks in the packaged smoke run, far away from the cause.
+    """
     python = _native_runtime_python(target)
     if python is None:
         return None
@@ -87,14 +97,14 @@ def _runtime_closure(site: Path, target: Target, modules: set[str]) -> set[str] 
     )
     env = {"PYTHONPATH": str(site), "PYTHONDONTWRITEBYTECODE": "1", "PATH": "/usr/bin:/bin:/usr/local/bin"}
     probe = subprocess.run([str(python), "-c", script], capture_output=True, text=True, check=False, env=env)
+    requested = ", ".join(sorted(modules))
     if probe.returncode != 0:
-        reason = (probe.stderr.strip().splitlines() or ["unknown error"])[-1]
-        print(f"Qt pruning: module closure unavailable ({reason}); keeping the imported modules only")
-        return None
+        detail = probe.stderr.strip() or probe.stdout.strip() or "(no output)"
+        raise RuntimeError(f"Qt pruning: {python} cannot import {requested}:\n{detail}")
     try:
         loaded = json.loads(probe.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
-        return None
+        raise RuntimeError(f"Qt pruning: {python} printed no PySide6 module list for {requested}")
     return {name.split(".", 1)[1] for name in loaded if name.count(".") == 1}
 
 
@@ -109,7 +119,7 @@ def _native_runtime_python(target: Target) -> Path | None:
 
 
 def configured_modules(target: Target, site: Path) -> set[str] | None:
-    """Qt modules to keep, or None when pruning is disabled."""
+    """Qt modules to keep, or None when the whole payload stays."""
     value = optimize_config().get("qt", "all")
     if isinstance(value, str):
         setting = value.strip().lower()
@@ -117,17 +127,25 @@ def configured_modules(target: Target, site: Path) -> set[str] | None:
             return None
         if setting != "imports":
             raise RuntimeError("[tool.py_upper.optimize].qt must be 'all', 'imports', or an array of Qt module names")
-        imported = used_qt_modules()
-        if not imported:
+        requested = used_qt_modules()
+        if not requested:
             print("Qt pruning: app/src does not reference PySide6, keeping the full Qt payload")
             return None
-        return _runtime_closure(site, target, imported) or imported
-    if isinstance(value, list):
-        modules = {str(item).strip() for item in value if str(item).strip()}
-        if not modules:
+    elif isinstance(value, list):
+        requested = {str(item).strip() for item in value if str(item).strip()}
+        if not requested:
             raise RuntimeError("[tool.py_upper.optimize].qt must not be an empty array")
-        return _runtime_closure(site, target, modules) or modules
-    raise RuntimeError("[tool.py_upper.optimize].qt must be 'all', 'imports', or an array of Qt module names")
+    else:
+        raise RuntimeError("[tool.py_upper.optimize].qt must be 'all', 'imports', or an array of Qt module names")
+
+    closure = _runtime_closure(site, target, requested)
+    if closure is None:
+        # Without the target interpreter the closure cannot be computed, and a
+        # guessed subset is what deletes the Qt libraries the application loads
+        # indirectly. Keeping the payload whole costs size, never correctness.
+        print(f"Qt pruning: cannot run the {target.key} runtime on this host, keeping the full Qt payload")
+        return None
+    return closure
 
 
 def _wrapper_modules(pyside: Path) -> dict[str, Path]:
@@ -207,12 +225,12 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
 
     ``modules`` defaults to the configured policy (``[tool.py_upper.optimize].qt``).
     """
+    pyside = site / "PySide6"
+    if not pyside.is_dir():
+        return None
     if modules is None:
         modules = configured_modules(target, site)
     if modules is None:
-        return None
-    pyside = site / "PySide6"
-    if not pyside.is_dir():
         return None
 
     counters = {"files": 0, "dirs": 0, "bytes": 0}

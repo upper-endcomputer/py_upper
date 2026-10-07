@@ -312,6 +312,32 @@ class DependencyResolver:
 
 
 
+# SONAMEs a Linux desktop is expected to provide. The X11, OpenGL, and Wayland
+# stacks are bound to the host's display server and graphics driver, so a
+# bundled copy would be both redundant and unusable, and the font and image
+# codecs Qt's plugins load are equally part of the base system. Qt links all of
+# them unconditionally, which is why every one of them reaches the closure.
+LINUX_HOST_LIBRARIES = frozenset({
+    # Loader, C runtime and compiler support libraries.
+    "linux-vdso.so.1", "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1",
+    "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1",
+    "libutil.so.1", "libresolv.so.2", "libgcc_s.so.1", "libstdc++.so.6",
+    # Display server and graphics driver stack.
+    "libx11.so.6", "libx11-xcb.so.1",
+    "libxcb.so.1", "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
+    "libxcb-keysyms.so.1", "libxcb-randr.so.0", "libxcb-render.so.0",
+    "libxcb-render-util.so.0", "libxcb-shape.so.0", "libxcb-shm.so.0",
+    "libxcb-sync.so.1", "libxcb-util.so.1", "libxcb-xfixes.so.0", "libxcb-xkb.so.1",
+    "libxkbcommon.so.0", "libxkbcommon-x11.so.0",
+    "libgl.so.1", "libegl.so.1", "libdrm.so.2",
+    "libwayland-client.so.0", "libwayland-cursor.so.0",
+    # Font and image codecs Qt's plugins link; the versions differ per wheel
+    # build, so both the 5 and 6 generations of libtiff are listed.
+    "libfreetype.so.6", "libtiff.so.5", "libtiff.so.6",
+    "libwebp.so.7", "libwebpdemux.so.2", "libwebpmux.so.3",
+})
+
+
 def _system_dependency(name: str, target) -> bool:
     base = _name_key(name)
     if target.os == "windows":
@@ -323,11 +349,7 @@ def _system_dependency(name: str, target) -> bool:
             python_dll,
         } or base.startswith(("api-ms-win-", "ext-ms-win-"))
     if target.os == "linux":
-        return base in {
-            "linux-vdso.so.1", "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0",
-            "librt.so.1", "libutil.so.1", "libresolv.so.2", "libgcc_s.so.1", "libstdc++.so.6",
-            "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1",
-        }
+        return base in LINUX_HOST_LIBRARIES
     return name.startswith(("/System/Library/", "/usr/lib/")) or base.startswith(("libsystem.", "libc++", "libobjc."))
 
 

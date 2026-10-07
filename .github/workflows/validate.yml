@@ -123,6 +123,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build gcc g++ binutils
+          # The bundled Qt GUI libraries link libEGL.so.1, which the runner
+          # image does not carry (libGL.so.1 and libxkbcommon.so.0 it does).
+          # Both the Qt pruning probe and the packaged smoke run load it.
+          sudo apt-get install -y libegl1
 
       - name: Install macOS build tools
         if: runner.os == 'macOS'
