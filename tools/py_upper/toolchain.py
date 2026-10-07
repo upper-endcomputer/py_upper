@@ -82,12 +82,21 @@ def _vs_install(host_arch: str) -> Path | None:
 
 
 def _parse_windows_environment(text: str) -> dict[str, str]:
-    """``NAME=VALUE`` pairs from ``set``, ignoring banners and progress output."""
+    """``NAME=VALUE`` pairs from ``set``, ignoring banners and progress output.
+
+    Keys are upper-cased because Windows environment variables are
+    case-insensitive and ``os.environ`` already stores them that way. ``set``
+    echoes the name a variable happens to have in the environment block, and
+    the one for the search path is ``Path``, not ``PATH``: keeping that casing
+    would add a second entry next to ``os.environ``'s ``PATH`` when the two are
+    merged, and every ``env.get("PATH")`` lookup would then miss the search
+    path ``vcvarsall.bat`` built.
+    """
     env: dict[str, str] = {}
     for line in text.splitlines():
         key, separator, value = line.partition("=")
         if separator and key and key.strip() == key and " " not in key:
-            env[key] = value
+            env[key.upper()] = value
     return env
 
 
@@ -124,7 +133,7 @@ def _msvc_environment(bat: Path, vc_target: str) -> dict[str, str]:
         check=False,
     )
     env = _parse_windows_environment(result.stdout)
-    if not env.get("VCToolsInstallDir") or not env.get("INCLUDE"):
+    if not env.get("VCTOOLSINSTALLDIR") or not env.get("INCLUDE"):
         raise RuntimeError(
             f"vcvarsall.bat did not initialize the MSVC environment "
             f"({bat} {vc_target}, exit {result.returncode}):\n"

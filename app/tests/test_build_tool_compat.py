@@ -70,7 +70,10 @@ def test_windows_environment_parser_keeps_only_variable_assignments():
 
     Everything that is not a ``NAME=VALUE`` line has to be dropped: a stray line
     accepted as a variable would put a non-path into ``INCLUDE`` or ``PATH`` and
-    break the compiler invocation far away from the parse.
+    break the compiler invocation far away from the parse. Names are upper-cased
+    because ``set`` echoes whatever casing the environment block holds — the
+    search path is ``Path`` there, while ``os.environ`` and every caller spell it
+    ``PATH``.
     """
     from py_upper import toolchain
 
@@ -83,7 +86,7 @@ def test_windows_environment_parser_keeps_only_variable_assignments():
                 "[vcvarsall.bat] Environment initialized for: 'x64'",
                 "VCToolsInstallDir=C:\\Program Files\\Microsoft Visual Studio\\2022\\VC\\Tools\\MSVC\\14.44.35207\\",
                 "INCLUDE=C:\\SDK\\Include;=leading equals stays in the value",
-                "PATH=C:\\bin;C:\\Windows",
+                "Path=C:\\bin;C:\\Windows",
                 "  PADDED=indented output is not a variable",
                 "KEY WITH SPACES=not a variable",
                 "NO_SEPARATOR_LINE",
@@ -92,12 +95,12 @@ def test_windows_environment_parser_keeps_only_variable_assignments():
         )
     )
 
-    assert parsed["VCToolsInstallDir"].endswith("14.44.35207\\")
+    assert parsed["VCTOOLSINSTALLDIR"].endswith("14.44.35207\\")
     assert parsed["INCLUDE"] == "C:\\SDK\\Include;=leading equals stays in the value"
     assert parsed["PATH"] == "C:\\bin;C:\\Windows"
     assert "PADDED" not in parsed
     assert "KEY WITH SPACES" not in parsed
-    assert set(parsed) == {"VCToolsInstallDir", "INCLUDE", "PATH"}
+    assert set(parsed) == {"VCTOOLSINSTALLDIR", "INCLUDE", "PATH"}
 
 
 def test_windows_environment_parser_reports_its_own_output_on_failure():

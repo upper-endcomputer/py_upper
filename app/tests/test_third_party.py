@@ -97,13 +97,17 @@ def _host_wheel_tag() -> str:
     return f"{impl}-{impl}-{platform}"
 
 
-def _windows_extension_compiler() -> tuple[str, Path] | None:
+def _windows_extension_compiler() -> tuple[str, Path]:
     """The MSVC compiler and its Python import library, if both are usable.
 
     The mingw gcc shipped on the Windows images is an x86_64-hosted build
     (mingw-builds publishes no arm64 host), so it cannot emit code for an arm64
     runner. The MSVC toolchain py_upper resolves for the target is the only
     compiler that always matches the interpreter running the tests.
+
+    Raises with the missing piece instead of returning ``None``: the caller is
+    the only place that can report it, and "no host C compiler on win32" hides
+    which half of the toolchain lookup failed.
     """
     import os
     import shutil
@@ -111,17 +115,13 @@ def _windows_extension_compiler() -> tuple[str, Path] | None:
     from py_upper.config import host_target
     from py_upper.toolchain import resolve_toolchain
 
-    try:
-        env = {**os.environ, **resolve_toolchain(host_target()).env}
-    except RuntimeError:
-        # No Visual Studio installation to probe, so there is no compiler here.
-        return None
+    env = {**os.environ, **resolve_toolchain(host_target()).env}
     cl = shutil.which("cl", path=env.get("PATH"))
     if not cl:
-        return None
+        raise RuntimeError("cl.exe is not on the MSVC environment PATH")
     import_lib = Path(sys.base_prefix) / "libs" / f"python{sysconfig.get_config_var('py_version_nodot')}.lib"
     if not import_lib.is_file():
-        return None
+        raise RuntimeError(f"the Python import library is missing: {import_lib}")
     return cl, import_lib
 
 
@@ -130,7 +130,11 @@ def has_native_fixture_compiler() -> bool:
     import shutil
 
     if sys.platform == "win32":
-        return _windows_extension_compiler() is not None
+        try:
+            _windows_extension_compiler()
+        except RuntimeError:
+            return False
+        return True
     return bool(shutil.which("gcc") or shutil.which("cc"))
 
 
@@ -142,8 +146,6 @@ def _extension_compile_command(source: Path, binary: Path) -> list[str] | None:
     include = sysconfig.get_path("include")
     if sys.platform == "win32":
         msvc = _windows_extension_compiler()
-        if msvc is None:
-            return None
         cl, import_lib = msvc
         return [
             cl, "/nologo", "/LD", "/O2", f"/I{include}", str(source),
