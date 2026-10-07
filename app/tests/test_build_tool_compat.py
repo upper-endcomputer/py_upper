@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 
 def test_build_python_minimum_and_toml_compatibility():
@@ -60,6 +63,51 @@ def test_host_arch_normalizes_windows_and_linux_spellings(monkeypatch):
     ):
         monkeypatch.setattr(toolchain.platform, "machine", lambda machine=machine: machine)
         assert toolchain._host_arch() == expected
+
+
+def test_windows_environment_parser_keeps_only_variable_assignments():
+    """``vcvarsall.bat`` prints a banner and progress lines around ``set``.
+
+    Everything that is not a ``NAME=VALUE`` line has to be dropped: a stray line
+    accepted as a variable would put a non-path into ``INCLUDE`` or ``PATH`` and
+    break the compiler invocation far away from the parse.
+    """
+    from py_upper import toolchain
+
+    parsed = toolchain._parse_windows_environment(
+        "\n".join(
+            [
+                "**********************************************************************",
+                "** Visual Studio 2022 Developer Command Prompt v17.14.0",
+                "**********************************************************************",
+                "[vcvarsall.bat] Environment initialized for: 'x64'",
+                "VCToolsInstallDir=C:\\Program Files\\Microsoft Visual Studio\\2022\\VC\\Tools\\MSVC\\14.44.35207\\",
+                "INCLUDE=C:\\SDK\\Include;=leading equals stays in the value",
+                "PATH=C:\\bin;C:\\Windows",
+                "  PADDED=indented output is not a variable",
+                "KEY WITH SPACES=not a variable",
+                "NO_SEPARATOR_LINE",
+                "",
+            ]
+        )
+    )
+
+    assert parsed["VCToolsInstallDir"].endswith("14.44.35207\\")
+    assert parsed["INCLUDE"] == "C:\\SDK\\Include;=leading equals stays in the value"
+    assert parsed["PATH"] == "C:\\bin;C:\\Windows"
+    assert "PADDED" not in parsed
+    assert "KEY WITH SPACES" not in parsed
+    assert set(parsed) == {"VCToolsInstallDir", "INCLUDE", "PATH"}
+
+
+def test_windows_environment_parser_reports_its_own_output_on_failure():
+    """A failed ``vcvarsall`` run must describe itself; the exit code cannot."""
+    from py_upper import toolchain
+
+    assert toolchain._output_tail("", "") == "(no output)"
+    assert toolchain._output_tail("first\n\nsecond") == "first\nsecond"
+    tail = toolchain._output_tail("\n".join(f"line {index}" for index in range(100)), limit=3)
+    assert tail == "line 97\nline 98\nline 99"
 
 
 def test_tracked_pyproject_template_is_complete():

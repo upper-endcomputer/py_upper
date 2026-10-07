@@ -64,13 +64,73 @@ def _vswhere() -> Path | None:
 
 
 def _vs_install(host_arch: str) -> Path | None:
+    """The Visual Studio installation that owns the host C++ toolset."""
     vswhere = _vswhere()
-    if vswhere:
-        result = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires", VC_HOST_COMPONENT[host_arch], "-property", "installationPath"], capture_output=True, text=True, check=True)
-        values = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if values:
-            return Path(values[-1])
+    if not vswhere:
+        return None
+    result = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires", VC_HOST_COMPONENT[host_arch], "-property", "installationPath"], capture_output=True, text=True, check=False)
+    values = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if values:
+        return Path(values[-1])
+    # An installation that lacks the required component is reported as an empty
+    # result, which the caller turns into the actionable "install Build Tools"
+    # message. A non-zero exit means vswhere itself failed, and its output is
+    # the only description of why, so surface that instead of hiding it.
+    if result.returncode != 0:
+        raise RuntimeError(f"vswhere failed (exit {result.returncode}):\n{_output_tail(result.stdout, result.stderr)}")
     return None
+
+
+def _parse_windows_environment(text: str) -> dict[str, str]:
+    """``NAME=VALUE`` pairs from ``set``, ignoring banners and progress output."""
+    env: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key and key.strip() == key and " " not in key:
+            env[key] = value
+    return env
+
+
+def _output_tail(*streams: str, limit: int = 40) -> str:
+    """Last ``limit`` non-empty lines of the captured output, for diagnostics."""
+    lines = [line for stream in streams for line in stream.splitlines() if line.strip()]
+    return "\n".join(lines[-limit:]) or "(no output)"
+
+
+def _msvc_environment(bat: Path, vc_target: str) -> dict[str, str]:
+    """The environment ``vcvarsall.bat`` produces, validated instead of trusted.
+
+    The script is fed to ``cmd.exe`` on stdin rather than passed on the command
+    line. ``subprocess`` quotes arguments the way the C runtime expects, which
+    is not how ``cmd.exe`` parses them: the quoted batch path arrives as
+    ``\"C:\\Program Files\\...\\vcvarsall.bat\"``, cmd.exe fails to find that
+    literal name, and the ``&& set`` that would have printed the environment
+    never runs. Reading the script from stdin removes command-line quoting from
+    the picture entirely.
+
+    The batch file's exit status is not a usable success signal: it reports
+    whatever internal command ran last, so a working initialization can exit
+    non-zero. What matters is the postcondition, so require the variables
+    vcvarsall must define and surface its own output when they are missing.
+    Nothing is redirected to NUL, because vcvarsall reports its errors on
+    stdout, where they are the only way to tell a missing SDK from a missing
+    toolset.
+    """
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/q"],
+        input=f'@call "{bat}" {vc_target}\r\n@set\r\n',
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    env = _parse_windows_environment(result.stdout)
+    if not env.get("VCToolsInstallDir") or not env.get("INCLUDE"):
+        raise RuntimeError(
+            f"vcvarsall.bat did not initialize the MSVC environment "
+            f"({bat} {vc_target}, exit {result.returncode}):\n"
+            f"{_output_tail(result.stdout, result.stderr)}"
+        )
+    return env
 
 
 def resolve_toolchain(target: Target) -> Toolchain:
@@ -91,9 +151,7 @@ def resolve_toolchain(target: Target) -> Toolchain:
         vc_target = VCVARSALL_HOST_TARGET.get((host_arch, target.arch))
         if not vc_target:
             raise RuntimeError(f"Unsupported MSVC host/target pair: {host_arch} -> {target.arch}")
-        command = f'call "{bat}" {vc_target} >nul && set'
-        result = subprocess.run(["cmd.exe", "/d", "/s", "/c", command], capture_output=True, text=True, check=True)
-        env = {k: v for line in result.stdout.splitlines() if "=" in line for k, v in [line.split("=", 1)]}
+        env = _msvc_environment(bat, vc_target)
         return Toolchain(target, env, env.get("CC", "cl"), env.get("CXX", "cl"), "link.exe")
 
     if target.os == "macos":
