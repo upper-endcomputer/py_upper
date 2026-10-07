@@ -538,6 +538,7 @@ def test_macos_universal_images_are_thinned_to_the_target_architecture(tmp_path,
     universal = tmp_path / "QtDBus"
     universal.write_bytes(b"\xca\xfe\xba\xbe")
     universal.chmod(0o755)
+    mode = stat.S_IMODE(universal.stat().st_mode)
     already_thin = tmp_path / "QtCore"
     already_thin.write_bytes(b"\xcf\xfa\xed\xfe")
 
@@ -564,7 +565,9 @@ def test_macos_universal_images_are_thinned_to_the_target_architecture(tmp_path,
     assert calls == [["/usr/bin/lipo", "-thin", "arm64", "-output", str(universal) + ".thin", str(universal)]]
     assert universal.read_bytes() == b"\xcf\xfa\xed\xfe"
     # lipo writes a fresh file, so an executable slice would lose its bits.
-    assert stat.S_IMODE(universal.stat().st_mode) == 0o755
+    # Windows reports every writable file as 0o666, so compare with the mode the
+    # file had rather than a literal POSIX mode.
+    assert stat.S_IMODE(universal.stat().st_mode) == mode
     assert not (tmp_path / "QtDBus.thin").exists()
 
 
