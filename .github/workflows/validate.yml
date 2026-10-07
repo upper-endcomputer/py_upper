@@ -3,6 +3,10 @@ name: py_upper validation
 on:
   push:
   pull_request:
+  # Manual re-runs from the CLI (gh workflow run validate.yml --ref develop)
+  # and from the Actions page, so a failing job can be reproduced without
+  # pushing an empty commit.
+  workflow_dispatch:
 
 jobs:
   build-tool-compat:
