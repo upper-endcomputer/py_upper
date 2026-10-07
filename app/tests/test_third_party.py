@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
+import sysconfig
 import zipfile
 from pathlib import Path
 
@@ -87,8 +90,6 @@ def test_pip_target_arguments_honor_offline_find_links(monkeypatch):
 
 def _host_wheel_tag() -> str:
     """Wheel tag describing the interpreter and platform running the tests."""
-    import sysconfig
-
     impl = "cp" + sysconfig.get_config_var("py_version_nodot")
     platform = sysconfig.get_platform().replace("-", "_").replace(".", "_")
     if platform.startswith("linux_"):
@@ -96,24 +97,73 @@ def _host_wheel_tag() -> str:
     return f"{impl}-{impl}-{platform}"
 
 
-def _compile_extension(cc: str, source: Path, binary: Path, include: str) -> None:
-    import subprocess
-    import sys
+def _windows_extension_compiler() -> tuple[str, Path] | None:
+    """The MSVC compiler and its Python import library, if both are usable.
 
+    The mingw gcc shipped on the Windows images is an x86_64-hosted build
+    (mingw-builds publishes no arm64 host), so it cannot emit code for an arm64
+    runner. The MSVC toolchain py_upper resolves for the target is the only
+    compiler that always matches the interpreter running the tests.
+    """
+    import os
+    import shutil
+
+    from py_upper.config import host_target
+    from py_upper.toolchain import resolve_toolchain
+
+    try:
+        env = {**os.environ, **resolve_toolchain(host_target()).env}
+    except RuntimeError:
+        # No Visual Studio installation to probe, so there is no compiler here.
+        return None
+    cl = shutil.which("cl", path=env.get("PATH"))
+    if not cl:
+        return None
+    import_lib = Path(sys.base_prefix) / "libs" / f"python{sysconfig.get_config_var('py_version_nodot')}.lib"
+    if not import_lib.is_file():
+        return None
+    return cl, import_lib
+
+
+def has_native_fixture_compiler() -> bool:
+    """Whether this host can compile the fixture extension for itself."""
+    import shutil
+
+    if sys.platform == "win32":
+        return _windows_extension_compiler() is not None
+    return bool(shutil.which("gcc") or shutil.which("cc"))
+
+
+def _extension_compile_command(source: Path, binary: Path) -> list[str] | None:
+    """Command that compiles a CPython extension for the host platform."""
+    import os
+    import shutil
+
+    include = sysconfig.get_path("include")
+    if sys.platform == "win32":
+        msvc = _windows_extension_compiler()
+        if msvc is None:
+            return None
+        cl, import_lib = msvc
+        return [
+            cl, "/nologo", "/LD", "/O2", f"/I{include}", str(source),
+            f"/Fe:{binary}", f"/Fo:{binary.parent}{os.sep}",
+            "/link", f"/LIBPATH:{import_lib.parent}", import_lib.name,
+        ]
+    cc = shutil.which("gcc") or shutil.which("cc")
+    if not cc:
+        return None
     if sys.platform == "darwin":
         # macOS CPython extensions are bundles that resolve the Python C-API
         # from the host process, exactly like sysconfig's own LDSHARED.
         link = [cc, "-bundle", "-undefined", "dynamic_lookup"]
     else:
         link = [cc, "-shared"]
-    subprocess.run(link + ["-fPIC", "-O2", "-DNDEBUG", f"-I{include}", str(source), "-o", str(binary)], check=True)
+    return link + ["-fPIC", "-O2", "-DNDEBUG", f"-I{include}", str(source), "-o", str(binary)]
 
 
 def make_native_wheel(root: Path, name="demo_native", version="1.0.0", platform_tag: str | None = None) -> Path:
     import base64
-    import hashlib
-    import shutil
-    import sysconfig
 
     root.mkdir(parents=True, exist_ok=True)
     import_name = name.replace('-', '_')
@@ -124,11 +174,12 @@ def make_native_wheel(root: Path, name="demo_native", version="1.0.0", platform_
         '''#include <Python.h>\n\nstatic PyObject *value(PyObject *self, PyObject *args) {\n    (void)self; (void)args;\n    return PyLong_FromLong(42);\n}\n\nstatic PyMethodDef methods[] = {\n    {"value", value, METH_NOARGS, "return 42"},\n    {NULL, NULL, 0, NULL}\n};\n\nstatic struct PyModuleDef module = {PyModuleDef_HEAD_INIT, "demo_native", NULL, -1, methods};\nPyMODINIT_FUNC PyInit_demo_native(void) { return PyModule_Create(&module); }\n''',
         encoding="utf-8",
     )
-    cc = shutil.which("gcc") or shutil.which("cc")
-    if not cc:
-        raise RuntimeError("gcc/cc required for native wheel fixture")
-    include = sysconfig.get_path("include")
-    _compile_extension(cc, source, binary, include)
+    command = _extension_compile_command(source, binary)
+    if command is None:
+        raise RuntimeError(f"no host C compiler for the native wheel fixture on {sys.platform}")
+    # MSVC writes .obj/.exp/.lib next to its working directory, so the fixture
+    # compiles inside the wheelhouse whose intermediates are cleaned up below.
+    subprocess.run(command, cwd=root, check=True)
     # A caller may pin the wheel tag to the target platform tags instead of the
     # host's, so the fixture stays consumable by a cross-tagged resolver.
     impl = "cp" + sysconfig.get_config_var("py_version_nodot")
@@ -153,19 +204,19 @@ def make_native_wheel(root: Path, name="demo_native", version="1.0.0", platform_
         archive.writestr(f"{dist}/RECORD", "\n".join(records)+"\n")
     source.unlink()
     binary.unlink()
+    for leftover in (*root.glob("*.obj"), *root.glob("*.exp"), *root.glob("*.lib")):
+        leftover.unlink()
     return wheel
 
 
 def test_native_wheel_fixture_has_target_extension_and_import_metadata(tmp_path):
-    import shutil
-    import sysconfig
     import zipfile
 
     import pytest
 
-    if not (shutil.which("gcc") or shutil.which("cc")):
-        # The fixture is a real compiled extension, so it needs a host C
-        # compiler. Windows CI has no gcc/cc on PATH (MSVC needs a dev shell).
+    if not has_native_fixture_compiler():
+        # The fixture is a real compiled extension, so it needs a compiler that
+        # targets the interpreter running the tests.
         pytest.skip("a host C compiler is required to build the native wheel fixture")
 
     wheel = make_native_wheel(tmp_path)
