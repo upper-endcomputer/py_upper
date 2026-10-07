@@ -53,12 +53,22 @@ def _doctor(target) -> int:
         print("dev-python: UNAVAILABLE:", exc)
     print("SDK:", pbs_sdk_dir(target))
     print("runtime:", target_runtime_dir(target))
-    print("cmake:", shutil.which("cmake") or "MISSING")
-    print("ninja:", shutil.which("ninja") or "MISSING")
+    missing = []
+    for tool in ("cmake", "ninja"):
+        path = shutil.which(tool)
+        print(f"{tool}:", path or "MISSING")
+        if not path:
+            missing.append(tool)
     try:
         print("toolchain:", describe_toolchain(target))
     except Exception as exc:
         print("toolchain: UNAVAILABLE:", exc)
+        missing.append("toolchain")
+    # A build cannot start without these, so the diagnostic exits non-zero and
+    # doubles as the toolchain gate in CI instead of a second, hand-rolled probe.
+    if missing:
+        print("doctor: FAILED, missing:", ", ".join(missing))
+        return 1
     return 0
 
 

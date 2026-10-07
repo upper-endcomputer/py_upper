@@ -122,13 +122,6 @@ jobs:
           if ! command -v ninja >/dev/null 2>&1; then brew install ninja; fi
           ninja --version
 
-      - name: Verify Windows toolchain
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          cmake --version
-
       - name: Unit tests
         run: python -m pytest app/tests -q
 
