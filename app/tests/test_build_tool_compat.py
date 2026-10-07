@@ -889,6 +889,50 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
     assert f"TARGET_LIBDIR={str(libs)!r}" in setup_text
 
 
+def test_windows_launcher_does_not_ask_for_the_python_import_library(tmp_path):
+    """Including Python.h must not put libpython on the launcher's link line.
+
+    The launcher resolves CPython at runtime, so it links no import library and
+    the target SDK has no LIBPATH for one. Windows' pyconfig.h does not know
+    that: it nominates ``python313.lib`` with ``#pragma comment(lib, ...)``
+    unless the shared build is switched off, and the launcher build then stops
+    at ``LNK1104: cannot open file 'python313.lib'`` — a file that is neither
+    present nor wanted. The nomination is recorded in the object file's
+    ``.drectve`` section, so compiling the translation unit is enough to see
+    whether the header is still asking.
+    """
+    import subprocess
+    import sysconfig
+
+    if sys.platform != "win32":
+        pytest.skip("the auto-link pragma belongs to the Windows pyconfig.h")
+
+    from test_third_party import _windows_extension_compiler
+
+    try:
+        cl, _, env = _windows_extension_compiler()
+    except RuntimeError as exc:
+        pytest.skip(f"MSVC is required to compile the launcher translation unit: {exc}")
+    include = sysconfig.get_path("include")
+    launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
+
+    def directives(name: str, source_text: str) -> bytes:
+        source = tmp_path / f"{name}.cpp"
+        source.write_text(source_text, encoding="utf-8")
+        obj = tmp_path / f"{name}.obj"
+        subprocess.run(
+            [cl, "/nologo", "/c", "/std:c++17", "/EHsc", f"/I{include}", str(source), f"/Fo{obj}"],
+            cwd=tmp_path, env=env, check=True,
+        )
+        return obj.read_bytes()
+
+    # A translation unit that only includes the header does nominate the
+    # library, so the assertion below is about the launcher's opt-out and not
+    # about a pragma that never existed.
+    assert b"/DEFAULTLIB:python3" in directives("control", "#include <Python.h>\n")
+    assert b"/DEFAULTLIB:python3" not in directives("launcher", launcher.read_text(encoding="utf-8"))
+
+
 def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkeypatch):
     """A macOS CPython extension must not require Python symbols at link time.
 

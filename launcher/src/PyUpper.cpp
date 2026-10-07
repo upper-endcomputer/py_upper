@@ -1,4 +1,13 @@
 #include "PyUpper.h"
+// Including Python.h must not drag the CPython import library into the link.
+// The launcher resolves every entry point from the bundled libpython at
+// runtime, so it has no use for python3XX.lib and no search path that holds
+// one. Windows' pyconfig.h does not know that: unless the shared build is
+// switched off it asks the linker for the library with
+// #pragma comment(lib, "python313.lib"), and the launcher build then fails
+// with LNK1104 against a file that was never meant to be there. On the other
+// platforms pyconfig.h does not read this macro at all.
+#define Py_NO_ENABLE_SHARED 1
 #include <Python.h>
 #include <algorithm>
 #include <codecvt>
