@@ -521,13 +521,11 @@ def test_macos_ad_hoc_signing_seals_the_bundle_last(tmp_path, monkeypatch):
 
 
 def test_macos_universal_images_are_thinned_to_the_target_architecture(tmp_path, monkeypatch):
-    """ld64 refuses to rewrite the foreign slice of a lipo-assembled image.
+    """The bundle declares one architecture, so the foreign slice is dropped.
 
-    ``install_name_tool`` aborts the whole bundle with "link edit information
-    does not fill the __LINKEDIT segment": the assembled slice carries padding
-    past the end of its ``__LINKEDIT`` segment. ``lipo -thin`` writes that
-    slice on its own, which puts the segment back at the end of the file, and
-    the bundle only ever declares one architecture.
+    PySide6 and pyobjc publish universal2 wheels; carrying both slices would
+    double the size of every bundled image for an architecture the bundle never
+    loads.
     """
     import shutil as real_shutil
     from types import SimpleNamespace
@@ -589,7 +587,7 @@ def test_macos_thinning_without_lipo_fails_instead_of_leaving_the_image_universa
 
 
 def test_macos_bundle_thins_universal_images_before_rewriting_install_names(tmp_path, monkeypatch):
-    """Thinning only helps if it runs before the install names are rewritten."""
+    """Thinning replaces the image, so it has to run before the names are rewritten."""
     import shutil as real_shutil
     from types import SimpleNamespace
 
@@ -642,6 +640,11 @@ def test_macos_bundle_thins_universal_images_before_rewriting_install_names(tmp_
     tools = [Path(command[0]).name for command in calls]
     assert "install_name_tool" in tools
     assert tools.index("lipo") < tools.index("install_name_tool")
+    # `codesign --remove-signature` shrinks __LINKEDIT without updating its
+    # vmsize, and ld64 then rejects the rewritten image with "link edit
+    # information does not fill the __LINKEDIT segment". ad_hoc_sign re-signs
+    # with --force, so no signature is removed before the rewrite.
+    assert "codesign" not in tools
 
 
 def test_native_dependency_names_use_binary_format_not_filename_suffix(monkeypatch, tmp_path):

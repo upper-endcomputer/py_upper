@@ -79,12 +79,6 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _maybe_remove_signature(path: Path) -> None:
-    codesign = shutil.which("codesign")
-    if codesign:
-        subprocess.run([codesign, "--remove-signature", str(path)], capture_output=True, check=False)
-
-
 def ad_hoc_sign(path: Path) -> None:
     """Give a Mach-O image a fresh ad-hoc signature.
 
@@ -104,13 +98,9 @@ def ad_hoc_sign(path: Path) -> None:
 def _thin_mach_o(path: Path, arch: str) -> None:
     """Drop the slices the target architecture cannot load.
 
-    PySide6 publishes universal2 wheels, and ld64 refuses to rewrite the
-    foreign slice of those images: ``install_name_tool`` aborts the whole
-    bundle with "link edit information does not fill the __LINKEDIT segment",
-    because the lipo-assembled slice carries padding past the end of its
-    ``__LINKEDIT`` segment. ``lipo -thin`` writes that slice on its own, which
-    puts the segment back at the end of the file. The bundle declares a single
-    architecture, so the other slice is dead weight anyway.
+    PySide6 and pyobjc publish universal2 wheels, and the bundle declares a
+    single architecture, so the foreign slice is dead weight that roughly
+    doubles the size of every bundled image.
     """
     if inspect(path).arch != "universal":
         return
@@ -244,7 +234,11 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
         native_images = [path for path in seen if inspect(path).format.startswith("Mach-O")]
         for binary in native_images:
             _thin_mach_o(binary, target.arch)
-        changed: set[Path] = set()
+        # Nothing removes the existing signature first. install_name_tool and
+        # strip invalidate it in place, and ad_hoc_sign re-signs with --force
+        # afterwards. `codesign --remove-signature` shrinks __LINKEDIT without
+        # updating its vmsize, and ld64 then rejects the file with "link edit
+        # information does not fill the __LINKEDIT segment".
         for dep in dependencies:
             if dep.external or dep.resolved is None:
                 continue
@@ -255,13 +249,8 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
             new_name = "@loader_path/" + relative
             if dep.name == new_name:
                 continue
-            if owner not in changed:
-                _maybe_remove_signature(owner)
-                changed.add(owner)
             subprocess.run(["install_name_tool", "-change", dep.name, new_name, str(owner)], check=True)
         for binary in native_images:
-            if bool(optimize_config().get("strip_native", False)):
-                _maybe_remove_signature(binary)
             _strip_native(binary, target)
         # Ad-hoc signing must run inside-out. Nested code such as
         # QtWebEngineCore.framework/Helpers/QtWebEngineProcess.app is rejected
