@@ -65,6 +65,11 @@ jobs:
             target: macos-arm64
             run: true
     runs-on: ${{ matrix.os }}
+    env:
+      # Resolving the PBS runtime asks api.github.com, which caps anonymous
+      # requests at 60 per hour per source address — a limit the hosted runners
+      # share with every other job on the platform. The token raises it.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 

@@ -726,6 +726,35 @@ def test_network_retries_transient_gateway_errors(monkeypatch):
     assert len(calls) == 2
 
 
+def test_github_api_requests_carry_the_workflow_token(monkeypatch):
+    """Anonymous api.github.com requests are rate limited per source address.
+
+    The hosted runners share their addresses with every other job on the
+    platform, so the PBS release lookup needs the token Actions exports.
+    """
+    from py_upper import net
+
+    seen: list[dict[str, str]] = []
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, *args): return b"{}"
+
+    def fake(request, timeout):
+        seen.append(dict(request.headers))
+        return Response()
+
+    monkeypatch.setattr(net.urllib.request, "urlopen", fake)
+    monkeypatch.setenv("GITHUB_TOKEN", "token-value")
+
+    net.http_json("https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250818")
+    net.http_json("https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json")
+
+    assert seen[0]["Authorization"] == "Bearer token-value"
+    assert "Authorization" not in seen[1]
+
+
 def test_local_runtime_manifest_round_trip(tmp_path):
     from py_upper.config import RuntimeSpec, TARGETS
     from py_upper.manifest import build_manifest, validate_manifest, write_manifest

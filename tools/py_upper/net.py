@@ -40,6 +40,21 @@ def _retry_delay(error: urllib.error.HTTPError, attempt: int) -> float:
     return min(2.0**attempt, MAX_BACKOFF)
 
 
+def github_auth_headers(url: str) -> dict[str, str]:
+    """Authorization for api.github.com when a token is available.
+
+    Anonymous GitHub API requests are capped at 60 per hour per source
+    address, and GitHub-hosted runners share addresses with every other job on
+    the platform, so the PBS release lookup regularly fails with HTTP 403
+    "rate limit exceeded". Actions exports a token as ``GITHUB_TOKEN``;
+    ``GH_TOKEN`` is the GitHub CLI's name for the same credential.
+    """
+    if not url.startswith("https://api.github.com/"):
+        return {}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def open_url(request: urllib.request.Request) -> BinaryIO:
     retries = _env_int("PY_UPPER_HTTP_RETRIES", DEFAULT_RETRIES)
     timeout = _env_float("PY_UPPER_HTTP_TIMEOUT", DEFAULT_TIMEOUT)
@@ -78,6 +93,7 @@ def http_json(url: str, headers: dict[str, str] | None = None) -> Any:
         "User-Agent": "py_upper",
         "Accept": "application/vnd.github+json",
     }
+    request_headers.update(github_auth_headers(url))
     if headers:
         request_headers.update(headers)
     request = urllib.request.Request(url, headers=request_headers)
@@ -90,6 +106,7 @@ def download(url: str, destination: Path, headers: dict[str, str] | None = None)
     if destination.exists():
         return
     request_headers = {"User-Agent": "py_upper"}
+    request_headers.update(github_auth_headers(url))
     if headers:
         request_headers.update(headers)
     request = urllib.request.Request(url, headers=request_headers)
