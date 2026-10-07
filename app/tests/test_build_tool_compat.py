@@ -897,10 +897,11 @@ def test_windows_launcher_does_not_ask_for_the_python_import_library(tmp_path):
     that: it nominates ``python313.lib`` with ``#pragma comment(lib, ...)``
     unless the shared build is switched off, and the launcher build then stops
     at ``LNK1104: cannot open file 'python313.lib'`` — a file that is neither
-    present nor wanted. The nomination is recorded in the object file's
-    ``.drectve`` section, so compiling the translation unit is enough to see
-    whether the header is still asking.
+    present nor wanted. Both sides are reproduced by linking the translation
+    units: the import library is deliberately on no search path, so a unit that
+    asks for it cannot link.
     """
+    import os
     import subprocess
     import sysconfig
 
@@ -910,27 +911,34 @@ def test_windows_launcher_does_not_ask_for_the_python_import_library(tmp_path):
     from test_third_party import _windows_extension_compiler
 
     try:
-        cl, _, env = _windows_extension_compiler()
+        cl, import_lib, env = _windows_extension_compiler()
     except RuntimeError as exc:
         pytest.skip(f"MSVC is required to compile the launcher translation unit: {exc}")
     include = sysconfig.get_path("include")
     launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
 
-    def directives(name: str, source_text: str) -> bytes:
-        source = tmp_path / f"{name}.cpp"
-        source.write_text(source_text, encoding="utf-8")
-        obj = tmp_path / f"{name}.obj"
-        subprocess.run(
-            [cl, "/nologo", "/c", "/std:c++17", "/EHsc", f"/I{include}", str(source), f"/Fo{obj}"],
-            cwd=tmp_path, env=env, check=True,
+    def link(name: str, source: Path) -> subprocess.CompletedProcess:
+        # /NOENTRY keeps this to the question being asked: whether the import
+        # library is demanded, not whether the translation unit has an entry
+        # point. Nothing here puts the import library on a search path, so a
+        # translation unit that asks for it cannot link.
+        return subprocess.run(
+            [
+                cl, "/nologo", "/LD", "/std:c++17", "/EHsc", f"/I{include}", str(source),
+                f"/Fe:{tmp_path / (name + '.dll')}", f"/Fo{tmp_path}{os.sep}",
+                "/link", "/NOENTRY",
+            ],
+            cwd=tmp_path, env=env, capture_output=True, text=True, check=False,
         )
-        return obj.read_bytes()
 
-    # A translation unit that only includes the header does nominate the
-    # library, so the assertion below is about the launcher's opt-out and not
-    # about a pragma that never existed.
-    assert b"/DEFAULTLIB:python3" in directives("control", "#include <Python.h>\n")
-    assert b"/DEFAULTLIB:python3" not in directives("launcher", launcher.read_text(encoding="utf-8"))
+    control_source = tmp_path / "control.cpp"
+    control_source.write_text("#include <Python.h>\n", encoding="utf-8")
+    control = link("control", control_source)
+    assert control.returncode != 0, "the header no longer nominates the import library"
+    assert import_lib.name in control.stdout + control.stderr
+
+    built = link("launcher", launcher)
+    assert built.returncode == 0, built.stdout + built.stderr
 
 
 def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkeypatch):
