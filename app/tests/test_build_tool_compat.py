@@ -33,6 +33,35 @@ def test_every_build_tool_module_imports():
         importlib.import_module(name)
 
 
+def test_msvc_host_target_pairs_cover_every_combination():
+    from py_upper.toolchain import VC_HOST_COMPONENT, VCVARSALL_HOST_TARGET
+
+    for host in ("x86", "x86_64", "arm64"):
+        assert host in VC_HOST_COMPONENT
+        for target in ("x86", "x86_64", "arm64"):
+            assert VCVARSALL_HOST_TARGET[(host, target)]
+    # vcvarsall spells a native build with just the host architecture, and the
+    # ARM64 runner must not be told to cross-compile from an x64 host.
+    assert VCVARSALL_HOST_TARGET[("arm64", "arm64")] == "arm64"
+    assert VCVARSALL_HOST_TARGET[("x86_64", "x86_64")] == "amd64"
+    assert VCVARSALL_HOST_TARGET[("x86_64", "arm64")] == "amd64_arm64"
+
+
+def test_host_arch_normalizes_windows_and_linux_spellings(monkeypatch):
+    """platform.machine() reports AMD64/ARM64 on Windows and x86_64/aarch64 on Linux."""
+    from py_upper import toolchain
+
+    for machine, expected in (
+        ("AMD64", "x86_64"),
+        ("x86_64", "x86_64"),
+        ("ARM64", "arm64"),
+        ("aarch64", "arm64"),
+        ("i686", "x86"),
+    ):
+        monkeypatch.setattr(toolchain.platform, "machine", lambda machine=machine: machine)
+        assert toolchain._host_arch() == expected
+
+
 def test_tracked_pyproject_template_is_complete():
     """A fresh clone copies this file, so it must be buildable on its own."""
     import re
