@@ -17,6 +17,8 @@ import json
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 
 from .config import APP, Target, host_target, optimize_config, runtime_executable
@@ -63,6 +65,83 @@ QML_MODULE_PREFIXES = ("QtQml", "QtQuick")
 PLUGIN_KEEP_EXCEPTIONS = ("qsvg", "qsvgicon")
 # Translation families that belong to developer tooling, never to a running app.
 TOOLING_TRANSLATION_PREFIXES = ("assistant_", "designer_", "linguist_", "qt_help_")
+# Images Qt loads by name rather than through an import. The dependency closure
+# can never see them, so the reachability rule would delete them: the software
+# OpenGL fallback is the one that matters, because a machine without a usable
+# GL driver still has to be able to start the application.
+PAYLOAD_KEEP_NAMES = frozenset({"opengl32sw.dll"})
+
+
+@dataclass(frozen=True)
+class _QtLayout:
+    """Where a PySide6 wheel keeps the parts of the Qt payload.
+
+    The wheel flavours disagree, and every consumer of the payload has to agree
+    with them:
+
+    * POSIX wheels (Linux, macOS) nest everything under ``PySide6/Qt`` -- the
+      libraries in ``Qt/lib``, plus ``plugins``, ``qml``, ``translations``,
+      ``metatypes`` and ``libexec``.
+    * Windows wheels put the Qt DLLs, the Python extension modules and the
+      tooling directly in the package root and keep only ``plugins``, ``qml``,
+      ``translations`` and ``metatypes`` beside them. There is no ``Qt``
+      directory at all, so the POSIX paths silently match nothing and pruning
+      becomes a no-op.
+    """
+
+    libraries: tuple[Path, ...]
+    """Directories the reachability lookup indexes."""
+
+    library_names: str | None
+    """fnmatch pattern selecting the entries the reachability rule may delete.
+
+    ``None`` means every entry, which is what the POSIX ``Qt/lib`` and
+    ``Qt/bin`` directories hold. The Windows package root is not a library
+    directory: it also contains the importable extension modules, the launcher
+    helper and the packaging metadata, so only its DLLs are eligible.
+    """
+
+    tooling_suffixes: tuple[str, ...]
+    """Suffixes the platform appends to the names in ``TOOLING_ENTRIES``."""
+
+    plugins: Path
+    qml: Path
+    translations: Path
+    metatypes: Path | None
+    helpers: tuple[Path, ...]
+    """Files belonging to a Qt module rather than to tooling: the WebEngine
+    helper process, which lives in ``Qt/libexec`` on POSIX and in the package
+    root on Windows."""
+
+    qml_helpers: tuple[str, ...]
+    """Glob patterns for shiboken's QML bridge library."""
+
+
+def _qt_layout(pyside: Path) -> _QtLayout:
+    nested = pyside / "Qt"
+    if nested.is_dir():
+        return _QtLayout(
+            libraries=tuple(path for path in (nested / "lib", nested / "bin") if path.is_dir()),
+            library_names=None,
+            tooling_suffixes=("",),
+            plugins=nested / "plugins",
+            qml=nested / "qml",
+            translations=nested / "translations",
+            metatypes=nested / "metatypes",
+            helpers=(nested / "libexec",),
+            qml_helpers=("libpyside6qml*",),
+        )
+    return _QtLayout(
+        libraries=(pyside,),
+        library_names="*.dll",
+        tooling_suffixes=("", ".exe"),
+        plugins=pyside / "plugins",
+        qml=pyside / "qml",
+        translations=pyside / "translations",
+        metatypes=pyside / "metatypes",
+        helpers=(pyside / "QtWebEngineProcess.exe",),
+        qml_helpers=("pyside6qml.abi3.dll", "pyside6qml.abi3.lib"),
+    )
 
 
 def used_qt_modules(source_root: Path | None = None) -> set[str]:
@@ -156,10 +235,6 @@ def _wrapper_modules(pyside: Path) -> dict[str, Path]:
     }
 
 
-def _library_dirs(pyside: Path) -> list[Path]:
-    return [path for path in (pyside / "Qt" / "lib", pyside / "Qt" / "bin") if path.is_dir()]
-
-
 def _framework_binary(entry: Path) -> Path | None:
     if not entry.is_dir() or not entry.name.endswith(".framework"):
         return None
@@ -167,16 +242,19 @@ def _framework_binary(entry: Path) -> Path | None:
     return binary if binary.exists() else None
 
 
-def _library_index(pyside: Path) -> dict[str, list[Path]]:
+def _library_index(layout: _QtLayout) -> dict[str, list[Path]]:
     index: dict[str, list[Path]] = {}
-    for directory in _library_dirs(pyside):
+    for directory in layout.libraries:
         for entry in sorted(directory.iterdir()):
             binary = _framework_binary(entry)
             if binary is not None:
                 index.setdefault(binary.name.lower(), []).append(binary)
                 continue
-            if entry.is_file() or entry.is_symlink():
-                index.setdefault(entry.name.lower(), []).append(entry)
+            if not (entry.is_file() or entry.is_symlink()):
+                continue
+            if layout.library_names and not fnmatch(entry.name, layout.library_names):
+                continue
+            index.setdefault(entry.name.lower(), []).append(entry)
     return index
 
 
@@ -201,9 +279,9 @@ def _qt_module_of(dependency: str) -> str | None:
     return name if name.startswith("Qt") else None
 
 
-def _reachable_libraries(pyside: Path, roots: list[Path]) -> tuple[set[Path], set[str]]:
+def _reachable_libraries(layout: _QtLayout, roots: list[Path]) -> tuple[set[Path], set[str]]:
     """Qt libraries reachable from ``roots``, plus the modules they belong to."""
-    index = _library_index(pyside)
+    index = _library_index(layout)
     kept: set[Path] = set()
     modules: set[str] = set()
     queue = list(roots)
@@ -234,6 +312,7 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
         return None
 
     counters = {"files": 0, "dirs": 0, "bytes": 0}
+    layout = _qt_layout(pyside)
 
     def size_of(path: Path) -> int:
         if path.is_file() or path.is_symlink():
@@ -254,8 +333,12 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
             path.unlink(missing_ok=True)
 
     for name in TOOLING_ENTRIES:
-        drop(pyside / name)
-    drop(pyside / "Qt" / "metatypes")
+        for suffix in layout.tooling_suffixes:
+            drop(pyside / f"{name}{suffix}")
+    if layout.metatypes is not None:
+        drop(layout.metatypes)
+    for helper in layout.helpers:
+        drop(helper)
 
     wrappers = _wrapper_modules(pyside)
     keep_wrappers = [path for name, path in wrappers.items() if name in modules]
@@ -266,7 +349,7 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     keep_categories = set(BASE_PLUGIN_CATEGORIES)
     for name in modules:
         keep_categories.update(MODULE_PLUGIN_CATEGORIES.get(name, set()))
-    plugins = pyside / "Qt" / "plugins"
+    plugins = layout.plugins
     if plugins.is_dir():
         for category in sorted(plugins.iterdir()):
             if category.name not in keep_categories:
@@ -275,7 +358,7 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     # A plugin is only usable when every Qt module it links is still present.
     # This drops the virtual-keyboard input context (QtQml/QtQuick) and the PDF
     # image format (QtPdf) without guessing categories by hand.
-    wrapper_libraries, allowed_modules = _reachable_libraries(pyside, keep_wrappers)
+    wrapper_libraries, allowed_modules = _reachable_libraries(layout, keep_wrappers)
     keep_plugins: list[Path] = []
     if plugins.is_dir():
         for plugin in sorted(path for path in plugins.rglob("*") if path.is_file()):
@@ -289,27 +372,32 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
             else:
                 drop(plugin)
 
-    plugin_libraries, _ = _reachable_libraries(pyside, keep_plugins)
+    plugin_libraries, _ = _reachable_libraries(layout, keep_plugins)
     reachable = wrapper_libraries | plugin_libraries
-    for directory in _library_dirs(pyside):
+    for directory in layout.libraries:
         for entry in sorted(directory.iterdir()):
             binary = _framework_binary(entry)
             if binary is not None:
                 if binary not in reachable:
                     drop(entry)
-            elif entry not in reachable:
+                continue
+            if layout.library_names and not fnmatch(entry.name, layout.library_names):
+                continue
+            if entry.name.lower() in PAYLOAD_KEEP_NAMES:
+                continue
+            if entry not in reachable:
                 drop(entry)
 
     if not any(name.startswith(QML_MODULE_PREFIXES) for name in modules):
-        drop(pyside / "Qt" / "qml")
+        drop(layout.qml)
         # shiboken's QML helper library is only used by the QML wrapper modules.
-        for helper in sorted(pyside.glob("libpyside6qml*")):
-            drop(helper)
-    drop(pyside / "Qt" / "libexec")
+        for pattern in layout.qml_helpers:
+            for helper in sorted(pyside.glob(pattern)):
+                drop(helper)
 
     # Only Qt's own widget strings are useful to a running application; tooling
     # and unused-module translations are dead weight.
-    translations = pyside / "Qt" / "translations"
+    translations = layout.translations
     if translations.is_dir():
         for entry in sorted(translations.iterdir()):
             name = entry.name

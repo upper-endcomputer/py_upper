@@ -15,6 +15,7 @@ from .config import (
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import inspect, target_format, verify_arch
 from .python_build import module_name, selected_sources
+from .runtime import runtime_pip_payloads
 from .third_party import WHEEL_MANIFEST, dependency_specs, wheel_dir
 
 
@@ -96,14 +97,9 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
         (entry.is_file(), "application entry"),
         (static_entry.is_file(), "rename-safe application entry"),
     ]
+    runtime_root = resources / "runtime" if target.os == "macos" else root / "runtime"
     if bool(optimize_config().get("remove_runtime_pip", True)):
-        runtime_site = resources / "runtime" / "lib" if target.os == "macos" else root / "runtime" / "lib"
-        pip_payloads = []
-        for candidate in runtime_site.glob("python*/site-packages/pip*") if runtime_site.exists() else []:
-            pip_payloads.append(candidate)
-        for candidate in runtime_site.glob("python*/ensurepip") if runtime_site.exists() else []:
-            pip_payloads.append(candidate)
-        checks.append((not pip_payloads, "runtime pip/ensurepip removed"))
+        checks.append((not runtime_pip_payloads(runtime_root), "runtime pip/ensurepip removed"))
     if executable.is_file():
         try:
             verify_arch(executable, target)
@@ -122,10 +118,17 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     # foreign-format data files (for example the Windows setuptools launcher
     # stubs inside a macOS CPython runtime); their architecture is irrelevant
     # and must not fail an otherwise correct package.
+    #
+    # The same reasoning covers Windows executables. Nothing loads a .exe, the
+    # OS starts it as its own process, and the only process this bundle starts
+    # is the launcher, which is checked on its own above. Runtimes and wheels
+    # deliberately ship the launcher stubs of every architecture side by side
+    # (setuptools' easy_install cli-*.exe, distlib's t64.exe, the venv
+    # templates), so their architecture is data, not contract.
     target_container = target_format(target)
     checked = 0
     for path in root.rglob("*"):
-        if not path.is_file():
+        if not path.is_file() or path.suffix.lower() == ".exe":
             continue
         try:
             info = inspect(path)

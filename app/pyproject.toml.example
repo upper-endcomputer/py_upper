@@ -53,15 +53,23 @@ python = "3.11.13"
 manylinux = ["manylinux_2_39", "manylinux_2_34"]
 
 [tool.py_upper.native]
-# Optional PySide6 payload that cannot be satisfied inside the bundle:
-# the macOS wheel links the ODBC/Mimer/PostgreSQL Qt SQL drivers against
-# build-machine absolute paths and references a QtQuickShapesDesignHelpers
-# framework it does not ship. Drop them instead of failing the closure.
+# PySide6 payload the bundle cannot honour, dropped instead of failing the
+# closure:
+#   - the macOS wheel links the ODBC/Mimer/PostgreSQL Qt SQL drivers against
+#     build-machine absolute paths and references a QtQuickShapesDesignHelpers
+#     framework it does not ship;
+#   - the Windows wheels ship an ARM32 vccorlib140.dll, in the PySide6 and the
+#     shiboken6 wheel alike. Windows on ARM cannot map an ARM32 image at all,
+#     no image in either wheel imports it (it is the C++/CX runtime, which Qt
+#     does not use), and leaving it in makes the payload arch guard reject the
+#     whole windows-arm64 bundle.
 exclude = [
     "PySide6/Qt/plugins/sqldrivers/*qsqlmimer*",
     "PySide6/Qt/plugins/sqldrivers/*qsqlodbc*",
     "PySide6/Qt/plugins/sqldrivers/*qsqlpsql*",
     "PySide6/Qt/qml/QtQuick/Shapes/DesignHelpers/*",
+    "PySide6/vccorlib140.dll",
+    "shiboken6/vccorlib140.dll",
 ]
 
 [tool.py_upper.cython]

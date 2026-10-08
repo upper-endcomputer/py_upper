@@ -123,6 +123,38 @@ def sdk_info(target: Target) -> dict:
     return _local_info(target)
 
 
+def runtime_site_packages(root: Path) -> list[Path]:
+    """``site-packages`` directories of a runtime tree, for either layout.
+
+    A POSIX runtime nests them under ``lib/python3.X``; the Windows runtime has
+    no version directory and keeps them under ``Lib``.
+    """
+    found = [path for path in sorted(root.glob("lib/python*/site-packages")) if path.is_dir()]
+    windows = root / "Lib" / "site-packages"
+    if windows.is_dir():
+        found.append(windows)
+    return found
+
+
+def runtime_pip_payloads(root: Path) -> list[Path]:
+    """``pip`` and ``ensurepip`` payloads inside a runtime tree.
+
+    The cleanup below and the package check in ``verify`` share this function
+    on purpose. A Windows runtime keeps its pip because the check only knew the
+    POSIX layout is exactly the failure this prevents: the build removes the
+    payload, the check looks somewhere else, and both report success.
+    """
+    found: list[Path] = []
+    for site in runtime_site_packages(root):
+        found.extend(sorted(site.glob("pip")))
+        found.extend(sorted(site.glob("pip-*.dist-info")))
+    found.extend(path for path in sorted(root.glob("lib/python*/ensurepip")) if path.is_dir())
+    windows_ensurepip = root / "Lib" / "ensurepip"
+    if windows_ensurepip.is_dir():
+        found.append(windows_ensurepip)
+    return found
+
+
 def optimize_runtime_tree(root: Path) -> dict[str, int]:
     """Apply release-safe cleanup to a copied runtime tree, never the source runtime."""
     cfg = optimize_config()
@@ -140,15 +172,7 @@ def optimize_runtime_tree(root: Path) -> dict[str, int]:
                 path.unlink()
                 removed_files += 1
     if remove_pip:
-        candidates = [
-            root / "lib" / "python" / "site-packages" / "pip",
-            root / "lib" / "python3" / "site-packages" / "pip",
-        ]
-        for lib_root in root.glob("lib/python*/site-packages"):
-            candidates.append(lib_root / "pip")
-            candidates.extend(lib_root.glob("pip-*.dist-info"))
-        candidates.extend(root.glob("lib/python*/ensurepip"))
-        for path in candidates:
+        for path in runtime_pip_payloads(root):
             if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
                 removed_dirs += 1

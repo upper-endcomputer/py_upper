@@ -134,6 +134,25 @@ def test_tracked_pyproject_template_is_complete():
     assert re.fullmatch(r"\d+\.\d+\.\d+", tool["runtime"]["python"])
 
 
+def test_template_drops_the_pyside6_arm64_orphan():
+    """The PySide6 and shiboken6 Windows wheels ship an ARM32 ``vccorlib140.dll``.
+
+    Windows on ARM cannot map an ARM32 image at all, and no image in the wheel
+    imports it (it is the C++/CX runtime, which Qt does not use), so the payload
+    arch guard rightly refuses to ship it. It goes through the documented
+    wheel-defect list rather than relaxing that guard: if PySide6 ever starts
+    importing the file, the closure fails loudly with it missing instead of
+    shipping a bundle that cannot load.
+    """
+    from py_upper.compat import tomllib
+    from py_upper.config import APP_CONFIG_EXAMPLE
+
+    data = tomllib.loads(APP_CONFIG_EXAMPLE.read_text(encoding="utf-8"))
+    exclude = data["tool"]["py_upper"]["native"]["exclude"]
+    assert "PySide6/vccorlib140.dll" in exclude
+    assert "shiboken6/vccorlib140.dll" in exclude
+
+
 def test_local_configuration_is_git_ignored_but_the_template_is_not():
     root = Path(__file__).parents[2]
     entries = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
@@ -1207,3 +1226,21 @@ def test_windows_python_runtime_dll_is_version_specific(monkeypatch):
     monkeypatch.setattr(deps, "python_version", lambda: "3.11.10")
     assert deps._system_dependency("python311.dll", target)
     assert not deps._system_dependency("python313.dll", target)
+
+
+def test_windows_stable_abi_forwarder_is_runtime_provided(monkeypatch):
+    """PySide6's abi3 extensions link ``python3.dll``, which the launcher loads.
+
+    The forwarder sits next to ``python3XX.dll`` in the runtime directory, and
+    the launcher loads it from there before the versioned library, so it is
+    runtime-provided exactly like the versioned one. Looking for it in the wheel
+    leaves it unresolved on every Windows target; POSIX has no counterpart.
+    """
+    import py_upper.native.deps as deps
+    from py_upper.config import TARGETS
+
+    monkeypatch.setattr(deps, "python_version", lambda: "3.11.13")
+    assert deps._system_dependency("python3.dll", TARGETS["windows-x86_64"])
+    assert deps._system_dependency("PYTHON3.DLL", TARGETS["windows-arm64"])
+    assert not deps._system_dependency("python3.dll", TARGETS["linux-x86_64"])
+    assert not deps._system_dependency("python3.dll", TARGETS["macos-arm64"])
