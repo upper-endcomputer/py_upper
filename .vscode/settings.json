@@ -20,5 +20,17 @@
         "**/*.pyc": true,
         "**/.pytest_cache": true,
         "**/.mypy_cache": true
+    },
+    "search.exclude": {
+        "**/build": true,
+        "**/dist": true,
+        "**/runtimes": true,
+        "**/.cache": true
+    },
+    "files.watcherExclude": {
+        "**/build/**": true,
+        "**/dist/**": true,
+        "**/runtimes/**": true,
+        "**/.cache/**": true
     }
 }

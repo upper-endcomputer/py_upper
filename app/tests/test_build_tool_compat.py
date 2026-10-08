@@ -161,6 +161,7 @@ def test_local_configuration_is_git_ignored_but_the_template_is_not():
 
 
 VALIDATION_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "validate.yml"
+VSCODE_SETTINGS = Path(__file__).parents[2] / ".vscode" / "settings.json"
 
 
 def _workflow_triggers(text: str) -> dict[str, list[str] | None]:
@@ -218,6 +219,32 @@ def test_ci_triggers_are_scoped_to_develop():
     # reproduced without pushing an empty commit.
     assert triggers["workflow_dispatch"] is None
     assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+
+
+def test_vscode_never_watches_the_built_trees():
+    """The editor must not execute the interpreters this repository builds.
+
+    The Python extension registers a ``**/python`` file watcher per workspace
+    folder and hands every create/change it reports to python-env-tools, which
+    resolves a path by executing it. A build that writes
+    ``dist/MyApp.app/Contents/Resources/runtime/bin/python`` therefore gets its
+    own artifact executed while it is still assembling it, and the bytecode that
+    run writes lands in the tree the build is deleting. ``files.watcherExclude``
+    is the only thing keeping those paths out of the editor's view, so dropping
+    ``build`` or ``dist`` from it brings back intermittent local build failures
+    (ENOENT on a bytecode temp file, ENOTEMPTY on ``__pycache__``).
+    """
+    import json
+
+    settings = json.loads(VSCODE_SETTINGS.read_text(encoding="utf-8"))
+    watcher = settings["files.watcherExclude"]
+    for tree in ("build", "dist", "runtimes"):
+        assert watcher.get(f"**/{tree}/**") is True, f"{tree}/ must stay out of the file watcher"
+    # Searching or scanning the packaged runtime returns thousands of stdlib
+    # hits instead of project code.
+    search = settings["search.exclude"]
+    for tree in ("build", "dist", "runtimes"):
+        assert search.get(f"**/{tree}") is True
 
 
 def test_missing_local_configuration_points_at_the_template(tmp_path, monkeypatch):
