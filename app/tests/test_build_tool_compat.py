@@ -761,6 +761,63 @@ def test_macho_arm64_and_universal_validation(tmp_path):
     assert verify_arch(universal, TARGETS["macos-arm64"]).arch == "universal"
 
 
+def _synthetic_pe(machine: int, sections: tuple[str, ...]) -> bytes:
+    """A minimal PE whose section table carries the given names."""
+    pe_offset = 0x80
+    optional_size = 0xF0
+    table = pe_offset + 24 + optional_size
+    data = bytearray(table + len(sections) * 40)
+    data[0:2] = b"MZ"
+    data[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    data[pe_offset:pe_offset + 4] = b"PE\0\0"
+    data[pe_offset + 4:pe_offset + 6] = machine.to_bytes(2, "little")
+    data[pe_offset + 6:pe_offset + 8] = len(sections).to_bytes(2, "little")
+    data[pe_offset + 20:pe_offset + 22] = optional_size.to_bytes(2, "little")
+    for index, name in enumerate(sections):
+        start = table + index * 40
+        data[start:start + len(name)] = name.encode("ascii")
+    return bytes(data)
+
+
+def test_arm64ec_images_satisfy_the_arm64_target(tmp_path):
+    """ARM64EC binaries declare the x64 machine type and are still loadable.
+
+    Windows on Arm64 runs ARM64EC images in Arm64 and x64 processes alike, and
+    the CPython runtime ships one (vcruntime140_1.dll, the same file the upstream
+    arm64 package carries). Reading only the machine field rejects the runtime of
+    every windows-arm64 bundle. The .hexpthk section is the only thing that tells
+    an ARM64EC image apart from a real x64 one.
+    """
+    from py_upper.config import TARGETS
+    from py_upper.native.inspect import inspect, verify_arch
+
+    arm64ec = tmp_path / "vcruntime140_1.dll"
+    arm64ec.write_bytes(_synthetic_pe(0x8664, (".text", ".hexpthk", ".a64xrm", ".reloc")))
+    assert inspect(arm64ec).arch == "arm64ec"
+    assert verify_arch(arm64ec, TARGETS["windows-arm64"]).arch == "arm64ec"
+
+    x64 = tmp_path / "plain.dll"
+    x64.write_bytes(_synthetic_pe(0x8664, (".text", ".rdata", ".reloc")))
+    assert inspect(x64).arch == "x86_64"
+    with pytest.raises(RuntimeError, match="expected arm64"):
+        verify_arch(x64, TARGETS["windows-arm64"])
+
+    # ARM64EC is Arm64-only, so windows-x86_64 keeps rejecting it.
+    with pytest.raises(RuntimeError, match="arm64ec, expected x86_64"):
+        verify_arch(arm64ec, TARGETS["windows-x86_64"])
+
+
+def test_arm64ec_detection_reads_the_section_table_past_the_header(tmp_path):
+    """The section table can start beyond the bytes read for the machine field."""
+    from py_upper.config import TARGETS
+    from py_upper.native.inspect import inspect, verify_arch
+
+    deep = tmp_path / "deep.dll"
+    deep.write_bytes(_synthetic_pe(0x8664, (".text",) * 200 + (".hexpthk",)))
+    assert inspect(deep).arch == "arm64ec"
+    assert verify_arch(deep, TARGETS["windows-arm64"]).arch == "arm64ec"
+
+
 def test_network_retries_transient_gateway_errors(monkeypatch):
     from py_upper import net
     calls = []
