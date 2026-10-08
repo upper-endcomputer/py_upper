@@ -31,7 +31,12 @@ jobs:
           python -c "import sys; sys.path.insert(0, 'tools'); import py_upper.config; import py_upper.compat; print(sys.version)"
       - name: Run compatibility tests
         run: |
-          python -m pip install -U 'pip<25.1' 'pytest<8'
+          # setuptools is a real build dependency here: the Windows target
+          # extensions are compiled by the setuptools driver the build writes,
+          # and test_build_tool_compat exercises that driver directly. CPython
+          # >= 3.12 no longer ships setuptools with the interpreter, so it has
+          # to be installed explicitly.
+          python -m pip install -U 'pip<25.1' 'setuptools' 'pytest<8'
           python -m pytest app/tests/test_build_tool_compat.py app/tests/test_py_upper_config.py -q
 
   native-integration:
