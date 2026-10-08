@@ -425,6 +425,17 @@ def staging_dir(target: Target) -> Path:
     return BUILD / "staging" / target.key
 
 
+def publish_dir(target: Target) -> Path:
+    """Assembly tree for a bundle, unique per build.
+
+    A bundle carries a working interpreter, and the editor resolves every
+    ``python`` it finds under the workspace by running it, so a bundle must
+    never be assembled in the published path. The per-build name also keeps a
+    path the editor has already resolved from pointing at a later build's tree.
+    """
+    return BUILD / "publish" / f"{target.key}.{os.getpid()}"
+
+
 def wheel_dir(target: Target) -> Path:
     return BUILD / "wheels" / target.key
 

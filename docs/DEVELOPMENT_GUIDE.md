@@ -264,7 +264,15 @@ PY_UPPER_E2E=1 python -m pytest app/tests -q  # 额外跑真实端到端（较�
   - **py_upper: packaged app**：执行 `tools/build.py --run`，构建并启动打包后的应用
 - `tasks.json`
   - **py_upper: build** / **py_upper: run packaged app**
-- `settings.json`：pytest 与 `app/src` 分析路径
+- `settings.json`：pytest 与 `app/src` 分析路径，并把 `build/`、`dist/`、`runtimes/` 排除出文件监视与搜索
+
+`settings.json` 里的 `files.watcherExclude` / `search.exclude` 不是可选的整理项，删掉它们本机构建会重新变得不稳定：
+
+1. Python 扩展会为每个工作区注册 `**/python` 的文件监视（`createPythonWatcher`）。构建过程中 runtime 的解释器一被创建或改写，扩展就把这个路径交给 `python-env-tools` 去 resolve。
+2. resolve 会**真的执行**那个解释器（`python -c "import json, sys; ..."`），解释器启动时把 bytecode 写进自己所在的 runtime。
+3. 构建随后清理这棵树，就撞上这些新写入：`FileNotFoundError: .../utf_8.cpython-311.pyc.<随机数>` 或 `OSError: [Errno 66] Directory not empty: .../__pycache__`。
+
+`runtimes/` 同理：它是目标 runtime 缓存，构建会执行其中的解释器。`files.watcherExclude` 是唯一能挡住这条链路的东西（`search.exclude` 只影响搜索与扩展的 `findFiles` 扫描），`app/tests/test_build_tool_compat.py` 有用例锁住这三项。
 
 调试建议：
 

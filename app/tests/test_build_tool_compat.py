@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import stat
 import sys
 from pathlib import Path
@@ -161,6 +162,7 @@ def test_local_configuration_is_git_ignored_but_the_template_is_not():
 
 
 VALIDATION_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "validate.yml"
+VSCODE_SETTINGS = Path(__file__).parents[2] / ".vscode" / "settings.json"
 
 
 def _workflow_triggers(text: str) -> dict[str, list[str] | None]:
@@ -218,6 +220,32 @@ def test_ci_triggers_are_scoped_to_develop():
     # reproduced without pushing an empty commit.
     assert triggers["workflow_dispatch"] is None
     assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+
+
+def test_vscode_never_watches_the_built_trees():
+    """The editor must not execute the interpreters this repository builds.
+
+    The Python extension registers a ``**/python`` file watcher per workspace
+    folder and hands every create/change it reports to python-env-tools, which
+    resolves a path by executing it. A build that writes
+    ``dist/MyApp.app/Contents/Resources/runtime/bin/python`` therefore gets its
+    own artifact executed while it is still assembling it, and the bytecode that
+    run writes lands in the tree the build is deleting. ``files.watcherExclude``
+    is the only thing keeping those paths out of the editor's view, so dropping
+    ``build`` or ``dist`` from it brings back intermittent local build failures
+    (ENOENT on a bytecode temp file, ENOTEMPTY on ``__pycache__``).
+    """
+    import json
+
+    settings = json.loads(VSCODE_SETTINGS.read_text(encoding="utf-8"))
+    watcher = settings["files.watcherExclude"]
+    for tree in ("build", "dist", "runtimes"):
+        assert watcher.get(f"**/{tree}/**") is True, f"{tree}/ must stay out of the file watcher"
+    # Searching or scanning the packaged runtime returns thousands of stdlib
+    # hits instead of project code.
+    search = settings["search.exclude"]
+    for tree in ("build", "dist", "runtimes"):
+        assert search.get(f"**/{tree}") is True
 
 
 def test_missing_local_configuration_points_at_the_template(tmp_path, monkeypatch):
@@ -1378,3 +1406,106 @@ def test_launcher_resolves_entry_points_from_the_runtime_not_the_forwarder():
     # The handle used for every later lookup is the one that exports the entry
     # point, not merely the one whose LoadLibraryEx call succeeded.
     assert "if(!r.handle&&symbol(handle,kRuntimeEntrySymbol))r.handle=handle;" in compact
+
+
+def test_retire_tree_takes_the_tree_out_of_its_published_path_first(tmp_path, monkeypatch):
+    """Removal must rename the tree away before deleting anything inside it.
+
+    A foreign process can start inside the tree at any moment -- an editor that
+    resolved ``.../runtime/bin/python`` runs it, and that run writes bytecode
+    into the same tree. Deleting in place then fails with ENOENT on the entry
+    the writer just deleted or ENOTEMPTY on the directory it refilled. The
+    published name has to be gone before the recursive delete starts, so every
+    writer that loses the race writes into a path that no longer exists.
+    """
+    from py_upper import fs
+
+    tree = tmp_path / "dist" / "MyApp.app"
+    (tree / "Contents" / "Resources" / "runtime" / "lib").mkdir(parents=True)
+    (tree / "Contents" / "Resources" / "runtime" / "lib" / "os.pyc").write_bytes(b"x")
+    published: list[tuple[Path, bool]] = []
+    real_rmtree = fs.shutil.rmtree
+
+    def spy(path, *args, **kwargs):
+        published.append((Path(path), tree.exists()))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(fs.shutil, "rmtree", spy)
+    fs.retire_tree(tree, trash=tmp_path / "build" / "retired")
+
+    assert not tree.exists()
+    assert published
+    assert all(existed is False for _, existed in published)
+
+    # An absent tree is already in the desired state; anything else is a caller
+    # error rather than something to skip silently.
+    fs.retire_tree(tmp_path / "missing", trash=tmp_path / "build" / "retired")
+    not_a_tree = tmp_path / "launcher"
+    not_a_tree.write_bytes(b"binary")
+    with pytest.raises(RuntimeError):
+        fs.retire_tree(not_a_tree, trash=tmp_path / "build" / "retired")
+    assert not_a_tree.is_file()
+
+
+def test_package_assembles_outside_the_published_path(tmp_path, monkeypatch):
+    """The bundle must not be assembled in dist/, where the editor executes it.
+
+    VS Code watches ``**/python`` across the workspace and resolves every path
+    it reports by running it, so ``dist/MyApp.app/Contents/Resources/runtime/bin/
+    python`` gets executed the moment the build writes it -- and that run writes
+    bytecode into the bundle. A build that copies the runtime straight into
+    dist/ therefore cleans up a tree a foreign process is writing to, and the
+    cleanup fails on the entry the writer recreated. Assembly happens in a
+    private tree instead, and the finished bundle is renamed into the published
+    path in one step.
+    """
+    import py_upper.package as pkg
+    import py_upper.runtime as runtime_module
+    from py_upper.config import TARGETS, publish_dir
+
+    root = tmp_path / "root"
+    runtime = root / "runtimes" / "macos-arm64"
+    (runtime / "lib" / "python3.11" / "__pycache__").mkdir(parents=True)
+    (runtime / "lib" / "python3.11" / "__pycache__" / "stale.pyc").write_bytes(b"stale")
+    stage = root / "build" / "staging" / "macos-arm64"
+    (stage / "site-packages").mkdir(parents=True)
+    launcher = tmp_path / "PyUpper"
+    launcher.write_bytes(b"launcher")
+    assembly = root / "build" / "publish" / f"macos-arm64.{os.getpid()}"
+    target = TARGETS["macos-arm64"]
+
+    monkeypatch.setattr(pkg, "BUILD", root / "build")
+    monkeypatch.setattr(pkg, "DIST", root / "dist")
+    monkeypatch.setattr(pkg, "APP", tmp_path / "app")
+    monkeypatch.setattr(pkg, "staging_dir", lambda _: stage)
+    monkeypatch.setattr(pkg, "target_runtime_dir", lambda _: runtime)
+    monkeypatch.setattr(pkg, "publish_dir", lambda _: assembly)
+    monkeypatch.setattr(pkg, "app_name", lambda: "MyApp")
+    monkeypatch.setattr(pkg, "app_identifier", lambda: "com.example.MyApp")
+    monkeypatch.setattr(pkg, "project_version", lambda: "0.0.0")
+    monkeypatch.setattr(pkg, "entry_module", lambda: "main")
+    monkeypatch.setattr(pkg, "smoke_modules", lambda _: ["main"])
+    monkeypatch.setattr(pkg, "prune_excluded_native_files", lambda _: [])
+    monkeypatch.setattr(pkg, "bundle_native_dependencies", lambda *_, **__: [])
+    monkeypatch.setattr(
+        runtime_module, "optimize_config",
+        lambda: {"remove_python_caches": True, "remove_runtime_pip": True},
+    )
+    cleaned: list[Path] = []
+    real_optimize = runtime_module.optimize_runtime_tree
+    monkeypatch.setattr(pkg, "optimize_runtime_tree", lambda path: (cleaned.append(path), real_optimize(path))[1])
+
+    out = pkg.package(target, launcher)
+
+    assert out == root / "dist" / "MyApp.app"
+    assert (out / "Contents" / "MacOS" / "MyApp").is_file()
+    assert (out / "Contents" / "Resources" / "MyApp.int").is_file()
+    # The runtime cleanup ran on the private assembly tree, never on dist/.
+    assert len(cleaned) == 1
+    assert (root / "dist") not in cleaned[0].parents
+    assert not (out / "Contents" / "Resources" / "runtime" / "lib" / "python3.11" / "__pycache__").exists()
+    # Publishing moves the bundle out, so no assembly tree is left behind.
+    assert not assembly.exists()
+    # A per-build name is what keeps a cached locator result from ever pointing
+    # at a later build's assembly tree.
+    assert str(os.getpid()) in publish_dir(target).name
