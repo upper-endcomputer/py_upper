@@ -79,18 +79,39 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _maybe_remove_signature(path: Path) -> None:
-    codesign = shutil.which("codesign")
-    if codesign:
-        subprocess.run([codesign, "--remove-signature", str(path)], capture_output=True, check=False)
+def ad_hoc_sign(path: Path) -> None:
+    """Give a Mach-O image a fresh ad-hoc signature.
 
-
-def _ad_hoc_sign(path: Path) -> None:
+    Any byte-level rewrite invalidates the existing signature, and dyld then
+    refuses to load the image. Copying a framework binary out of its framework
+    counts as such a rewrite: the original Developer ID signature is bound to
+    the framework's Info.plist, so the copy fails to load even though its bytes
+    are intact.
+    """
     codesign = shutil.which("codesign")
     if codesign:
         result = subprocess.run([codesign, "--force", "--sign", "-", "--timestamp=none", str(path)], capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise RuntimeError(f"codesign failed for {path}: {result.stderr.strip()}")
+
+
+def _thin_mach_o(path: Path, arch: str) -> None:
+    """Drop the slices the target architecture cannot load.
+
+    PySide6 and pyobjc publish universal2 wheels, and the bundle declares a
+    single architecture, so the foreign slice is dead weight that roughly
+    doubles the size of every bundled image.
+    """
+    if inspect(path).arch != "universal":
+        return
+    lipo = shutil.which("lipo")
+    if not lipo:
+        raise RuntimeError(f"thinning {path.name} to {arch} requires lipo")
+    thinned = path.with_name(path.name + ".thin")
+    subprocess.run([lipo, "-thin", arch, "-output", str(thinned), str(path)], check=True)
+    # lipo writes a fresh file, so an executable slice would lose its bits.
+    shutil.copymode(path, thinned)
+    thinned.replace(path)
 
 
 def _mac_aliases(roots: list[Path]) -> dict[str, Path]:
@@ -211,7 +232,13 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
 
     if target.os == "macos" and shutil.which("install_name_tool"):
         native_images = [path for path in seen if inspect(path).format.startswith("Mach-O")]
-        changed: set[Path] = set()
+        for binary in native_images:
+            _thin_mach_o(binary, target.arch)
+        # Nothing removes the existing signature first. install_name_tool and
+        # strip invalidate it in place, and ad_hoc_sign re-signs with --force
+        # afterwards. `codesign --remove-signature` shrinks __LINKEDIT without
+        # updating its vmsize, and ld64 then rejects the file with "link edit
+        # information does not fill the __LINKEDIT segment".
         for dep in dependencies:
             if dep.external or dep.resolved is None:
                 continue
@@ -222,13 +249,8 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
             new_name = "@loader_path/" + relative
             if dep.name == new_name:
                 continue
-            if owner not in changed:
-                _maybe_remove_signature(owner)
-                changed.add(owner)
             subprocess.run(["install_name_tool", "-change", dep.name, new_name, str(owner)], check=True)
         for binary in native_images:
-            if bool(optimize_config().get("strip_native", False)):
-                _maybe_remove_signature(binary)
             _strip_native(binary, target)
         # Ad-hoc signing must run inside-out. Nested code such as
         # QtWebEngineCore.framework/Helpers/QtWebEngineProcess.app is rejected
@@ -237,7 +259,7 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
         # so it has to happen last. Deepest path first satisfies both, and
         # matches the order build.py's release path uses.
         for binary in sorted(native_images, key=lambda path: (-len(path.parts), path == launcher)):
-            _ad_hoc_sign(binary)
+            ad_hoc_sign(binary)
     else:
         for binary in seen:
             _strip_native(binary, target)

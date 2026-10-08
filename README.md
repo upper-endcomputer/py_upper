@@ -268,7 +268,7 @@ Windows 默认是 GUI 子系统（双击不弹控制台），从 cmd/CI 启动�
 
 `--verify` 是静态检查，`--run` 之前的最后一道门是**用目标 Python 真 import**：先由 bundled runtime 导入入口模块和所有直接声明的第三方依赖，再由打包好的 launcher 导入一次。这一步能抓住静态检查看不到的问题（扩展链接方式、stdlib 扩展目录、第三方依赖缺失、Qt 裁剪过度）。
 
-CI 在每个原生平台上都跑同一套真实链路：单元测试 → 本地端到端构建（第三方 wheel、应用自带 native 库、lock/`--locked` 往返）→ doctor → 完整 PBS 构建 → 运行。本地 E2E 默认跳过，设置 `PY_UPPER_E2E=1` 打开。
+CI 在每个原生平台上都跑同一套真实链路：单元测试 → 本地端到端构建（第三方 wheel、应用自带 native 库、lock/`--locked` 往返）→ doctor → 完整 PBS 构建 → 运行。本地 E2E 默认跳过，设置 `PY_UPPER_E2E=1` 打开。触发范围只有 develop（`push` 与面向 develop 的 `pull_request`）：`feature_*` 分支上的中间提交不跑矩阵，需要单独验证时用 `gh workflow run validate.yml --ref <branch>`。
 
 ## Git
 

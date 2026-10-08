@@ -1,4 +1,6 @@
 """PBS (python-build-standalone) resolution: release metadata, assets, runtime and SDK."""
+from __future__ import annotations
+
 import json
 import re
 import shutil
@@ -14,7 +16,16 @@ from .net import download, http_json
 
 
 PBS_RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
-PBS_RUNTIME_METADATA_URL = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json"
+# uv maintains the exact build index for every python-build-standalone release.
+# Upstream reorganises its source tree without notice: the file moved from
+# crates/uv-python to crates/uv-python-managed in uv commit 00e49e7e, which
+# turned the old path into a hard 404 for every build that had a cold cache.
+# Known locations are therefore tried in order instead of pinning one path on a
+# branch that moves.
+PBS_RUNTIME_METADATA_URLS = (
+    "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python-managed/download-metadata.json",
+    "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json",
+)
 _METADATA_CACHE = CACHE / "pbs" / "uv-download-metadata.json"
 
 
@@ -101,6 +112,24 @@ def available_metadata_python_versions(data: dict[str, Any], target: Target) -> 
     return sorted(values, key=lambda x: tuple(int(part) for part in x.split(".")))
 
 
+def _fetch_metadata_index(fetch_json: Callable[[str], Any]) -> dict[str, Any]:
+    failures: list[str] = []
+    for url in PBS_RUNTIME_METADATA_URLS:
+        try:
+            value = fetch_json(url)
+        except (OSError, ValueError) as exc:
+            failures.append(f"{url}: {exc}")
+            continue
+        if isinstance(value, dict):
+            return value
+        failures.append(f"{url}: expected a JSON object, got {type(value).__name__}")
+    raise RuntimeError(
+        "Could not fetch the uv python-build-standalone metadata index.\n"
+        + "\n".join(failures)
+        + "\nuv moves this file between releases; update PBS_RUNTIME_METADATA_URLS in tools/py_upper/pbs.py."
+    )
+
+
 def _load_metadata(fetch_json: Callable[[str], Any], *, force: bool = False) -> dict[str, Any]:
     if not force and _METADATA_CACHE.exists():
         try:
@@ -109,9 +138,7 @@ def _load_metadata(fetch_json: Callable[[str], Any], *, force: bool = False) -> 
                 return value
         except (OSError, ValueError):
             pass
-    value = fetch_json(PBS_RUNTIME_METADATA_URL)
-    if not isinstance(value, dict):
-        raise RuntimeError("Invalid PBS runtime metadata index")
+    value = _fetch_metadata_index(fetch_json)
     _METADATA_CACHE.parent.mkdir(parents=True, exist_ok=True)
     _METADATA_CACHE.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return value
@@ -131,8 +158,32 @@ def metadata_asset(data: dict[str, Any], target: Target, pyver: str) -> PBSAsset
     )
 
 
-def _best_sdk(assets: list[dict[str, Any]]) -> dict[str, Any]:
-    return max(assets, key=lambda asset: ("pgo+lto-full" in str(asset.get("name") or ""), str(asset.get("name") or "")))
+def asset_flavor(name: str) -> str:
+    """The build flavour a PBS asset name records, or "" when it records none.
+
+    Windows releases used to ship a shared and a static flavour of every
+    artifact, and the two are not interchangeable: extension modules link the
+    versioned import library (python3XX.lib), which only the shared flavour
+    carries. Newer releases dropped the flavour from the name altogether.
+    """
+    for flavor in ("shared", "static"):
+        if f"-{flavor}-" in name:
+            return flavor
+    return ""
+
+
+def _best_sdk(assets: list[dict[str, Any]], runtime_name: str) -> dict[str, Any]:
+    """The SDK matching the runtime's build flavour, best optimisation first."""
+    flavor = asset_flavor(runtime_name)
+    candidates = assets
+    if flavor:
+        candidates = [asset for asset in assets if asset_flavor(str(asset.get("name") or "")) == flavor]
+        if not candidates:
+            raise RuntimeError(
+                f"No PBS SDK asset shares the {flavor} flavour of runtime {runtime_name}.\n"
+                f"SDK assets offered for this release: {', '.join(str(asset.get('name')) for asset in assets)}"
+            )
+    return max(candidates, key=lambda asset: ("pgo+lto-full" in str(asset.get("name") or ""), str(asset.get("name") or "")))
 
 
 def no_asset_error(release_tag: str, target: Target, pyver: str, release: dict[str, Any], *, missing_runtime: bool, missing_sdk: bool) -> RuntimeError:
@@ -169,7 +220,7 @@ def resolve_pbs_inputs(fetch_json: Callable[[str], Any], configured_tag: str, ta
         if not runtime_assets or not sdk_assets:
             raise no_asset_error(configured_tag, target, pyver, release, missing_runtime=not runtime_assets, missing_sdk=not sdk_assets)
         runtime = _asset_from_release(runtime_assets[0])
-        sdk = _asset_from_release(_best_sdk(sdk_assets))
+        sdk = _asset_from_release(_best_sdk(sdk_assets, runtime.name))
         return PBSInputs(configured_tag, runtime, sdk, "release")
 
     data = _load_metadata(fetch_json)
@@ -200,7 +251,7 @@ def resolve_pbs_inputs(fetch_json: Callable[[str], Any], configured_tag: str, ta
     sdk_assets = matching_assets(release, target, pyver, kind="sdk")
     if not sdk_assets:
         raise no_asset_error(tag, target, pyver, release, missing_runtime=False, missing_sdk=True)
-    sdk = _asset_from_release(_best_sdk(sdk_assets))
+    sdk = _asset_from_release(_best_sdk(sdk_assets, runtime.name))
     return PBSInputs(tag, runtime, sdk, "metadata")
 
 
@@ -226,19 +277,85 @@ def _safe_extract_zst(archive: Path, destination: Path) -> None:
         raw.unlink(missing_ok=True)
 
 
-def _validate_layout(root: Path) -> tuple[Path, Path, dict]:
+def _sdk_metadata(root: Path) -> dict:
+    """The SDK's own PYTHON.json, which is the authoritative layout record."""
+    path = root / "PYTHON.json"
+    if not path.is_file():
+        raise RuntimeError(f"PBS full SDK has no PYTHON.json: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _recorded_path(root: Path, value: Any) -> Path | None:
+    """Resolve one path recorded in PYTHON.json, refusing to escape the SDK."""
+    if not isinstance(value, str) or not value:
+        return None
+    candidate = (root / value).resolve()
+    if root.resolve() not in candidate.parents:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _sdk_include(root: Path, metadata: dict) -> Path:
+    """The include directory holding Python.h.
+
+    PYTHON.json records it, and the value differs per platform:
+    install/include/python3.10 on POSIX, install/include on Windows. Searching
+    the tree is only a fallback for metadata without the field, and an ambiguous
+    tree is an error rather than a silent pick between candidates.
+    """
+    recorded = _recorded_path(root, (metadata.get("python_paths") or {}).get("include"))
+    if recorded is not None and (recorded / "Python.h").is_file():
+        return recorded
+    matches = sorted(path.parent for path in root.rglob("Python.h"))
+    if not matches:
+        raise RuntimeError(f"PBS full SDK contains no Python.h: {root}")
+    if len(matches) > 1:
+        raise RuntimeError(
+            "PBS full SDK holds several Python.h and its PYTHON.json records none: "
+            + ", ".join(str(path) for path in matches)
+        )
+    return matches[0]
+
+
+def _sdk_interpreter(root: Path, target: Target, metadata: dict) -> Path:
+    """The target interpreter, at the path PYTHON.json records.
+
+    PBS does not use one layout everywhere: POSIX builds put the interpreter in
+    install/bin, Windows builds put python.exe next to python3XX.dll with no bin
+    directory at all. Reading the recorded path is what makes one implementation
+    cover both; the name guesses below only serve metadata without the field.
+    """
+    recorded = _recorded_path(root, metadata.get("python_exe"))
+    if recorded is not None:
+        return recorded
+    if target.os == "windows":
+        names, directories = ("python.exe", "python3.exe"), (root / "install", root)
+    else:
+        version = python_version()
+        names = (f"python{version}", f"python{'.'.join(version.split('.')[:2])}", "python3", "python")
+        directories = (root / "install" / "bin", root / "bin")
+    for directory in directories:
+        for name in names:
+            if (directory / name).is_file():
+                return directory / name
+    raise RuntimeError(
+        f"Target Python executable not found in PBS SDK: {root}\n"
+        f"PYTHON.json python_exe: {metadata.get('python_exe')!r}\n"
+        "Looked for " + ", ".join(names) + " in " + ", ".join(str(directory) for directory in directories)
+    )
+
+
+def _validate_layout(root: Path, target: Target) -> tuple[Path, dict]:
     python_root = root / "python"
-    metadata_path = python_root / "PYTHON.json"
-    if not metadata_path.exists():
-        raise RuntimeError(f"PBS full SDK has no PYTHON.json: {metadata_path}")
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata = _sdk_metadata(python_root)
     install_root = python_root / "install"
     if not install_root.is_dir():
         raise RuntimeError(f"PBS full SDK has no python/install directory: {install_root}")
-    matches = sorted(path.parent for path in python_root.rglob("Python.h"))
-    if not matches:
-        raise RuntimeError(f"PBS full SDK contains no Python.h: {python_root}")
-    return python_root, matches[0], metadata
+    # Resolve both now: a truncated or renamed archive has to fail here, not
+    # after the tree has been copied into the cache.
+    _sdk_interpreter(python_root, target, metadata)
+    _sdk_include(python_root, metadata)
+    return python_root, metadata
 
 
 def resolve_inputs(target: Target) -> PBSInputs:
@@ -272,11 +389,10 @@ def ensure_pbs_sdk(target: Target) -> Path:
     if extract.exists():
         shutil.rmtree(extract)
     _safe_extract_zst(archive, extract)
-    python_root, include_dir, metadata = _validate_layout(extract)
+    python_root, metadata = _validate_layout(extract, target)
     if out.exists():
         shutil.rmtree(out)
     copy_tree_contents(python_root, out)
-    rel_include = include_dir.relative_to(python_root).as_posix()
     marker = {
         "format": 2,
         "provider": "pbs",
@@ -286,7 +402,6 @@ def ensure_pbs_sdk(target: Target) -> Path:
         "sha256": actual,
         "target": target.key,
         "python": str(metadata.get("python_version") or python_version()),
-        "include_dir": rel_include,
     }
     (out / SDK_MARKER).write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
@@ -295,24 +410,9 @@ def ensure_pbs_sdk(target: Target) -> Path:
 def sdk_info(target: Target) -> dict:
     root = ensure_pbs_sdk(target)
     marker = json.loads((root / SDK_MARKER).read_text(encoding="utf-8"))
-    include = root / str(marker.get("include_dir") or "")
-    if not include.exists() or not (include / "Python.h").exists():
-        matches = sorted(path.parent for path in root.rglob("Python.h"))
-        if not matches:
-            raise RuntimeError(f"Python.h not found in PBS SDK: {root}")
-        include = matches[0]
-
-    names = [f"python{python_version()}", f"python{'.'.join(python_version().split('.')[:2])}", "python3", "python"]
-    executable = None
-    for name in names:
-        for candidate in (root / "install" / "bin" / name, root / "bin" / name):
-            if candidate.is_file():
-                executable = candidate
-                break
-        if executable:
-            break
-    if executable is None:
-        raise RuntimeError(f"Target Python executable not found in PBS SDK: {root}")
+    metadata = _sdk_metadata(root)
+    include = _sdk_include(root, metadata)
+    executable = _sdk_interpreter(root, target, metadata)
 
     actual_python = str(marker.get("python") or python_version())
     return {
@@ -329,5 +429,4 @@ def sdk_info(target: Target) -> dict:
         "python_tag": "cp" + "".join(actual_python.split(".")[:2]),
         "python_platform_tag": target.primary_wheel_platform,
         "python_implementation_name": "cpython",
-        "libpython_link_mode": "none" if target.os != "windows" else "windows-import-library",
     }

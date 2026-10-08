@@ -39,7 +39,13 @@ def _find_links() -> list[str]:
     return links
 
 
-def _pip_args(target: Target) -> list[str]:
+def _tag_args(target: Target) -> list[str]:
+    """Wheel compatibility tags, needed only for a foreign interpreter.
+
+    pip already knows the platform and Python version of the interpreter that
+    runs it, so these overrides are only meaningful when that interpreter is
+    not the target runtime.
+    """
     major_minor = ".".join(python_version().split(".")[:2])
     abi = "cp" + major_minor.replace(".", "")
     args = [
@@ -51,6 +57,17 @@ def _pip_args(target: Target) -> list[str]:
     ]
     for platform_tag in target.wheel_platforms:
         args.extend(["--platform", platform_tag])
+    return args
+
+
+def _resolver_args() -> list[str]:
+    """Wheel sources from ``[tool.py_upper.dependencies]``.
+
+    These describe where wheels may come from, not what counts as compatible,
+    so they apply to every resolution: an offline wheelhouse has to be honored
+    whether pip runs under the target runtime or under the host interpreter.
+    """
+    args: list[str] = []
     cfg = dependency_config()
     if bool(cfg.get("no_index", False)):
         args.append("--no-index")
@@ -63,6 +80,10 @@ def _pip_args(target: Target) -> list[str]:
     for link in _find_links():
         args.extend(["--find-links", link])
     return args
+
+
+def _pip_args(target: Target) -> list[str]:
+    return _tag_args(target) + _resolver_args()
 
 
 def _has_pip(python: Path) -> bool:
@@ -90,7 +111,7 @@ def resolution_python(target: Target) -> tuple[Path, list[str]]:
         except RuntimeError:
             runtime = None
         if runtime is not None and _has_pip(runtime):
-            return runtime, []
+            return runtime, _resolver_args()
     return require_local_python(), _pip_args(target)
 
 

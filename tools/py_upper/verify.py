@@ -1,7 +1,10 @@
 """Verification: static package checks plus the target-runtime and launcher smoke tests."""
+from __future__ import annotations
+
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from .config import (
@@ -12,6 +15,7 @@ from .config import (
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import inspect, target_format, verify_arch
 from .python_build import module_name, selected_sources
+from .runtime import runtime_pip_payloads
 from .third_party import WHEEL_MANIFEST, dependency_specs, wheel_dir
 
 
@@ -93,14 +97,9 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
         (entry.is_file(), "application entry"),
         (static_entry.is_file(), "rename-safe application entry"),
     ]
+    runtime_root = resources / "runtime" if target.os == "macos" else root / "runtime"
     if bool(optimize_config().get("remove_runtime_pip", True)):
-        runtime_site = resources / "runtime" / "lib" if target.os == "macos" else root / "runtime" / "lib"
-        pip_payloads = []
-        for candidate in runtime_site.glob("python*/site-packages/pip*") if runtime_site.exists() else []:
-            pip_payloads.append(candidate)
-        for candidate in runtime_site.glob("python*/ensurepip") if runtime_site.exists() else []:
-            pip_payloads.append(candidate)
-        checks.append((not pip_payloads, "runtime pip/ensurepip removed"))
+        checks.append((not runtime_pip_payloads(runtime_root), "runtime pip/ensurepip removed"))
     if executable.is_file():
         try:
             verify_arch(executable, target)
@@ -119,10 +118,17 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     # foreign-format data files (for example the Windows setuptools launcher
     # stubs inside a macOS CPython runtime); their architecture is irrelevant
     # and must not fail an otherwise correct package.
+    #
+    # The same reasoning covers Windows executables. Nothing loads a .exe, the
+    # OS starts it as its own process, and the only process this bundle starts
+    # is the launcher, which is checked on its own above. Runtimes and wheels
+    # deliberately ship the launcher stubs of every architecture side by side
+    # (setuptools' easy_install cli-*.exe, distlib's t64.exe, the venv
+    # templates), so their architecture is data, not contract.
     target_container = target_format(target)
     checked = 0
     for path in root.rglob("*"):
-        if not path.is_file():
+        if not path.is_file() or path.suffix.lower() == ".exe":
             continue
         try:
             info = inspect(path)
@@ -203,6 +209,36 @@ def run_target_python_smoke(target: Target) -> None:
     subprocess.run([str(py), str(script)], env=env, cwd=stage_root, check=True)
 
 
+def run_packaged_launcher(
+    executable: Path,
+    *,
+    cwd: Path,
+    env: dict | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run a packaged launcher with this process's own streams attached.
+
+    The Windows launcher is a GUI-subsystem binary: Windows attaches no console
+    to such a child, and ``subprocess`` started with the default
+    ``stdout=None`` hands it the caller's handle *values* without the handles
+    themselves. The child then writes into dangling handles and everything it
+    prints disappears while the exit code stays 0, which is exactly the output
+    the smoke step and ``--run`` assert on. Passing the streams explicitly
+    makes ``subprocess`` duplicate them as inheritable handles and start the
+    child with ``STARTF_USESTDHANDLES``, which is what a GUI-subsystem child
+    needs. Console-subsystem children and POSIX inherit the streams either way,
+    so this needs no platform branch.
+    """
+    return subprocess.run(
+        [str(executable)],
+        cwd=cwd,
+        env=env,
+        check=check,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
+
+
 def run_launcher_smoke(target: Target, launcher: Path) -> None:
     name = app_name()
     script_name = f"{name}.smoke.int"
@@ -218,4 +254,4 @@ def run_launcher_smoke(target: Target, launcher: Path) -> None:
     # a non-zero exit code, not as a dialog waiting for a click.
     env["PY_UPPER_NO_DIALOG"] = "1"
     print("+", launcher, "[launcher smoke]")
-    subprocess.run([str(launcher)], env=env, cwd=launcher.parent, check=True)
+    run_packaged_launcher(launcher, cwd=launcher.parent, env=env, check=True)

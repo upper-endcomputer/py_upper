@@ -95,7 +95,7 @@ app/src/
 # 2. 声明依赖与目标
 #    app/pyproject.toml（本地副本，改了不进 Git）
 #    [project] dependencies = ["PySide6==6.11.0"]
-#    [tool.py_upper.runtime] provider = "pbs"  python = "3.10.11"
+#    [tool.py_upper.runtime] provider = "pbs"  python = "3.11.13"
 
 # 3. 构建 + 运行
 python tools/build.py --run
@@ -169,7 +169,7 @@ identifier = "com.example.pyupper" # macOS bundle identifier
 
 [tool.py_upper.runtime]
 provider = "pbs"                  # pbs | local
-python = "3.10.11"                # 目标 Python 精确版本
+python = "3.11.13"                # 目标 Python 精确版本（覆盖全部 7 个 target 的最低版本）
 # provider = "local" 时改为：
 # runtime = "runtimes/{target}/{python}"
 # sdk     = "build/local-sdk/{target}/{python}"
@@ -402,7 +402,7 @@ launcher 用**自身文件名**（stem）在 bundle 根目录按顺序查找入�
 
 ### 10.4 平台差异
 
-- **Windows**：默认编译成 GUI 子系统（`WIN32_EXECUTABLE`），双击不弹控制台；从 cmd/PowerShell/CI 启动时用 `AttachConsole(ATTACH_PARENT_PROCESS)` 接管父控制台，**已有的重定向优先**（`> run.log` 不会被抢走）。入口是 `wWinMain`，宽命令行统一转 UTF-8 后再处理，非 ASCII 安装路径不会乱码。链接静态 CRT（`/MT`），目标机不需要 VC++ 运行库。调试时用 `PY_UPPER_LAUNCHER_CONSOLE=1` 构建控制台版本。
+- **Windows**：默认编译成 GUI 子系统（`WIN32_EXECUTABLE`），双击不弹控制台；从 cmd/PowerShell/CI 启动时用 `AttachConsole(ATTACH_PARENT_PROCESS)` 接管父控制台，**已有的重定向优先**（`> run.log` 不会被抢走）。入口是 `wWinMain`，宽命令行统一转 UTF-8 后再处理，非 ASCII 安装路径不会乱码。链接静态 CRT（`/MT`），目标机不需要 VC++ 运行库。调试时用 `PY_UPPER_LAUNCHER_CONSOLE=1` 构建控制台版本。runtime 目录里的 `python3.dll` 是稳定 ABI 转发层，只再导出受限 API，`PyConfig_*` 不在其中；launcher 会把该目录下所有 `python*.dll` 都加载（abi3 扩展按名字 import 转发层，必须留在已加载模块表里），入口点则从真正导出它们的那一个（`python3XX.dll`）解析。
 - **macOS**：入口在 `Contents/MacOS`，资源 / runtime / site-packages 都在 `Contents/Resources`；链接 CoreFoundation 以使用 `CFUserNotification`。
 - **Linux**：单目录布局，`libpython3.x.so` 以 `RTLD_GLOBAL` 加载，保证后续导入的扩展能解析 CPython 符号。
 
@@ -433,6 +433,8 @@ CI（`.github/workflows/validate.yml`）在**每个原生平台**都跑：
 
 原生集成 job 从模板生成 `app/pyproject.toml` 时会把仓库自身示例应用的依赖集合填进 `[project] dependencies`（模板里是空列表），否则集成运行没有 PySide6 可用；纯测试与聚合 job 只需要文件存在，直接复制模板。E2E 夹具同样自己重写这一段依赖。
 
+触发范围只有 develop：`push` 与 `pull_request` 都带 `branches: [develop]`（`pull_request` 过滤的是 base 分支），`workflow_dispatch` 保留给失败重跑。`feature_*` / `fix_*` 临时分支上的中间提交不跑矩阵——它们的验证由合并后的 develop 承担，一次功能开发不会在临时分支上白烧十几轮全平台 job。确实要单独验证某个分支时用 `gh workflow run validate.yml --ref <branch>` 手动触发。
+
 ---
 
 ## 12. 发布
@@ -460,6 +462,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | `PermissionError: ... python3.10` | runtime 拷贝丢了可执行位 | ≥0.17.1 拷贝时保留执行位 |
 | `Errno 1: Operation not permitted` 打包时 | 回放源文件权限/元数据 | ≥0.16.10 只拷内容 + 执行位 |
 | `Unresolved native dependencies` | 原生依赖闭包里有找不到的库 | 看清单；可选组件用 `[tool.py_upper.native].exclude`；自带库放 `app/src` 会被自动纳入 |
+| Linux 上 `Unresolved native dependencies` 里全是 `libGL` / `libEGL` / `libxcb*` / `libxkbcommon` / `libwayland*` / `libwebp*` / `libtiff` | Qt 平台插件无条件链接宿主桌面栈，这些库属于目标机 | 已在 `deps.py` 的 `LINUX_HOST_LIBRARIES` 白名单，不再算未解析；目标机需装运行库（Debian/Ubuntu：`libgl1 libegl1 libxkbcommon0 libwayland-client0 libtiff6 libwebp7`） |
 | `@rpath/xxx.dylib` 被当成依赖 | 把 `LC_ID_DYLIB` 当 `LC_LOAD_DYLIB` | ≥0.16.13 已区分 identity 与依赖 |
 | `No PBS runtime metadata for exact Python X` | 元数据缓存被污染或版本不存在 | 删除 `.cache/pbs/uv-download-metadata.json` 重试；确认 PBS 有该精确版本 |
 | 构建卡在 native dependency 很久 | 依赖闭包退化成全树扫描 | ≥0.17.1 已改为一次建索引 |

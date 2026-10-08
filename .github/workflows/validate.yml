@@ -1,8 +1,19 @@
 name: py_upper validation
 
+# Only develop runs the matrix. Development happens on feature_* / fix_*
+# branches cut from develop and merged back after self-testing, so their
+# intermediate commits are not deliverable; what needs the fourteen jobs is the
+# code that lands in develop and the review requests aimed at it. Branch
+# filters are the whole policy -- a push anywhere else costs nothing.
 on:
   push:
+    branches: [develop]
   pull_request:
+    branches: [develop]
+  # Manual re-runs from the CLI (gh workflow run validate.yml --ref develop)
+  # and from the Actions page, so a failing job can be reproduced without
+  # pushing an empty commit.
+  workflow_dispatch:
 
 jobs:
   build-tool-compat:
@@ -27,7 +38,12 @@ jobs:
           python -c "import sys; sys.path.insert(0, 'tools'); import py_upper.config; import py_upper.compat; print(sys.version)"
       - name: Run compatibility tests
         run: |
-          python -m pip install -U 'pip<25.1' 'pytest<8'
+          # setuptools is a real build dependency here: the Windows target
+          # extensions are compiled by the setuptools driver the build writes,
+          # and test_build_tool_compat exercises that driver directly. CPython
+          # >= 3.12 no longer ships setuptools with the interpreter, so it has
+          # to be installed explicitly.
+          python -m pip install -U 'pip<25.1' 'setuptools' 'pytest<8'
           python -m pytest app/tests/test_build_tool_compat.py app/tests/test_py_upper_config.py -q
 
   native-integration:
@@ -44,6 +60,10 @@ jobs:
           - os: windows-2025
             target: windows-x86
             run: false
+            # PySide6 publishes no 32-bit Windows wheel, so this job proves the
+            # 32-bit toolchain, launcher and packaging path with the one
+            # application dependency that does resolve for win32.
+            dependencies: '["pyserial==3.5"]'
           - os: windows-2025
             target: windows-x86_64
             run: true
@@ -57,6 +77,11 @@ jobs:
             target: macos-arm64
             run: true
     runs-on: ${{ matrix.os }}
+    env:
+      # Resolving the PBS runtime asks api.github.com, which caps anonymous
+      # requests at 60 per hour per source address — a limit the hosted runners
+      # share with every other job on the platform. The token raises it.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,12 +96,21 @@ jobs:
       # dependency set that application needs; the other jobs only need the file
       # to exist.
       - name: Create the local configuration with the repository's dependencies
+        # The default shell on Windows runners is pwsh, which cannot run the
+        # heredoc below ("<" is reserved). Bash ships with Git for Windows, so
+        # every platform can run the same script.
+        shell: bash
+        env:
+          # The application's own dependency set, unless the matrix entry
+          # overrides it because no wheel of it exists for that target.
+          PY_UPPER_CI_DEPENDENCIES: ${{ matrix.dependencies || '["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]' }}
         run: |
           python - <<'PY'
+          import os
           import re
           from pathlib import Path
 
-          dependencies = '["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]'
+          dependencies = os.environ['PY_UPPER_CI_DEPENDENCIES']
           text = Path('app/pyproject.toml.example').read_text(encoding='utf-8')
           text, replaced = re.subn(
               r'^dependencies = \[\]$',
@@ -106,6 +140,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build gcc g++ binutils
+          # The bundled Qt GUI libraries link libEGL.so.1, which the runner
+          # image does not carry (libGL.so.1 and libxkbcommon.so.0 it does).
+          # Both the Qt pruning probe and the packaged smoke run load it.
+          sudo apt-get install -y libegl1
 
       - name: Install macOS build tools
         if: runner.os == 'macOS'
@@ -113,13 +151,6 @@ jobs:
           cmake --version
           if ! command -v ninja >/dev/null 2>&1; then brew install ninja; fi
           ninja --version
-
-      - name: Verify Windows toolchain
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          cmake --version
 
       - name: Unit tests
         run: python -m pytest app/tests -q
