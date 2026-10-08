@@ -160,6 +160,66 @@ def test_local_configuration_is_git_ignored_but_the_template_is_not():
     assert "app/pyproject.toml.example" not in entries
 
 
+VALIDATION_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "validate.yml"
+
+
+def _workflow_triggers(text: str) -> dict[str, list[str] | None]:
+    """Read the `on:` block of the validation workflow.
+
+    The build tool reads TOML and JSON only, so the repository ships no YAML
+    parser and this test does not add one. What follows understands exactly the
+    shape the trigger policy uses -- ``<trigger>:`` with an optional ``branches``
+    list beneath it, inline or as ``- `` entries -- and raises on anything else,
+    so a workflow that grows a construct this test cannot read fails here instead
+    of passing on a stale reading. ``None`` means the trigger carries no branch
+    filter.
+    """
+    lines = text.splitlines()
+    triggers: dict[str, list[str] | None] = {}
+    current = None
+    for line in lines[lines.index("on:") + 1 :]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            break
+        if indent == 2 and stripped.endswith(":"):
+            current = stripped[:-1]
+            triggers[current] = None
+        elif indent == 4 and stripped.startswith("branches:") and current is not None:
+            inline = stripped[len("branches:") :].strip()
+            if inline.startswith("[") and inline.endswith("]"):
+                triggers[current] = [entry.strip() for entry in inline[1:-1].split(",") if entry.strip()]
+            elif not inline:
+                triggers[current] = []
+            else:
+                raise AssertionError(f"unreadable `branches:` value in: {line!r}")
+        elif indent == 6 and stripped.startswith("- ") and triggers[current] is not None:
+            triggers[current].append(stripped[2:].strip())
+        else:
+            raise AssertionError(f"unhandled line in the workflow `on:` block: {line!r}")
+    return triggers
+
+
+def test_ci_triggers_are_scoped_to_develop():
+    """Only develop runs the matrix, and it runs it on the way in.
+
+    Development happens on feature_* / fix_* branches cut from develop and
+    merged back after self-testing; their intermediate commits are not
+    deliverable. A bare ``push:`` runs all fourteen jobs on every one of them.
+    ``pull_request`` is kept because the review request aimed at develop is part
+    of the merge, and it filters on the base branch.
+    """
+    triggers = _workflow_triggers(VALIDATION_WORKFLOW.read_text(encoding="utf-8"))
+    assert triggers["push"] == ["develop"]
+    assert triggers["pull_request"] == ["develop"]
+    # Manual re-runs stay available on any ref so a failing job can be
+    # reproduced without pushing an empty commit.
+    assert triggers["workflow_dispatch"] is None
+    assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+
+
 def test_missing_local_configuration_points_at_the_template(tmp_path, monkeypatch):
     from py_upper import config
 

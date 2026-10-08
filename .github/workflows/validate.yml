@@ -1,8 +1,15 @@
 name: py_upper validation
 
+# Only develop runs the matrix. Development happens on feature_* / fix_*
+# branches cut from develop and merged back after self-testing, so their
+# intermediate commits are not deliverable; what needs the fourteen jobs is the
+# code that lands in develop and the review requests aimed at it. Branch
+# filters are the whole policy -- a push anywhere else costs nothing.
 on:
   push:
+    branches: [develop]
   pull_request:
+    branches: [develop]
   # Manual re-runs from the CLI (gh workflow run validate.yml --ref develop)
   # and from the Actions page, so a failing job can be reproduced without
   # pushing an empty commit.
