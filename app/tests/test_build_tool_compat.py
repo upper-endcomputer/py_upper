@@ -224,6 +224,48 @@ def test_extension_suffixes_follow_target_import_conventions():
     assert target_extension_suffix(TARGETS["linux-x86_64"], "3.13", "cp313") == ".cpython-313-x86_64-linux-gnu.so"
 
 
+def test_windows_extensions_are_named_for_the_target_not_the_build_host(tmp_path):
+    """setuptools names an extension after the interpreter that runs it.
+
+    On Windows the extensions are compiled by the development interpreter (3.13
+    on the CI runners) for the target runtime (3.11), so the name setuptools
+    derives on its own is the host's: core/app.cp313-win_amd64.pyd. The target
+    runtime cannot import that name and the layout check rejects it, so the
+    generated driver must answer with the target's suffix. This runs the driver
+    the build actually writes, with the host suffix standing in for the one the
+    running interpreter would produce.
+    """
+    import setuptools
+    from setuptools.dist import Distribution
+
+    from py_upper.config import APP
+    from py_upper.python_build import windows_setup_script
+
+    source = APP / "src" / "core" / "app.py"
+    script = windows_setup_script(
+        include=tmp_path / "include",
+        libdir=tmp_path / "libs",
+        libraries=["python311"],
+        generated={source: tmp_path / "app.c"},
+        sources=[source],
+        suffix=".cp311-win_amd64.pyd",
+    )
+
+    captured: dict = {}
+    original = setuptools.setup
+    setuptools.setup = lambda **kwargs: captured.update(kwargs)
+    try:
+        exec(compile(script, "setup.py", "exec"), {"__name__": "__main__"})
+    finally:
+        setuptools.setup = original
+
+    command = captured["cmdclass"]["build_ext"](Distribution({"ext_modules": captured["ext_modules"]}))
+    command.build_lib = str(tmp_path / "out")
+    command.inplace = False
+    command.ext_map = {}
+    assert command.get_ext_fullpath("core.app") == str(tmp_path / "out" / "core" / "app.cp311-win_amd64.pyd")
+
+
 def test_source_selection_is_layout_agnostic():
     from py_upper.python_build import module_name, selected_sources
 

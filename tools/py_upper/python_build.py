@@ -119,6 +119,48 @@ def cythonize_to_c(sources: list[Path], host_python: Path) -> dict[Path, Path]:
     return outputs
 
 
+def windows_setup_script(
+    include: Path,
+    libdir: Path,
+    libraries: list[str],
+    generated: dict[Path, Path],
+    sources: list[Path],
+    suffix: str,
+) -> str:
+    """The setuptools driver that compiles the target extensions with MSVC.
+
+    setuptools names an extension after the interpreter that runs the build,
+    and on Windows that interpreter is the build host. A 3.13 host compiling
+    for a 3.11 runtime would emit core/app.cp313-win_amd64.pyd: a name the
+    target runtime cannot import, and one the layout check in
+    build_target_extensions rejects. TargetBuildExt answers with the target's
+    own suffix instead, the same value that names the Unix outputs.
+    """
+    source_repr = ", ".join(repr(str(generated[p])) for p in sources)
+    name_repr = ", ".join(repr(module_name(p)) for p in sources)
+    return (
+        "import os\n"
+        "from setuptools import setup, Extension\n"
+        "from setuptools.command.build_ext import build_ext as _build_ext\n"
+        f"TARGET_INCLUDE={str(include)!r}\n"
+        f"TARGET_LIBDIR={str(libdir)!r}\n"
+        f"TARGET_LIBRARIES={libraries!r}\n"
+        f"TARGET_SUFFIX={suffix!r}\n"
+        f"SOURCES=[{source_repr}]\n"
+        f"NAMES=[{name_repr}]\n"
+        "class TargetBuildExt(_build_ext):\n"
+        "    def finalize_options(self):\n"
+        "        super().finalize_options()\n"
+        "        self.include_dirs=[TARGET_INCLUDE]\n"
+        "        self.library_dirs=[TARGET_LIBDIR]\n"
+        "    def get_ext_fullpath(self, ext_name):\n"
+        "        fullname = self.get_ext_fullname(ext_name)\n"
+        "        return os.path.join(self.build_lib, *fullname.split('.')) + TARGET_SUFFIX\n"
+        "extensions=[Extension(n,[s],include_dirs=[TARGET_INCLUDE],library_dirs=[TARGET_LIBDIR],libraries=TARGET_LIBRARIES) for n,s in zip(NAMES,SOURCES)]\n"
+        "setup(name='py-upper-target-native',ext_modules=extensions,cmdclass={'build_ext':TargetBuildExt})\n"
+    )
+
+
 def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
     if not sources:
         return []
@@ -149,26 +191,10 @@ def build_target_extensions(target: Target, sources: list[Path]) -> list[Path]:
         python_lib = f"python{target_python.python_major_minor.replace('.', '')}"
         if not (libdir / f"{python_lib}.lib").is_file():
             raise RuntimeError(f"{python_lib}.lib not found in {libdir}")
-        source_repr = ", ".join(repr(str(generated[p])) for p in sources)
-        name_repr = ", ".join(repr(module_name(p)) for p in sources)
         setup = BUILD / "target-setup" / target.key / "setup.py"
         setup.parent.mkdir(parents=True, exist_ok=True)
         setup.write_text(
-            "from setuptools import setup, Extension\n"
-            "from setuptools.command.build_ext import build_ext as _build_ext\n"
-            f"TARGET_INCLUDE={str(include)!r}\n"
-            f"TARGET_LIBDIR={str(libdir)!r}\n"
-            f"TARGET_LIBRARIES={[python_lib]!r}\n"
-            f"SOURCES=[{source_repr}]\n"
-            f"NAMES=[{name_repr}]\n"
-            "class TargetBuildExt(_build_ext):\n"
-            "    def finalize_options(self):\n"
-            "        super().finalize_options()\n"
-            "        self.include_dirs=[TARGET_INCLUDE]\n"
-            "        self.library_dirs=[TARGET_LIBDIR]\n"
-
-            "extensions=[Extension(n,[s],include_dirs=[TARGET_INCLUDE],library_dirs=[TARGET_LIBDIR],libraries=TARGET_LIBRARIES) for n,s in zip(NAMES,SOURCES)]\n"
-            "setup(name='py-upper-target-native',ext_modules=extensions,cmdclass={'build_ext':TargetBuildExt})\n",
+            windows_setup_script(include, libdir, [python_lib], generated, sources, target_python.extension_suffix),
             encoding="utf-8",
         )
         env=dict(os.environ); env.update(tc.env); env["PY_UPPER_TARGET"]=target.key
