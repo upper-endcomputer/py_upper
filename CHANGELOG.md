@@ -1,3 +1,26 @@
+## 0.17.6
+
+### Problem
+- Every build regenerated the Cython translation unit of every application module and recompiled every extension, and ran those invocations one at a time. A rebuild cost the same as a first build, and the cost scaled with the size of the application instead of the size of the edit.
+
+### Root cause
+- `build/cython` and `build/native/<target>` were deleted at the start of every build and regenerated with `cython --force`, so no output ever survived a build. Each module was compiled by its own blocking `subprocess.run`, so the wall clock was the sum of every file.
+
+### Changes
+- Cython output and compiled extensions are cached under `build/cache/`, keyed by content: a translation unit by the source text and the Cython version, an extension by the exact compiler command line (compiler, architecture, ABI suffix, SDK include directory, flags) and the content of the C it compiles. A module whose inputs did not change is taken from the cache instead of rebuilt. The two layers chain, so editing a `.py` invalidates its `.c` and its own extension and nothing else.
+- Only current sources are staged, so artifacts of removed or renamed modules can never be packaged, and the "wipe the intermediate tree first" step is gone.
+- Cython and compiler invocations run on a thread pool, one job per CPU by default, because each invocation is an independent CPU-bound process.
+- `[tool.py_upper.build]` adds `jobs` (0 = one per CPU) and `incremental` (default `true`; `false` forces a full recompile).
+- `--clean` still removes `build/`, and therefore the cache.
+
+### Verification
+- 115 unit/compatibility tests pass (5 skipped), including 8 new tests that pin cache reuse, per-module invalidation, Cython-version invalidation, the `incremental = false` escape hatch, the Windows setuptools path and the new configuration.
+- Two consecutive full macOS arm64 PySide6 builds: 33.2 s then 31.4 s, the second reporting `Cython: 5 module(s) up to date` and `Compile: 5 extension(s) up to date`, with `--verify` green (56 native binaries checked) and the launcher smoke passing.
+- On a synthetic 60-module application (14 CPUs) the Cython + extension stage went from 48.0 s sequential to 4.5 s parallel cold, 0.14 s with nothing changed, and 0.74 s after editing a single module.
+
+### Impact
+- Rebuild time now scales with the size of the edit rather than the size of the application. `build/cache/` grows with the application and is disposable: `--clean` removes it.
+
 ## 0.17.5
 
 ### Problem

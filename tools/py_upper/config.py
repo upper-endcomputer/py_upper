@@ -557,3 +557,37 @@ def resolve_target_python(target: Target) -> TargetPython:
     abi = f"cp{major_minor.replace('.', '')}"
     suffix = target_extension_suffix(target, major_minor, abi)
     return TargetPython(target, spec.root, executable, include, actual, major_minor, abi, suffix)
+
+
+def build_config() -> dict:
+    value = py_upper_config().get("build", {})
+    return value if isinstance(value, dict) else {}
+
+
+def build_jobs() -> int:
+    """How many Cython/compiler invocations may run at the same time.
+
+    Each module is translated and compiled by its own process and the work is
+    CPU-bound, so a sequential rebuild costs the sum of every file. ``jobs = 0``
+    (the default) uses one job per CPU.
+    """
+    value = build_config().get("jobs")
+    if value is None or value == "":
+        return max(1, os.cpu_count() or 1)
+    try:
+        jobs = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("[tool.py_upper.build].jobs must be an integer") from exc
+    if jobs == 0:
+        return max(1, os.cpu_count() or 1)
+    if jobs < 0:
+        raise RuntimeError("[tool.py_upper.build].jobs must not be negative")
+    return jobs
+
+
+def incremental_build_enabled() -> bool:
+    """Whether a module that did not change reuses its cached build output."""
+    value = build_config().get("incremental", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)

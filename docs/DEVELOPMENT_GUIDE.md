@@ -2,7 +2,7 @@
 
 本文是 `py_upper` 的完整开发与使用手册：从环境准备、日常开发、打包发布，到 Qt 应用处理、依赖管理和排错。README 讲的是"是什么"，本文讲的是"怎么用、为什么这么设计、出问题怎么查"。
 
-当前稳定线：**0.17.5**。
+当前稳定线：**0.17.6**。
 
 ---
 
@@ -30,7 +30,7 @@ Target Contract（目标契约：OS / 架构 / Python 版本 / ABI / wheel 标�
 
 ```
 [1/6] Runtime + SDK        下载/复用目标 CPython（PBS 或本地目录）
-[2/6] Third-party wheels   解析并安装目标平台 wheel
+[2/6] Third-party wheels   解析并安装目标平台 wheel + 增量编译应用模块
 [3/6] Target launcher      CMake + Ninja 编译 C++ 启动器
 [4/6] Package              复制运行时、site-packages、可选资源 + 原生依赖闭包 + 签名
 [5/6] Static verification  文件、架构、ABI 后缀、依赖清单
@@ -156,7 +156,7 @@ py_upper/
 ```toml
 [project]
 name = "py_upper"
-version = "0.17.5"
+version = "0.17.6"
 requires-python = ">=3.8,<3.14"
 dependencies = ["PySide6==6.11.0", "pyserial==3.5"]
 
@@ -194,6 +194,10 @@ exclude = [                       # 丢弃无法在包内满足依赖的可选�
 [tool.py_upper.cython]
 include = ["*"]                   # 相对 app/src 的模块名 glob
 exclude = []
+
+[tool.py_upper.build]
+jobs = 0                          # 并行编译任务数；0 = 每 CPU 一个
+incremental = true                # 只重编译变化的模块；false = 每次全量
 
 [tool.py_upper.optimize]
 profile = "safe"                  # safe | aggressive
@@ -279,6 +283,19 @@ PY_UPPER_E2E=1 python -m pytest app/tests -q  # 额外跑真实端到端（较�
 - 想调试 **打包结果**：用 "py_upper: packaged app"；想调试 **源码**：用第一个配置。
 - 调试 Build Tool 自身：给 `tools/build.py` 打断点，`PY_UPPER_TRACEBACK=1` 让异常完整抛出。
 - 打包后的 App 里源码已被 Cython 化，无法直接断点；要断点就调试源码配置。
+
+### 6.4 增量编译
+
+构建工具把每个应用模块的 Cython 产物与目标扩展缓存在 `build/cache/`，并按内容判定是否需要重建：
+
+- 生成的 `.c` 由**源码文本 + Cython 版本**决定；
+- 目标扩展由**完整的编译命令行**（编译器、架构、ABI 后缀、SDK include 目录、优化开关）与**被编译的 `.c` 内容**决定。
+
+所以只有真正变化的模块会重新 Cython 化并编译，其余直接从缓存复制。两层是链式的：改一个 `.py` 只会让它的 `.c` 和它自己的扩展失效，删掉或改名的模块不会留下会被打包的旧产物（staging 只处理当前源码）。
+
+Cython 与编译器调用都在线程池里并发执行，并行度由 `[tool.py_upper.build].jobs` 控制（默认 `0` = 每 CPU 一个任务）。
+
+缓存是纯产物，随应用增长：`python tools/build.py --clean` 会连同 `build/` 一起删掉。需要强制全量重编译时用 `incremental = false` 或先 `--clean`。
 
 ---
 
@@ -484,6 +501,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | Windows 上从 cmd 运行看不到输出 | GUI 子系统没有自己的控制台 | ≥0.17.5 自动 `AttachConsole` 到父控制台（已有重定向优先）；要无条件控制台用 `PY_UPPER_LAUNCHER_CONSOLE=1` 重新构建 |
 | Windows 目标机报缺 `VCRUNTIME140.dll` | launcher 动态链接 CRT | ≥0.17.5 launcher 使用静态 CRT（`/MT`） |
 | 非 ASCII 安装路径下应用起不来 | 窄字符路径按 ANSI 代码页解释 | ≥0.17.5 入口/路径全程 UTF-8，`std::filesystem` 走 `u8path` |
+| 改了代码但该模块没有重新编译 | 增量缓存命中（源码文本与上次一致） | 确认文件内容真的变了；强制全量用 `[tool.py_upper.build].incremental = false` 或 `--clean` |
 
 调试技巧：`PY_UPPER_TRACEBACK=1 python tools/build.py`；`python tools/build.py --doctor` 看宿主/目标/工具链；`--verify` 可反复执行定位到具体失败项。
 
@@ -508,7 +526,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | `runtime.py` | 目标 runtime：provider 分发（pbs/local）、获取、release 安全裁剪 |
 | `third_party.py` | wheel 解析/安装、site 优化、依赖清单 |
 | `qt_prune.py` | 按 import 裁剪 Qt 负载 |
-| `python_build.py` | Cython 化、目标扩展编译（Unix/Windows）、staging |
+| `python_build.py` | Cython 化、目标扩展编译（Unix/Windows）、增量产物缓存、并行调度、staging |
 | `native/inspect.py` | 二进制格式与架构识别 |
 | `native/deps.py` | 依赖解析（otool/readelf/dumpbin + 索引/缓存） |
 | `native/bundle.py` | 依赖闭包、install name 重写、ad-hoc 签名 |

@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.5"
+version = "0.17.6"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -75,6 +75,12 @@ exclude = [
 [tool.py_upper.cython]
 include = ["*"]
 exclude = []
+
+[tool.py_upper.build]
+# 同时编译的模块数；0（默认）= 每 CPU 一个任务。
+jobs = 0
+# 复用内容未变化的模块的 Cython 产物与扩展；false = 每次全量重编译。
+incremental = true
 
 [tool.py_upper.optimize]
 profile = "safe"

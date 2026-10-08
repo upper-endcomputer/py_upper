@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.5**。
+当前稳定开发线：**0.17.6**。
 
 ## 构建模型
 
@@ -42,6 +42,7 @@ Application run
 - `app/src/` 直接就是应用源码，不再套额外项目包名。
 - Build Tool Python 与最终 Target Python 完全独立；Build Tool 最低支持 Python 3.8。
 - 应用自己的 Python 模块默认 Cython 化；`__init__.py` 保留为 package marker。
+- 应用模块增量编译：只有内容变化的模块重新 Cython 化并编译，其余复用 `build/cache/` 里的产物；多个模块并行编译（`[tool.py_upper.build]`）。
 - 第三方依赖不 Cython 化，而是根据 Target 的 wheel compatibility tags 安装目标 wheel。
 - `app/src/` 下的 `.dylib/.so/.dll/.pyd` 是正式应用输入，会参加 native dependency closure。
 - `runtimes/` 是机器本地 Runtime 缓存，不进入 Git。
@@ -112,6 +113,8 @@ python tools/build.py --release
 ```
 
 `--run` 只允许运行当前宿主平台目标；交叉目标可以正常 build/verify，但不会冒充在当前机器运行。
+
+`build/cache/` 保存上一次构建的 Cython 产物与目标扩展，只有变化的模块会重新编译。`[tool.py_upper.build]` 的 `jobs`（默认 `0` = 每 CPU 一个任务）控制并行度，`incremental = false` 强制全量重编译，`--clean` 会连同缓存一起清掉。
 
 ## Target Python / PBS
 
