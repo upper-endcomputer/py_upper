@@ -755,7 +755,7 @@ def test_github_api_requests_carry_the_workflow_token(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "token-value")
 
     net.http_json("https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250818")
-    net.http_json("https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json")
+    net.http_json("https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python-managed/download-metadata.json")
 
     assert seen[0]["Authorization"] == "Bearer token-value"
     assert "Authorization" not in seen[1]

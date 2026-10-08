@@ -16,7 +16,16 @@ from .net import download, http_json
 
 
 PBS_RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
-PBS_RUNTIME_METADATA_URL = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json"
+# uv maintains the exact build index for every python-build-standalone release.
+# Upstream reorganises its source tree without notice: the file moved from
+# crates/uv-python to crates/uv-python-managed in uv commit 00e49e7e, which
+# turned the old path into a hard 404 for every build that had a cold cache.
+# Known locations are therefore tried in order instead of pinning one path on a
+# branch that moves.
+PBS_RUNTIME_METADATA_URLS = (
+    "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python-managed/download-metadata.json",
+    "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json",
+)
 _METADATA_CACHE = CACHE / "pbs" / "uv-download-metadata.json"
 
 
@@ -103,6 +112,24 @@ def available_metadata_python_versions(data: dict[str, Any], target: Target) -> 
     return sorted(values, key=lambda x: tuple(int(part) for part in x.split(".")))
 
 
+def _fetch_metadata_index(fetch_json: Callable[[str], Any]) -> dict[str, Any]:
+    failures: list[str] = []
+    for url in PBS_RUNTIME_METADATA_URLS:
+        try:
+            value = fetch_json(url)
+        except (OSError, ValueError) as exc:
+            failures.append(f"{url}: {exc}")
+            continue
+        if isinstance(value, dict):
+            return value
+        failures.append(f"{url}: expected a JSON object, got {type(value).__name__}")
+    raise RuntimeError(
+        "Could not fetch the uv python-build-standalone metadata index.\n"
+        + "\n".join(failures)
+        + "\nuv moves this file between releases; update PBS_RUNTIME_METADATA_URLS in tools/py_upper/pbs.py."
+    )
+
+
 def _load_metadata(fetch_json: Callable[[str], Any], *, force: bool = False) -> dict[str, Any]:
     if not force and _METADATA_CACHE.exists():
         try:
@@ -111,9 +138,7 @@ def _load_metadata(fetch_json: Callable[[str], Any], *, force: bool = False) -> 
                 return value
         except (OSError, ValueError):
             pass
-    value = fetch_json(PBS_RUNTIME_METADATA_URL)
-    if not isinstance(value, dict):
-        raise RuntimeError("Invalid PBS runtime metadata index")
+    value = _fetch_metadata_index(fetch_json)
     _METADATA_CACHE.parent.mkdir(parents=True, exist_ok=True)
     _METADATA_CACHE.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return value

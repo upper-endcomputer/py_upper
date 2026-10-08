@@ -24,7 +24,7 @@ def test_exact_pbs_metadata_entry_maps_31110_to_20241016():
 
 
 def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
-    from py_upper.pbs import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URL, metadata_key, resolve_pbs_inputs
+    from py_upper.pbs import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URLS, metadata_key, resolve_pbs_inputs
 
     target = _target()
     runtime_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10%2B20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"
@@ -42,7 +42,7 @@ def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
     monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
     def fetch(url):
         calls.append(url)
-        if url == PBS_RUNTIME_METADATA_URL:
+        if url in PBS_RUNTIME_METADATA_URLS:
             return metadata
         if url == PBS_RELEASE_API.format(tag="20241016"):
             return release
@@ -50,7 +50,58 @@ def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
     result = resolve_pbs_inputs(fetch, "", target, "3.11.10")
     assert result.tag == "20241016"
     assert result.sdk.name == sdk_name
-    assert calls == [PBS_RUNTIME_METADATA_URL, PBS_RELEASE_API.format(tag="20241016")]
+    assert calls == [PBS_RUNTIME_METADATA_URLS[0], PBS_RELEASE_API.format(tag="20241016")]
+
+
+def test_pbs_metadata_index_falls_back_when_uv_moves_the_file(tmp_path, monkeypatch):
+    """uv reorganised its tree once (crates/uv-python -> crates/uv-python-managed)
+    and the old raw URL started returning 404, which took down every build with a
+    cold cache. The next candidate must be used instead of failing the build."""
+    from py_upper import pbs
+    from py_upper.pbs import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URLS, metadata_key, resolve_pbs_inputs
+
+    target = _target()
+    runtime_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10%2B20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    sdk_name = "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"
+    metadata = {metadata_key(target, "3.11.10"): {"url": runtime_url, "sha256": "runtime"}}
+    release = {"assets": [{"name": sdk_name, "browser_download_url": "https://example.invalid/" + sdk_name}]}
+
+    monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
+    moved, calls = PBS_RUNTIME_METADATA_URLS[0], []
+
+    def fetch(url):
+        calls.append(url)
+        if url == moved:
+            raise OSError("HTTP Error 404: Not Found")
+        if url in PBS_RUNTIME_METADATA_URLS:
+            return metadata
+        if url == PBS_RELEASE_API.format(tag="20241016"):
+            return release
+        raise AssertionError(url)
+
+    result = resolve_pbs_inputs(fetch, "", target, "3.11.10")
+    assert result.tag == "20241016"
+    assert result.sdk.name == sdk_name
+    assert calls == [moved, PBS_RUNTIME_METADATA_URLS[1], PBS_RELEASE_API.format(tag="20241016")]
+
+
+def test_pbs_metadata_index_error_names_every_candidate(tmp_path, monkeypatch):
+    from py_upper import pbs
+    from py_upper.pbs import PBS_RUNTIME_METADATA_URLS, resolve_pbs_inputs
+
+    monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
+
+    def fetch(url):
+        raise OSError("HTTP Error 404: Not Found")
+
+    try:
+        resolve_pbs_inputs(fetch, "", _target(), "3.11.10")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("resolve_pbs_inputs should fail when no index is reachable")
+    for url in PBS_RUNTIME_METADATA_URLS:
+        assert url in message
 
 
 def test_pbs_explicit_release_reports_available_versions():
