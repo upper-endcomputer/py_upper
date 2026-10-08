@@ -47,6 +47,11 @@ using FinalizeEx = int (*)();
 using IsInitialized = int (*)();
 using RunSimpleString = int (*)(const char*);
 
+// The first entry point the launcher resolves, and therefore the symbol that
+// decides which python DLL in the runtime directory is the runtime. python3.dll
+// does not export it: the stable ABI it re-exports leaves the PyConfig API out.
+constexpr const char* kRuntimeEntrySymbol = "PyConfig_InitIsolatedConfig";
+
 // The entry file that survives renaming the executable, so a renamed launcher
 // still finds its application (PyStand's _pystand_static.int).
 constexpr const char* kStaticEntry = "_py_upper_static.int";
@@ -327,23 +332,44 @@ RuntimeLoad load_python(const fs::path& home) {
     RuntimeLoad r;
     r.python_root = home;
 #ifdef _WIN32
+    // The runtime directory holds two kinds of python DLL, and both have to be
+    // loaded:
+    //   python3XX.dll  the runtime; it exports the entry points the launcher
+    //                  resolves.
+    //   python3.dll    the stable-ABI forwarder; it re-exports the limited API
+    //                  only and pulls python3XX.dll in as a dependency. The
+    //                  payload's abi3 extensions (PySide6's QtCore.pyd and
+    //                  friends) import it by name, and an import binds to the
+    //                  module of that name only while it stays loaded.
+    // Resolving from whichever DLL loads first makes a Windows package exit 5:
+    // python3.dll loads fine and then answers every GetProcAddress with null.
     std::vector<fs::path> dlls;
-    if (fs::exists(home / "python3.dll")) dlls.push_back(home / "python3.dll");
     for (const auto& e : fs::directory_iterator(home)) {
         if (e.is_regular_file() && e.path().extension() == ".dll" && path_to_utf8(e.path().filename()).rfind("python", 0) == 0) {
             dlls.push_back(e.path());
         }
     }
+    std::sort(dlls.begin(), dlls.end());
+    bool loaded_any = false;
     for (const auto& p : dlls) {
         // The loader resolves an implicitly linked dependency (python3.dll
         // pulling python3XX.dll and the CRT) through the standard search order,
         // which does not include the loaded DLL's own directory. Point the
         // search at the runtime directory for this load only.
-        r.handle = LoadLibraryExW(W(path_to_utf8(p)).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-        if (r.handle) break;
-        r.error = path_to_utf8(p) + ": LoadLibraryEx failed with error " + std::to_string(GetLastError());
+        void* handle = LoadLibraryExW(W(path_to_utf8(p)).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!handle) {
+            r.error = path_to_utf8(p) + ": LoadLibraryEx failed with error " + std::to_string(GetLastError());
+            continue;
+        }
+        loaded_any = true;
+        if (!r.handle && symbol(handle, kRuntimeEntrySymbol)) r.handle = handle;
     }
-    if (!r.handle && r.error.empty()) r.error = "no python DLL in " + path_to_utf8(home);
+    if (!r.handle) {
+        std::string reason = loaded_any
+            ? "no python DLL in " + path_to_utf8(home) + " exports " + kRuntimeEntrySymbol
+            : "no python DLL in " + path_to_utf8(home);
+        r.error = r.error.empty() ? reason : reason + "\n" + r.error;
+    }
     r.stdlib = home / "Lib";
     // Windows CPython keeps its dynamic stdlib extensions (zlib, _ssl, _socket,
     // ...) in DLLs; without it on the module search path the packaged app
@@ -465,7 +491,7 @@ int PyUpper::run(const std::vector<std::string>& argv) {
             return 4;
         }
 
-        auto init_config = (ConfigInit)symbol(loaded.handle, "PyConfig_InitIsolatedConfig");
+        auto init_config = (ConfigInit)symbol(loaded.handle, kRuntimeEntrySymbol);
         auto set_string = (ConfigSetString)symbol(loaded.handle, "PyConfig_SetString");
         auto append = (WideAppend)symbol(loaded.handle, "PyWideStringList_Append");
         auto init = (InitializeFromConfig)symbol(loaded.handle, "Py_InitializeFromConfig");

@@ -1289,9 +1289,10 @@ def test_windows_stable_abi_forwarder_is_runtime_provided(monkeypatch):
     """PySide6's abi3 extensions link ``python3.dll``, which the launcher loads.
 
     The forwarder sits next to ``python3XX.dll`` in the runtime directory, and
-    the launcher loads it from there before the versioned library, so it is
-    runtime-provided exactly like the versioned one. Looking for it in the wheel
-    leaves it unresolved on every Windows target; POSIX has no counterpart.
+    the launcher loads every python DLL in that directory, so an abi3 extension's
+    import of it binds to the already loaded module. It is therefore
+    runtime-provided exactly like the versioned library. Looking for it in the
+    wheel leaves it unresolved on every Windows target; POSIX has no counterpart.
     """
     import py_upper.native.deps as deps
     from py_upper.config import TARGETS
@@ -1301,3 +1302,19 @@ def test_windows_stable_abi_forwarder_is_runtime_provided(monkeypatch):
     assert deps._system_dependency("PYTHON3.DLL", TARGETS["windows-arm64"])
     assert not deps._system_dependency("python3.dll", TARGETS["linux-x86_64"])
     assert not deps._system_dependency("python3.dll", TARGETS["macos-arm64"])
+
+
+def test_launcher_resolves_entry_points_from_the_runtime_not_the_forwarder():
+    """The launcher must not resolve symbols from the first DLL that loads.
+
+    python3.dll loads successfully and then answers every GetProcAddress with
+    null, which is what made every Windows package exit 5. The runtime directory
+    holds python3XX.dll next to it, and that is where the entry points come from.
+    """
+    launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
+    text = launcher.read_text(encoding="utf-8")
+    compact = "".join(text.split())
+    assert 'constexprconstchar*kRuntimeEntrySymbol="PyConfig_InitIsolatedConfig";' in compact
+    # The handle used for every later lookup is the one that exports the entry
+    # point, not merely the one whose LoadLibraryEx call succeeded.
+    assert "if(!r.handle&&symbol(handle,kRuntimeEntrySymbol))r.handle=handle;" in compact
