@@ -45,6 +45,7 @@ Application run
 - 第三方依赖不 Cython 化，而是根据 Target 的 wheel compatibility tags 安装目标 wheel。
 - `app/src/` 下的 `.dylib/.so/.dll/.pyd` 是正式应用输入，会参加 native dependency closure。
 - `runtimes/` 是机器本地 Runtime 缓存，不进入 Git。
+- `dist/` 只在一次 rename 中更新：bundle 在 `build/publish/<target>.<pid>/` 组装完成后再原子换入 `dist/`。构建期间 `dist/` 要么是上一版的完整产物，要么是新版的完整产物，不会被原地删改——发布路径上的 runtime 会被编辑器等外部进程执行，原地清理必然与它们的写入互相踩。
 - 最终验证不仅检查文件存在，还会用 bundled Target Python 真正 import 应用和直接声明的第三方依赖。
 
 ## 文档

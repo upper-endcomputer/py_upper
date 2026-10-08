@@ -59,6 +59,30 @@ def copy_optional_tree(source: Path, destination: Path, *, replace: bool = True)
         copy_tree_contents(source, destination, replace=replace)
 
 
+def retire_tree(path: Path, *, trash: Path) -> None:
+    """Remove a directory tree that other processes may be using right now.
+
+    Recursive deletion of a live tree races with every writer inside it: a
+    writer recreates an entry between the directory scan and the final rmdir, so
+    the removal fails with ENOENT on the entry it just deleted or ENOTEMPTY on
+    the directory it cannot empty. Renaming the tree away first takes it out of
+    the only name those writers know; the ones that lose the race write into a
+    path that no longer exists and give up, and the recursive delete that
+    follows sees a tree nothing else can reach. ``trash`` must be on the same
+    filesystem as ``path`` for the rename to stay atomic.
+    """
+    if not path.exists():
+        return
+    if not path.is_dir() or path.is_symlink():
+        raise RuntimeError(f"Not a directory tree: {path}")
+    trash.mkdir(parents=True, exist_ok=True)
+    retired = trash / f"{path.name}.{os.getpid()}"
+    if retired.exists():
+        shutil.rmtree(retired)
+    os.replace(path, retired)
+    shutil.rmtree(retired)
+
+
 def make_executable(path: Path) -> None:
     """Add execute bits without replaying source metadata."""
     mode = stat.S_IMODE(path.stat().st_mode)

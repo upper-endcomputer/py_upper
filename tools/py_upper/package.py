@@ -10,10 +10,13 @@ from pathlib import Path
 
 from .config import (
     APP, BUILD, DIST, LAUNCHER, STATIC_ENTRY, Target, app_identifier, app_name,
-    entry_module, project_version, resolve_target_python, staging_dir,
+    entry_module, project_version, publish_dir, resolve_target_python, staging_dir,
     target_runtime_dir,
 )
-from .fs import copy_file_contents, copy_optional_tree, copy_tree_contents, make_executable, sha256
+from .fs import (
+    copy_file_contents, copy_optional_tree, copy_tree_contents, make_executable,
+    retire_tree, sha256,
+)
 from .native.bundle import bundle_native_dependencies, prune_excluded_native_files
 from .runtime import optimize_runtime_tree
 from .toolchain import resolve_toolchain
@@ -142,6 +145,22 @@ def _report_pruned(site: Path) -> None:
         print(f"Native exclusions: removed {len(removed)} file(s) matched by [tool.py_upper.native].exclude")
 
 
+def _publish(assembly: Path, source: Path, destination: Path) -> Path:
+    """Move a finished bundle to its published path in a single rename.
+
+    ``dist/`` is the path the editor watches: it resolves every ``python`` under
+    the workspace by running it, so a bundle assembled there is mutated by a
+    foreign process while the build is still writing it, and the cleanup fails
+    on the entry that writer recreated. Assembling elsewhere and renaming at the
+    end keeps the published path either absent or complete.
+    """
+    retire_tree(destination, trash=BUILD / "retired")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(source, destination)
+    retire_tree(assembly, trash=BUILD / "retired")
+    return destination
+
+
 def package(target: Target, launcher: Path) -> Path:
     stage = staging_dir(target)
     runtime = target_runtime_dir(target)
@@ -150,12 +169,13 @@ def package(target: Target, launcher: Path) -> Path:
         raise RuntimeError(f"Python stage missing: {site}")
     if not runtime.exists():
         raise RuntimeError(f"Runtime missing: {runtime}")
-    if DIST.exists():
-        shutil.rmtree(DIST)
 
     name = app_name()
+    assembly = publish_dir(target)
+    retire_tree(assembly, trash=BUILD / "retired")
+    assembly.mkdir(parents=True)
     if target.os in {"linux", "windows"}:
-        out = DIST / name
+        out = assembly / name
         copy_file_contents(launcher, out / (f"{name}.exe" if target.os == "windows" else name))
         if target.os == "linux":
             make_executable(out / name)
@@ -170,9 +190,9 @@ def package(target: Target, launcher: Path) -> Path:
         copy_optional_tree(APP / "resources", out / "resources")
         write_entry_scripts(out, name, target)
         bundle_native_dependencies(out, target)
-        return out
+        return _publish(assembly, out, DIST / name)
 
-    app = DIST / f"{name}.app"
+    app = assembly / f"{name}.app"
     contents = app / "Contents"
     macos = contents / "MacOS"
     resources = contents / "Resources"
@@ -190,7 +210,7 @@ def package(target: Target, launcher: Path) -> Path:
     write_entry_scripts(resources, name, target)
     (contents / "Info.plist").write_text(_mac_info_plist(name), encoding="utf-8")
     bundle_native_dependencies(app, target)
-    return app
+    return _publish(assembly, app, DIST / f"{name}.app")
 
 
 def write_release_manifest(target: Target, output: Path | None = None) -> Path:
