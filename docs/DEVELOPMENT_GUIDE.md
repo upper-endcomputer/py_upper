@@ -95,7 +95,7 @@ app/src/
 # 2. 声明依赖与目标
 #    app/pyproject.toml（本地副本，改了不进 Git）
 #    [project] dependencies = ["PySide6==6.11.0"]
-#    [tool.py_upper.runtime] provider = "pbs"  python = "3.10.11"
+#    [tool.py_upper.runtime] provider = "pbs"  python = "3.11.13"
 
 # 3. 构建 + 运行
 python tools/build.py --run
@@ -169,7 +169,7 @@ identifier = "com.example.pyupper" # macOS bundle identifier
 
 [tool.py_upper.runtime]
 provider = "pbs"                  # pbs | local
-python = "3.10.11"                # 目标 Python 精确版本
+python = "3.11.13"                # 目标 Python 精确版本（覆盖全部 7 个 target 的最低版本）
 # provider = "local" 时改为：
 # runtime = "runtimes/{target}/{python}"
 # sdk     = "build/local-sdk/{target}/{python}"

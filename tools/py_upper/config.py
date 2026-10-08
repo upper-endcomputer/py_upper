@@ -115,7 +115,6 @@ class TargetPython:
     python_version: str
     python_major_minor: str
     abi_tag: str
-    libpython_link_mode: str | None
     extension_suffix: str
 
     @property
@@ -546,4 +545,4 @@ def resolve_target_python(target: Target) -> TargetPython:
     major_minor = ".".join(actual.split(".")[:2])
     abi = f"cp{major_minor.replace('.', '')}"
     suffix = target_extension_suffix(target, major_minor, abi)
-    return TargetPython(target, spec.root, executable, include, actual, major_minor, abi, info.get("libpython_link_mode"), suffix)
+    return TargetPython(target, spec.root, executable, include, actual, major_minor, abi, suffix)

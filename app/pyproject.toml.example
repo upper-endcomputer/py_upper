@@ -41,7 +41,10 @@ identifier = "com.example.pyupper"
 
 [tool.py_upper.runtime]
 provider = "pbs"
-python = "3.10.11"
+# The oldest Python that python-build-standalone publishes for every target
+# listed below. Windows on ARM starts at 3.11.13, so a 3.10 pin cannot cover
+# [tool.py_upper.windows] architectures = ["x86", "x86_64", "arm64"].
+python = "3.11.13"
 
 [tool.py_upper.dependencies]
 # PySide6 ships manylinux_2_34 (x86_64) and manylinux_2_39 (aarch64) wheels, so
