@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from .config import APP, Target, host_target, optimize_config, runtime_executable
+from .config import APP, Target, host_target, optimize_config, runtime_executable, runtime_provider
 from .native.deps import dependency_names
 
 WRAPPER_SUFFIXES = {".so", ".pyd"}
@@ -191,6 +191,12 @@ def _native_runtime_python(target: Target) -> Path | None:
     """The target interpreter, when this host can execute it."""
     if target != host_target():
         return None
+    if target.os == "windows" and runtime_provider() == "pbs":
+        # python.org's embed _pth ignores PYTHONPATH. Use the PBS SDK's
+        # full interpreter only for this build-time import-closure probe.
+        from .runtime import sdk_info
+
+        return Path(sdk_info(target)["python_executable"])
     try:
         return runtime_executable(target)
     except RuntimeError:

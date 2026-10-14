@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.6**。
+当前稳定开发线：**0.17.7**。
 
 ## 构建模型
 
@@ -118,12 +118,12 @@ python tools/build.py --release
 
 ## Target Python / PBS
 
-PBS 模式只需要配置一个精确的目标 Python 版本：
+PBS 模式只需要配置一个精确的目标 Python 版本。Windows 目标的发布 runtime 用 python.org 官方 embeddable ZIP，PBS full SDK 只用于编译与依赖解析；其他平台继续用 PBS `install_only_stripped` runtime。精确版本必须同时有对应官方 ZIP 与 PBS SDK（模板用 `3.13.5`；`3.11.13` 没有官方 ZIP）。
 
 ```toml
 [tool.py_upper.runtime]
 provider = "pbs"
-python = "3.11.10"
+python = "3.13.5"
 ```
 
 `[tool.py_upper.pbs].release` 可选。省略时，py_upper 使用轻量的精确版本 metadata 获取对应 PBS build tag，然后只请求该 release 来确认 runtime 与 full SDK；不会枚举巨大的 `/releases` 列表。

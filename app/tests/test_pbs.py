@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+import zipfile
+
+import pytest
+
 
 
 def _target():
@@ -274,3 +279,83 @@ def test_windows_metadata_resolution_pairs_a_shared_sdk_with_a_shared_runtime(tm
     result = resolve_pbs_inputs(fetch, "", target, "3.10.11")
     assert result.runtime.name == runtime_name
     assert result.sdk.name.endswith("-shared-pgo-full.tar.zst")
+
+
+def test_windows_embeddable_asset_uses_official_architecture_names():
+    from py_upper.pbs import windows_embed_asset
+    from py_upper.config import TARGETS
+
+    for arch, suffix in (("x86", "win32"), ("x86_64", "amd64"), ("arm64", "arm64")):
+        asset = windows_embed_asset(TARGETS[f"windows-{arch}"], "3.13.5")
+        assert asset.name == f"python-3.13.5-embed-{suffix}.zip"
+        assert asset.url == f"https://www.python.org/ftp/python/3.13.5/{asset.name}"
+
+
+def test_windows_embed_archive_is_checked_before_install(tmp_path, monkeypatch):
+    from py_upper import runtime
+    from py_upper.config import TARGETS
+
+    target = TARGETS["windows-x86_64"]
+    out = tmp_path / "runtime"
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(runtime, "target_runtime_dir", lambda _: out)
+    monkeypatch.setattr(runtime, "CACHE", cache)
+    monkeypatch.setattr(runtime, "python_version", lambda: "3.13.5")
+    def download_fixture(url, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("LICENSE.txt", b"license")
+            archive.writestr("python313.dll", b"dll")
+            archive.writestr("python3.dll", b"stable abi")
+            archive.writestr("python313.zip", b"stdlib")
+            archive.writestr("python313._pth", "python313.zip\n.\n")
+            archive.writestr("_socket.pyd", b"extension")
+            archive.writestr("python.exe", b"python")
+    monkeypatch.setattr(runtime, "download", download_fixture)
+    result = runtime.ensure_windows_embed_runtime(target)
+    assert result == out
+    assert (out / "_socket.pyd").is_file()
+    assert (out / "python313.zip").is_file()
+    assert (out / "python313._pth").read_text() == "python313.zip\n.\n"
+    assert not (out / "Lib").exists()
+    marker = json.loads((out / runtime.RUNTIME_MARKER).read_text())
+    assert marker["source"] == "python.org"
+    assert marker["sha256"] == runtime.sha256(cache / "python.org" / "3.13.5" / target.key / marker["asset"])
+
+
+def test_windows_embed_archive_rejects_path_traversal_without_writing(tmp_path, monkeypatch):
+    from py_upper import runtime
+    from py_upper.config import TARGETS
+
+    out = tmp_path / "runtime"
+    monkeypatch.setattr(runtime, "target_runtime_dir", lambda _: out)
+    monkeypatch.setattr(runtime, "CACHE", tmp_path / "cache")
+    monkeypatch.setattr(runtime, "python_version", lambda: "3.13.5")
+    def download_fixture(url, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("../escape", b"bad")
+    monkeypatch.setattr(runtime, "download", download_fixture)
+    with pytest.raises(RuntimeError, match="Unsafe embed archive path"):
+        runtime.ensure_windows_embed_runtime(TARGETS["windows-x86_64"])
+    assert not out.exists()
+    assert not (tmp_path / "escape").exists()
+
+
+def test_windows_embed_version_without_official_zip_fails_with_the_version(tmp_path, monkeypatch):
+    import urllib.error
+
+    from py_upper import runtime
+    from py_upper.config import TARGETS
+
+    target = TARGETS["windows-arm64"]
+    monkeypatch.setattr(runtime, "target_runtime_dir", lambda _: tmp_path / "runtime")
+    monkeypatch.setattr(runtime, "CACHE", tmp_path / "cache")
+    monkeypatch.setattr(runtime, "python_version", lambda: "3.11.13")
+
+    def download_missing(url, destination):
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(runtime, "download", download_missing)
+    with pytest.raises(RuntimeError, match="3.11.13.*no official embeddable ZIP.*windows-arm64"):
+        runtime.ensure_windows_embed_runtime(target)

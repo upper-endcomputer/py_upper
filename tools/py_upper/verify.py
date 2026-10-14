@@ -100,6 +100,12 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     runtime_root = resources / "runtime" if target.os == "macos" else root / "runtime"
     if bool(optimize_config().get("remove_runtime_pip", True)):
         checks.append((not runtime_pip_payloads(runtime_root), "runtime pip/ensurepip removed"))
+    if target.os == "windows" and runtime_spec(target).provider == "pbs":
+        digits = runtime_spec(target).major_minor.replace(".", "")
+        for filename in ("python3.dll", f"python{digits}.dll", f"python{digits}.zip", f"python{digits}._pth"):
+            checks.append(((runtime_root / filename).is_file(), f"Windows embed runtime {filename}"))
+        checks.append((not (runtime_root / "Lib").exists() and not (runtime_root / "DLLs").exists(),
+                       "Windows embed runtime is flat"))
     if executable.is_file():
         try:
             verify_arch(executable, target)
@@ -204,7 +210,18 @@ def run_target_python_smoke(target: Target) -> None:
     # Importing the package markers must not leave __pycache__ inside the
     # staging tree; a later --verify reports those as leftover build artifacts.
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    py = runtime_python(target)
+    if target.os == "windows" and runtime_spec(target).provider == "pbs":
+        # The official embed interpreter ignores PYTHONPATH via pythonXY._pth.
+        # Check staged modules with the matching PBS SDK interpreter, then check
+        # the actual embeddable runtime with the packaged launcher below.
+        from .runtime import sdk_info
+
+        py = Path(sdk_info(target)["python_executable"])
+        # SDK embeds its own complete stdlib; PYTHONHOME must not point at the
+        # flat embeddable ZIP (which contains no Lib directory).
+        env.pop("PYTHONHOME", None)
+    else:
+        py = runtime_python(target)
     print("+", py, script)
     subprocess.run([str(py), str(script)], env=env, cwd=stage_root, check=True)
 

@@ -498,7 +498,13 @@ def require_local_python() -> Path:
 
 def runtime_executable(target: Target) -> Path:
     """Locate the target runtime's own interpreter, when it is present locally."""
-    return _find_target_executable(runtime_spec(target).root, target)
+    root = runtime_spec(target).root
+    if target.os == "windows" and runtime_provider() == "pbs":
+        executable = root / "python.exe"
+        if not executable.is_file():
+            raise RuntimeError(f"Windows embeddable interpreter missing: {executable}")
+        return executable
+    return _find_target_executable(root, target)
 
 
 def host_description() -> str:

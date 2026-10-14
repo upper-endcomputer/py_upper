@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.6"
+version = "0.17.7"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -41,10 +41,11 @@ identifier = "com.example.pyupper"
 
 [tool.py_upper.runtime]
 provider = "pbs"
-# The oldest Python that python-build-standalone publishes for every target
-# listed below. Windows on ARM starts at 3.11.13, so a 3.10 pin cannot cover
-# [tool.py_upper.windows] architectures = ["x86", "x86_64", "arm64"].
-python = "3.11.13"
+# Windows PBS builds use the official python.org embeddable ZIP as runtime
+# and the matching PBS full SDK only for compiling. This exact version is
+# available as all three Windows embeddable ZIPs and across all seven PBS SDKs.
+# Python 3.11.13 is PBS-only: python.org has no 3.11.13 embeddable ZIP.
+python = "3.13.5"
 
 [tool.py_upper.dependencies]
 # PySide6 ships manylinux_2_34 (x86_64) and manylinux_2_39 (aarch64) wheels, so

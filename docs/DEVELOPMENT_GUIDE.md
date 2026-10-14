@@ -2,7 +2,7 @@
 
 本文是 `py_upper` 的完整开发与使用手册：从环境准备、日常开发、打包发布，到 Qt 应用处理、依赖管理和排错。README 讲的是"是什么"，本文讲的是"怎么用、为什么这么设计、出问题怎么查"。
 
-当前稳定线：**0.17.6**。
+当前稳定线：**0.17.7**。
 
 ---
 
@@ -70,7 +70,7 @@ Build Tool 不需要预装 Cython：缺失时会自动装到 `build/host-tools/c
 
 ### 2.3 网络
 
-PBS runtime/SDK 与 PyPI wheel 都走 HTTPS。国内网络建议给本地构建设镜像（不影响 CI）：
+PBS SDK、Windows python.org embeddable ZIP 与 PyPI wheel 都走 HTTPS。国内网络建议给本地构建设镜像（不影响 CI）：
 
 ```bash
 export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
@@ -95,7 +95,7 @@ app/src/
 # 2. 声明依赖与目标
 #    app/pyproject.toml（本地副本，改了不进 Git）
 #    [project] dependencies = ["PySide6==6.11.0"]
-#    [tool.py_upper.runtime] provider = "pbs"  python = "3.11.13"
+#    [tool.py_upper.runtime] provider = "pbs"  python = "3.13.5"
 
 # 3. 构建 + 运行
 python tools/build.py --run
@@ -118,7 +118,7 @@ dist/MyApp.app/Contents/          # macOS
 dist/MyApp/                       # Windows / Linux
 ├── MyApp(.exe)                   # launcher
 ├── MyApp.int
-├── runtime/
+├── runtime/                      # Windows PBS：官方 python.org embed ZIP（pythonXY.zip、.pyd、DLL）
 ├── site-packages/
 └── resources/                    # 同上，可选
 ```
@@ -156,7 +156,7 @@ py_upper/
 ```toml
 [project]
 name = "py_upper"
-version = "0.17.6"
+version = "0.17.7"
 requires-python = ">=3.8,<3.14"
 dependencies = ["PySide6==6.11.0", "pyserial==3.5"]
 
@@ -169,7 +169,7 @@ identifier = "com.example.pyupper" # macOS bundle identifier
 
 [tool.py_upper.runtime]
 provider = "pbs"                  # pbs | local
-python = "3.11.13"                # 目标 Python 精确版本（覆盖全部 7 个 target 的最低版本）
+python = "3.13.5"                # 目标 Python 精确版本（同时有 Windows 官方 embed ZIP 与 7 个 PBS SDK）
 # provider = "local" 时改为：
 # runtime = "runtimes/{target}/{python}"
 # sdk     = "build/local-sdk/{target}/{python}"
@@ -216,6 +216,8 @@ architectures = ["arm64", "x86_64"]
 [tool.py_upper.linux]
 architectures = ["x86_64", "arm64"]
 ```
+
+Windows + PBS：发布 runtime 来自 python.org 官方 embeddable ZIP；PBS full SDK 只用于编译、目标 pip 解析和 Qt import 闭包，不会进入 dist。官方 embed ZIP 的 `_pth` 和根目录 `.pyd` 布局由 launcher 处理，打包后的 launcher smoke 验证依赖 import。精确版本必须同时存在官方 ZIP 与 PBS SDK（例如 3.13.5；3.11.13 无官方 ZIP）。
 
 ### 环境变量
 
@@ -427,7 +429,7 @@ launcher 用**自身文件名**（stem）在 bundle 根目录按顺序查找入�
 
 ### 10.4 平台差异
 
-- **Windows**：默认编译成 GUI 子系统（`WIN32_EXECUTABLE`），双击不弹控制台；从 cmd/PowerShell/CI 启动时用 `AttachConsole(ATTACH_PARENT_PROCESS)` 接管父控制台，**已有的重定向优先**（`> run.log` 不会被抢走）。入口是 `wWinMain`，宽命令行统一转 UTF-8 后再处理，非 ASCII 安装路径不会乱码。链接静态 CRT（`/MT`），目标机不需要 VC++ 运行库。调试时用 `PY_UPPER_LAUNCHER_CONSOLE=1` 构建控制台版本。runtime 目录里的 `python3.dll` 是稳定 ABI 转发层，只再导出受限 API，`PyConfig_*` 不在其中；launcher 会把该目录下所有 `python*.dll` 都加载（abi3 扩展按名字 import 转发层，必须留在已加载模块表里），入口点则从真正导出它们的那一个（`python3XX.dll`）解析。
+- **Windows**：默认编译成 GUI 子系统（`WIN32_EXECUTABLE`），双击不弹控制台；从 cmd/PowerShell/CI 启动时用 `AttachConsole(ATTACH_PARENT_PROCESS)` 接管父控制台，**已有的重定向优先**（`> run.log` 不会被抢走）。入口是 `wWinMain`，宽命令行统一转 UTF-8 后再处理，非 ASCII 安装路径不会乱码。链接静态 CRT（`/MT`），目标机不需要 VC++ 运行库。调试时用 `PY_UPPER_LAUNCHER_CONSOLE=1` 构建控制台版本。runtime 目录里的 `python3.dll` 是稳定 ABI 转发层，只再导出受限 API，`PyConfig_*` 不在其中；launcher 会把该目录下所有 `python*.dll` 都加载（abi3 扩展按名字 import 转发层，必须留在已加载模块表里），入口点则从真正导出它们的那一个（`python3XX.dll`）解析。官方 embeddable runtime 没有 `DLLs/`，标准扩展（`_socket.pyd`、`_ssl.pyd` 等）直接躺在 `python3XX.dll` 旁边，所以 launcher 在 `DLLs/` 不存在时把 runtime 根目录当作扩展目录。
 - **macOS**：入口在 `Contents/MacOS`，资源 / runtime / site-packages 都在 `Contents/Resources`；链接 CoreFoundation 以使用 `CFUserNotification`。
 - **Linux**：单目录布局，`libpython3.x.so` 以 `RTLD_GLOBAL` 加载，保证后续导入的扩展能解析 CPython 符号。
 

@@ -106,6 +106,16 @@ def resolution_python(target: Target) -> tuple[Path, list[str]]:
     interpreter with explicit tag overrides.
     """
     if target == host_target():
+        # The official Windows embed ZIP has no pip. The matching PBS full SDK
+        # contains a runnable interpreter with pip for correct marker evaluation;
+        # it is a build input and is never copied into the final bundle.
+        if target.os == "windows":
+            from .runtime import sdk_info
+
+            sdk_python = Path(sdk_info(target)["python_executable"])
+            if not _has_pip(sdk_python):
+                raise RuntimeError(f"Target SDK Python has no pip: {sdk_python}")
+            return sdk_python, _resolver_args()
         try:
             runtime = runtime_executable(target)
         except RuntimeError:

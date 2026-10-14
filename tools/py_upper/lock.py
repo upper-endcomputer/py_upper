@@ -67,7 +67,7 @@ def write_lock(target: Target) -> Path:
     if runtime_provider() == "pbs":
         runtime = _marker(spec.root, ".py_upper-runtime.json")
         sdk = _marker(spec.sdk_root, ".py_upper-sdk.json")
-        target_data["runtime"] = {key: runtime.get(key) for key in ("tag", "asset", "url", "sha256", "python", "target") if runtime.get(key) is not None}
+        target_data["runtime"] = {key: runtime.get(key) for key in ("source", "tag", "asset", "url", "sha256", "python", "target") if runtime.get(key) is not None}
         target_data["sdk"] = {key: sdk.get(key) for key in ("tag", "asset", "url", "sha256", "python", "target") if sdk.get(key) is not None}
     data["targets"][target.key] = target_data
     LOCK.write_text(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
@@ -95,6 +95,10 @@ def verify_lock(target: Target) -> None:
         raise RuntimeError(f"Runtime manifest checksum mismatch for {target.key}")
 
     if runtime_provider() == "pbs":
+        recorded_runtime = target_data.get("runtime", {})
+        if target.os == "windows" and (not isinstance(recorded_runtime, dict)
+                                       or recorded_runtime.get("source") != "python.org"):
+            raise RuntimeError("Locked Windows PBS build requires an official python.org embeddable runtime; recreate lock")
         for label, root, marker_name in (
             ("runtime", spec.root, ".py_upper-runtime.json"),
             ("sdk", spec.sdk_root, ".py_upper-sdk.json"),

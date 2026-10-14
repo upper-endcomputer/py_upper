@@ -375,6 +375,9 @@ RuntimeLoad load_python(const fs::path& home) {
     // ...) in DLLs; without it on the module search path the packaged app
     // cannot import them.
     r.extension_dir = home / "DLLs";
+    // python.org's embeddable ZIP places _socket.pyd, _ssl.pyd and other
+    // standard extensions directly beside python3XX.dll, unlike PBS's DLLs/.
+    if (!fs::exists(r.extension_dir)) r.extension_dir = home;
     for (const auto& e : fs::directory_iterator(home)) {
         if (e.is_regular_file() && e.path().extension() == ".zip" && path_to_utf8(e.path().filename()).rfind("python", 0) == 0) {
             r.zip = e.path();

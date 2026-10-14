@@ -1,3 +1,36 @@
+## 0.17.7
+
+### Problem
+- The Windows package shipped the same PBS runtime as every other platform: a regular CPython install tree (`Lib/`, `DLLs/`, `include/`, `libs/`, `tcl/`, `Scripts/`, 3 271 files and 65 MB for 3.13.5 x86_64) even though the launcher embeds the interpreter and nothing ever runs `python.exe`. The embedding layout python.org publishes for Windows was not used at all.
+- The target Python pin was only ever checked against PBS. Python 3.11.13 is a valid PBS version with no official Windows embeddable ZIP, so a pin that cannot produce a Windows package looked correct until a Windows build ran.
+
+### Root cause
+- `runtime.py` had one acquisition path per provider, and the PBS path is the POSIX shape: unpack `install_only_stripped` into the runtime root. Windows needs the same interpreter in a different shape, published by a different project than the one publishing the build SDK.
+- The Windows compiler-side needs are not the release runtime's needs: resolving target wheels and probing the Qt import closure must run an interpreter with pip, while the embeddable interpreter has no pip and ignores `PYTHONPATH` through its `._pth`.
+
+### Changes
+- Windows with `provider = "pbs"` takes its release runtime from the official python.org embeddable ZIP (`python-<version>-embed-{win32,amd64,arm64}.zip`). It is cached under `.cache/python.org/<python>/<target>/`, validated before installation (flat single-level members, no traversal, no duplicates, required members present), unpacked unmodified into `runtimes/<target>/<python>`, and recorded in the lock file as `runtime.source = "python.org"` with its SHA256.
+- PBS keeps supplying the full SDK for the same target Python: extension compilation, `pip download`/target resolution and the Qt import-closure probe all use the SDK interpreter. The SDK stays a build input and never enters `dist/`.
+- `runtime_executable()` returns `<runtime>/python.exe` for Windows PBS, since the embeddable layout has no `bin/`.
+- `_checks_for_package()` asserts the packaged Windows runtime is the embeddable shape: `python3.dll`, `python3XX.dll`, `python3XX.zip`, `python3XX._pth` present, `Lib/` and `DLLs/` absent.
+- Launcher: an embeddable runtime keeps its standard extensions beside `python3XX.dll` instead of in `DLLs/`, so the Windows search path falls back to the runtime root when `DLLs/` is missing.
+- `verify_lock()` rejects a locked Windows PBS target whose runtime was not recorded as coming from python.org, so an existing lock cannot silently rebuild the old shape.
+- A pinned version python.org publishes no embeddable ZIP for now fails with the version, the target and the URL instead of a bare HTTP 404.
+- `app/pyproject.toml.example` moves to `3.13.5`, the version available both as three Windows embeddable ZIPs and across all seven PBS SDKs; README, the development guide and the CI cache key follow.
+
+### Verification
+- `python -m pytest app/tests -q`: 140 passed, 5 skipped.
+- All seven target triples resolve PBS inputs at 3.13.5 (tag 20250723).
+- The three real python.org ZIPs were downloaded and unpacked: 34/36/35 entries, flat layout, required members present, and every image passes the target architecture guard (29/30/30 images, 0 failures; 17.2/20.2/20.8 MB).
+- windows-x86_64 end to end: PBS SDK 3.13.5 downloaded (270 MB, `install/python.exe`), runtime manifest format 4 written and validated, lock written (format 5, `source: python.org`) and `verify_lock()` passes.
+- Full macOS arm64 PySide6 build on the new pin: `[1/6]`…`[6/6]` green, 40 PASS including `native binaries checked=48`, launcher smoke, `--run` exit 0, `codesign --verify --deep --strict` valid.
+
+### Impact
+- The Windows runtime payload drops from 65 MB / 3 271 files to 20 MB / 36 files (x86_64, 3.13.5) and no longer contains `Lib/`, `DLLs/`, `include/`, `libs/`, `tcl/`, `Scripts/` or a pip to prune. The interpreter version does not change; only the runtime shape and its publisher do.
+
+### Limitations
+- The Windows bundle can only be executed on Windows, so the three Windows CI legs (packaged launcher import smoke) remain the only end-to-end evidence for it.
+
 ## 0.17.6
 
 ### Problem

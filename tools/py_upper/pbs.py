@@ -57,6 +57,15 @@ def metadata_key(target: Target, pyver: str) -> str:
     return f"cpython-{pyver.strip()}-{platform}"
 
 
+def windows_embed_asset(target: Target, pyver: str) -> PBSAsset:
+    """Official CPython embeddable runtime; PBS remains the build-only SDK."""
+    if target.os != "windows":
+        raise ValueError(f"No Windows embeddable runtime for {target.key}")
+    architecture = {"x86": "win32", "x86_64": "amd64", "arm64": "arm64"}[target.arch]
+    name = f"python-{pyver}-embed-{architecture}.zip"
+    return PBSAsset(name, f"https://www.python.org/ftp/python/{pyver}/{name}")
+
+
 def asset_python_version(name: str) -> str | None:
     match = re.match(r"^cpython-(\d+\.\d+\.\d+)(?:\+|-)", str(name).strip())
     return match.group(1) if match else None

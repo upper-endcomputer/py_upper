@@ -5,7 +5,9 @@ import json
 import os
 import shutil
 import tarfile
-from pathlib import Path
+import urllib.error
+import zipfile
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .config import (
     CACHE, Target, optimize_config, pbs_release, python_version, runtime_provider,
@@ -14,7 +16,7 @@ from .config import (
 from .fs import copy_tree_contents, sha256
 from .manifest import build_manifest, read_manifest, validate_manifest, write_manifest
 from .net import download, http_json
-from .pbs import PBSInputs, ensure_pbs_sdk, resolve_pbs_inputs, sdk_info as pbs_sdk_info
+from .pbs import PBSInputs, ensure_pbs_sdk, resolve_pbs_inputs, sdk_info as pbs_sdk_info, windows_embed_asset
 
 
 RUNTIME_MARKER = ".py_upper-runtime.json"
@@ -76,6 +78,70 @@ def ensure_pbs_runtime(target: Target) -> Path:
     return out
 
 
+def ensure_windows_embed_runtime(target: Target) -> Path:
+    """Cache the unmodified python.org Windows embeddable ZIP as runtime.
+
+    The ZIP contains a stdlib ZIP and flat .pyd files rather than Lib/DLLs.
+    Keep its _pth file: the packaged launcher sets its paths explicitly, while
+    invoking python.exe during a build needs isolation from host site-packages.
+    """
+    if target.os != "windows":
+        raise ValueError(f"No Windows embeddable runtime for {target.key}")
+    out = target_runtime_dir(target)
+    asset = windows_embed_asset(target, python_version())
+    marker = out / RUNTIME_MARKER
+    if marker.is_file():
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            if (data.get("format") == 2 and data.get("source") == "python.org"
+                    and data.get("asset") == asset.name and data.get("target") == target.key
+                    and data.get("python") == python_version()):
+                return out
+        except (OSError, ValueError):
+            pass
+
+    archive = CACHE / "python.org" / python_version() / target.key / asset.name
+    try:
+        download(asset.url, archive)
+    except urllib.error.HTTPError as exc:
+        # The pinned version has to exist as an official ZIP for every Windows
+        # architecture; PBS covers more versions than python.org does.
+        if exc.code == 404:
+            raise RuntimeError(
+                f"Python {python_version()} has no official embeddable ZIP for {target.key} "
+                f"({asset.url}); pin a version python.org publishes an embeddable ZIP for"
+            ) from exc
+        raise
+    actual = sha256(archive)
+    required = {"python.exe", "python3.dll", "LICENSE.txt"}
+    digits = "".join(python_version().split(".")[:2])
+    required.update({f"python{digits}.dll", f"python{digits}.zip", f"python{digits}._pth"})
+    with zipfile.ZipFile(archive) as source:
+        entries = source.infolist()
+        names = {entry.filename for entry in entries}
+        if len(names) != len(entries):
+            raise RuntimeError(f"Duplicate member in Python embeddable ZIP: {asset.name}")
+        for entry in entries:
+            name = entry.filename
+            if (not name or name.endswith("/") or "/" in name or "\\" in name
+                    or PureWindowsPath(name).drive or PurePosixPath(name).is_absolute()
+                    or name in {".", ".."}):
+                raise RuntimeError(f"Unsafe embed archive path: {name}")
+        if not required <= names:
+            raise RuntimeError(f"Incomplete Python embeddable ZIP {asset.name}: missing {sorted(required - names)}")
+        if out.exists():
+            shutil.rmtree(out)
+        out.mkdir(parents=True)
+        for entry in entries:
+            with source.open(entry) as stream, (out / entry.filename).open("wb") as destination:
+                shutil.copyfileobj(stream, destination)
+    marker.write_text(json.dumps({
+        "format": 2, "provider": "pbs", "source": "python.org", "asset": asset.name,
+        "url": asset.url, "sha256": actual, "target": target.key, "python": python_version(),
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
+
+
 def _local_info(target: Target) -> dict:
     spec = runtime_spec(target)
     if not spec.root.exists() or not spec.sdk_root.exists():
@@ -108,7 +174,7 @@ def ensure_sdk(target: Target) -> Path:
 def ensure_runtime(target: Target) -> Path:
     spec = runtime_spec(target)
     if runtime_provider() == "pbs":
-        root = ensure_pbs_runtime(target)
+        root = ensure_windows_embed_runtime(target) if target.os == "windows" else ensure_pbs_runtime(target)
         data = build_manifest(spec, pbs_sdk_info(target))
         validate_manifest(data, target, spec)
         write_manifest(root, data)
