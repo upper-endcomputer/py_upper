@@ -7,6 +7,8 @@ import sysconfig
 import zipfile
 from pathlib import Path
 
+import pytest
+
 
 def make_wheel(root: Path, name="demo_pkg", version="1.0.0", payload="ok", requires_dist: str | None = None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
@@ -64,6 +66,63 @@ def test_wheel_collision_with_different_content_fails(tmp_path):
         assert "collision" in str(exc).lower()
     else:
         raise AssertionError("expected wheel collision")
+
+
+def test_wheel_data_buckets_are_mapped_into_the_bundle(tmp_path):
+    from py_upper.third_party import _extract_wheel
+
+    wheel = make_wheel(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("demo_pkg-1.0.0.data/purelib/extra.py", b"VALUE = 42\n")
+        archive.writestr("demo_pkg-1.0.0.data/platlib/extension.so", b"native")
+        archive.writestr("demo_pkg-1.0.0.data/data/share/config.json", b"{}")
+        archive.writestr("demo_pkg-1.0.0.data/scripts/demo", b"#!/bin/sh\n")
+        archive.writestr("demo_pkg-1.0.0.data/headers/demo.h", b"header")
+        # A nested directory with a .data suffix is an ordinary package path.
+        archive.writestr("demo_pkg/assets.data/file.txt", b"nested")
+    site = tmp_path / "site"
+    staging = tmp_path / "stage"
+    installed = _extract_wheel(wheel, site, staging)
+    assert (site / "extra.py").read_bytes() == b"VALUE = 42\n"
+    assert (site / "extension.so").read_bytes() == b"native"
+    assert (staging / "runtime-data" / "share" / "config.json").read_bytes() == b"{}"
+    assert (staging / "runtime-data" / "bin" / "demo").read_bytes() == b"#!/bin/sh\n"
+    assert (site / "demo_pkg" / "assets.data" / "file.txt").read_bytes() == b"nested"
+    assert not (site / "demo_pkg-1.0.0.data").exists()
+    assert not (staging / "runtime-data" / "demo.h").exists()
+    assert len(installed) == 10  # regular wheel files plus mapped payloads, not headers
+
+
+@pytest.mark.parametrize("member", [
+    "../escape.py", "/tmp/escape.py", "C:/escape.py", "C:escape.py",
+    r"..\escape.py", r"C:\escape.py", r"\\server\share\escape.py",
+    "pkg/../escape.py", "pkg//escape.py", "pkg/./escape.py",
+])
+def test_wheel_member_must_be_portable_and_relative(tmp_path, member):
+    from py_upper.third_party import _extract_wheel, _wheel_records
+
+    wheel = make_wheel(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(member, b"malicious")
+    with pytest.raises(RuntimeError, match="Unsafe wheel member path"):
+        _wheel_records(wheel)
+    with pytest.raises(RuntimeError, match="Unsafe wheel member path"):
+        _extract_wheel(wheel, tmp_path / "site", tmp_path / "stage")
+    assert not (tmp_path / "site").exists()  # reject archive before any write
+
+
+@pytest.mark.parametrize("member", [
+    "demo_pkg-1.0.0.data/purelib", "demo_pkg-1.0.0.data/unknown/file.py",
+])
+def test_invalid_wheel_data_member_is_rejected(tmp_path, member):
+    from py_upper.third_party import _extract_wheel
+
+    wheel = make_wheel(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(member, b"invalid")
+    with pytest.raises(RuntimeError, match="wheel .data|Unsupported wheel data"):
+        _extract_wheel(wheel, tmp_path / "site", tmp_path / "stage")
+    assert not (tmp_path / "site").exists()
 
 
 def test_pip_target_arguments_use_target_compatibility_set():

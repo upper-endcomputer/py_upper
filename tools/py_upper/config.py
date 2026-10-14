@@ -588,6 +588,6 @@ def build_jobs() -> int:
 def incremental_build_enabled() -> bool:
     """Whether a module that did not change reuses its cached build output."""
     value = build_config().get("incremental", True)
-    if isinstance(value, str):
-        return value.strip().lower() not in {"", "0", "false", "no", "off"}
-    return bool(value)
+    if not isinstance(value, bool):
+        raise RuntimeError("[tool.py_upper.build].incremental must be a boolean")
+    return value

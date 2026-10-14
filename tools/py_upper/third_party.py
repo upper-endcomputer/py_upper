@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .config import APP, BUILD, LOCK, ROOT, Target, dependency_config, host_target, load_app_config, optimize_config, pip_cache_dir, pip_transfer_args, python_version, require_local_python, runtime_executable, wheel_dir
 
@@ -202,10 +202,13 @@ def installed_import_names(site: Path) -> list[str]:
 
 
 def _safe_member(name: str) -> Path:
-    path = Path(name)
-    if path.is_absolute() or ".." in path.parts:
+    # Wheel members use POSIX paths regardless of the build host. Reject a
+    # Windows path even on Unix, where pathlib would treat its drive as a name.
+    parts = name.rstrip("/").split("/")
+    if (not name or name.startswith("/") or "\\" in name
+            or PureWindowsPath(name).drive or any(part in {"", ".", ".."} for part in parts)):
         raise RuntimeError(f"Unsafe wheel member path: {name}")
-    return path
+    return Path(*parts)
 
 
 def _wheel_records(path: Path) -> tuple[list[str], Path]:
@@ -219,17 +222,16 @@ def _wheel_records(path: Path) -> tuple[list[str], Path]:
         return names, Path(dist_infos[0]).parent
 
 
-def _destination_for_member(member: Path, site: Path, staging: Path) -> Path | None:
-    if not member.parts:
-        return None
+def _destination_for_member(member: Path, site: Path, staging: Path, data_root: str) -> Path | None:
     parts = member.parts
-    data_index = next((i for i, part in enumerate(parts) if part.endswith(".data")), None)
-    if data_index is None:
+    if parts[0] != data_root:
+        if parts[0].endswith(".data"):
+            raise RuntimeError(f"Invalid wheel .data member: {'/'.join(parts)}")
         return site.joinpath(*parts)
-    if data_index != len(parts) - 2:
+    if len(parts) < 3:
         raise RuntimeError(f"Invalid wheel .data member: {'/'.join(parts)}")
-    bucket = parts[data_index + 1]
-    relative = parts[data_index + 2 :]
+    bucket = parts[1]
+    relative = parts[2:]
     if bucket in {"purelib", "platlib"}:
         return site.joinpath(*relative)
     if bucket == "data":
@@ -243,13 +245,17 @@ def _destination_for_member(member: Path, site: Path, staging: Path) -> Path | N
 
 def _extract_wheel(wheel: Path, site: Path, staging: Path | None = None) -> list[Path]:
     staging = staging or site.parent
+    _, dist_info = _wheel_records(wheel)
+    data_root = dist_info.name[:-len(".dist-info")] + ".data"
     installed: list[Path] = []
     with zipfile.ZipFile(wheel) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
-            member = _safe_member(info.filename)
-            destination = _destination_for_member(member, site, staging)
+        # Validate every destination before writing any payload, including a
+        # malformed .data bucket that appears late in the archive.
+        entries = [
+            (info, _destination_for_member(_safe_member(info.filename), site, staging, data_root))
+            for info in archive.infolist() if not info.is_dir()
+        ]
+        for info, destination in entries:
             if destination is None:
                 continue
             destination.parent.mkdir(parents=True, exist_ok=True)

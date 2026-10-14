@@ -211,3 +211,12 @@ def test_build_jobs_and_incremental_are_configurable(monkeypatch):
     monkeypatch.setattr(config, "py_upper_config", lambda: {"build": {"jobs": "many"}})
     with pytest.raises(RuntimeError, match="jobs"):
         config.build_jobs()
+
+
+@pytest.mark.parametrize("value", ["sometimes", "", 1, 0, [], None])
+def test_incremental_rejects_non_boolean_config(monkeypatch, value):
+    from py_upper import config
+
+    monkeypatch.setattr(config, "py_upper_config", lambda: {"build": {"incremental": value}})
+    with pytest.raises(RuntimeError, match="incremental.*boolean"):
+        config.incremental_build_enabled()
