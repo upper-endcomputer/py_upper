@@ -11,10 +11,12 @@
 - `TargetPython.root` is `sdk_root` now, and `resolve_target_python()` reads `info["sdk_root"]`. Both providers name the SDK tree the same way; where the packaged tree is reported it is called `runtime_root`, so no key means two different directories.
 - `_windows_import_library()` searches `libs/` and `install/libs/` under the SDK. A missing versioned import library now reports the SDK path and states that the library is a compiler input and is never taken from the runtime.
 - The development guide states which tree each Windows build input comes from and lists the failure in the troubleshooting table.
+- The local end-to-end fixture follows the same split: the import libraries it links against sit in the SDK half, not in the runtime half it copies.
 
 ### Verification
 - `python -m pytest app/tests -q`: 141 passed, 5 skipped.
 - The import-library test now plants a `libs/python313.lib` in the *runtime* tree and leaves only the shim in the SDK: the build must fail there, and the successful case asserts the linker's search path is the SDK path and never the runtime path. On the old lookup this test passes silently instead.
+- `PY_UPPER_E2E=1 python -m pytest app/tests/test_e2e_local.py -q`: 2 passed.
 - Full macOS arm64 PySide6 build on the same pin: `[1/6]`…`[6/6]` green, 40 PASS, `--run` exit 0, `codesign --verify --deep --strict` valid.
 
 ### Limitations

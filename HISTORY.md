@@ -1,6 +1,6 @@
 ## v0.17.8
 
-Windows 构建在编译头一步就退出的问题修掉了：扩展链接要的导库被从发布 runtime 里找，而发布 runtime 自 0.17.7 起是 python.org 的嵌入 ZIP，里面根本没有 `libs/`——旧布局下它正好就是 PBS 安装树，正好带着 `libs/python3XX.lib`，所以这个假设一直隐形。`TargetPython` 里同时装着"编译要读的树"和"要发布的树"，前者叫 `sdk_root`：导库和头文件一样只从 SDK 取；两个 provider 也不再往同一个 key 里塞不同含义的目录（SDK 都叫 `sdk_root`，发布树叫 `runtime_root`）。用例改成把 `python313.lib` 只放在 runtime 树里，旧查找会静默通过、现在必须报错。
+Windows 构建在编译头一步就退出的问题修掉了：扩展链接要的导库被从发布 runtime 里找，而发布 runtime 自 0.17.7 起是 python.org 的嵌入 ZIP，里面根本没有 `libs/`——旧布局下它正好就是 PBS 安装树，正好带着 `libs/python3XX.lib`，所以这个假设一直隐形。`TargetPython` 里同时装着"编译要读的树"和"要发布的树"，前者叫 `sdk_root`：导库和头文件一样只从 SDK 取；两个 provider 也不再往同一个 key 里塞不同含义的目录（SDK 都叫 `sdk_root`，发布树叫 `runtime_root`）。用例改成把 `python313.lib` 只放在 runtime 树里，旧查找会静默通过、现在必须报错；本机端到端 fixture 也按同样的分工摆——编译要链接的导库放在 SDK 那一半，而不是被拷走的那一半。
 
 Verification: 141 tests pass (5 skipped); a full macOS arm64 PySide6 build finished `[1/6]`…`[6/6]` with 40 PASS, launcher smoke, `--run` exit 0 and a valid code signature. Windows bundle 仍然只能由 Windows CI 那三条腿确认。
 

@@ -57,7 +57,9 @@ def _make_local_runtime(repo: Path) -> str:
     The fixture mirrors the directory layout of a downloaded PBS runtime so the
     full build chain (runtime manifest, launcher, Cython extensions, packaging,
     target smoke) can be exercised without network access. Windows keeps the
-    python.exe + Lib/ + DLLs/ + libs/ layout; Unix keeps bin/ + lib/pythonX.Y.
+    python.exe + Lib/ + DLLs/ layout; Unix keeps bin/ + lib/pythonX.Y. The SDK
+    half carries the compiler's inputs and nothing else: headers and, on
+    Windows, the import libraries.
     """
     target = host_target()
     version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
@@ -83,13 +85,14 @@ def _make_local_runtime(repo: Path) -> str:
         extension_dir = Path(sysconfig.get_path("platstdlib")).parent / "DLLs"
         if extension_dir.is_dir():
             shutil.copytree(extension_dir, runtime / "DLLs", symlinks=True, ignore=ignore)
-        # A downloaded PBS Windows runtime carries the CPython import libraries
-        # next to the interpreter (libs/python3XX.lib), and build_target_extensions
-        # links the target Cython extensions against them. A fixture without
-        # libs/ stops at [2/6] with "Target Python import library not found".
+        # The CPython import libraries (libs/python3XX.lib) are what
+        # build_target_extensions links the target extensions against. They are
+        # a compiler input, so they belong to the SDK tree and not to the
+        # runtime that ships; a fixture without them stops at [2/6] with
+        # "Import library of target Python ... not found under the SDK tree".
         from test_third_party import windows_import_lib_dir
 
-        shutil.copytree(windows_import_lib_dir(), runtime / "libs", symlinks=True, ignore=ignore)
+        shutil.copytree(windows_import_lib_dir(), sdk / "libs", symlinks=True, ignore=ignore)
         executable_name = "python.exe"
     else:
         (runtime / "bin").mkdir()
