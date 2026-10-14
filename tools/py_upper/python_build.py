@@ -356,16 +356,24 @@ def _windows_import_library(target_python) -> tuple[Path, Path, str]:
     the versioned one, so the extension imports the DLL the runtime actually
     ships and the closure resolves it as a system dependency. Sort order used
     to decide this, and it picked the shim.
+
+    The library is a compiler input, so it is read from the SDK tree. The
+    packaged runtime is not a link input and does not carry one: the Windows
+    release runtime is the python.org embeddable layout, which ships
+    python3XX.dll and no libs/ directory whatsoever.
     """
     candidates = [
-        target_python.root / "libs",
-        target_python.root / "install" / "libs",
-        target_python.root / "lib",
-        target_python.root / "install" / "lib",
+        target_python.sdk_root / "libs",
+        target_python.sdk_root / "install" / "libs",
+        target_python.sdk_root / "lib",
+        target_python.sdk_root / "install" / "lib",
     ]
     libdir = next((path for path in candidates if path.exists() and any(path.glob("python*.lib"))), None)
     if libdir is None:
-        raise RuntimeError(f"Target Python import library not found under {target_python.root}")
+        raise RuntimeError(
+            f"Import library of target Python {target_python.python_major_minor} not found under the "
+            f"SDK tree {target_python.sdk_root}; it is a compiler input and is never taken from the runtime"
+        )
     python_lib = f"python{target_python.python_major_minor.replace('.', '')}"
     if not (libdir / f"{python_lib}.lib").is_file():
         raise RuntimeError(f"{python_lib}.lib not found in {libdir}")

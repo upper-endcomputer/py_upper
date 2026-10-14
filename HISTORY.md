@@ -1,3 +1,9 @@
+## v0.17.8
+
+Windows 构建在编译头一步就退出的问题修掉了：扩展链接要的导库被从发布 runtime 里找，而发布 runtime 自 0.17.7 起是 python.org 的嵌入 ZIP，里面根本没有 `libs/`——旧布局下它正好就是 PBS 安装树，正好带着 `libs/python3XX.lib`，所以这个假设一直隐形。`TargetPython` 里同时装着"编译要读的树"和"要发布的树"，前者叫 `sdk_root`：导库和头文件一样只从 SDK 取；两个 provider 也不再往同一个 key 里塞不同含义的目录（SDK 都叫 `sdk_root`，发布树叫 `runtime_root`）。用例改成把 `python313.lib` 只放在 runtime 树里，旧查找会静默通过、现在必须报错。
+
+Verification: 141 tests pass (5 skipped); a full macOS arm64 PySide6 build finished `[1/6]`…`[6/6]` with 40 PASS, launcher smoke, `--run` exit 0 and a valid code signature. Windows bundle 仍然只能由 Windows CI 那三条腿确认。
+
 ## v0.17.7
 
 Windows packages now ship the official python.org embeddable runtime instead of the PBS `install_only_stripped` install tree. PBS still provides the full SDK for that same target Python — extension compilation, target wheel resolution and the Qt import-closure probe run its interpreter — but the SDK is a build input and never reaches `dist/`. The embeddable ZIP is cached per target, validated (flat members, no traversal, no duplicates, required files) before anything is written, unpacked unmodified into `runtimes/<target>/<python>`, and recorded in the lock file as `runtime.source = "python.org"` with its checksum; a lock from the old shape is rejected rather than silently rebuilt, and a pinned version python.org publishes no embeddable ZIP for fails with the version and target named. The launcher learned that an embeddable runtime keeps its standard extensions beside `python3XX.dll` rather than in `DLLs/`, and the package check now asserts that shape (`python3XX.zip`, `._pth`, no `Lib/`). The Windows runtime payload fell from 65 MB and 3 271 files to 20 MB and 36 files for 3.13.5 x86_64, with no pip left to prune; the tracked template moves to 3.13.5, the value that exists both as three Windows embeddable ZIPs and across all seven PBS SDKs.

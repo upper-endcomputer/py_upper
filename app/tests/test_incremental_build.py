@@ -146,14 +146,14 @@ def test_incremental_build_can_be_switched_off(tmp_path, monkeypatch):
 
 def test_windows_unchanged_extension_skips_the_setuptools_driver(tmp_path, monkeypatch):
     target = TARGETS["windows-x86_64"]
-    runtime = tmp_path / "runtime"
-    libs = runtime / "libs"
+    sdk = tmp_path / "sdk"
+    libs = sdk / "install" / "libs"
     libs.mkdir(parents=True)
     (libs / "python313.lib").write_bytes(b"")
-    include = tmp_path / "sdk" / "include"
+    include = sdk / "install" / "include"
     include.mkdir(parents=True)
     target_python = SimpleNamespace(
-        root=runtime,
+        sdk_root=sdk,
         include_dir=include,
         python_major_minor="3.13",
         extension_suffix=".cp313-win_amd64.pyd",

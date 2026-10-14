@@ -108,8 +108,19 @@ class RuntimeSpec:
 
 @dataclass(frozen=True)
 class TargetPython:
+    """The target interpreter as a *build input*, not as a release runtime.
+
+    ``sdk_root`` is the full SDK tree the compiler is pointed at: headers and
+    the import library both live there. The runtime that ships in ``dist/`` is
+    a different tree and holds no build input at all — on Windows it is the
+    python.org embeddable layout, which has no ``libs/`` directory.
+
+    ``executable`` is the interpreter used to run the target-arch smoke test,
+    and ``include_dir`` the directory holding ``Python.h``.
+    """
+
     target: Target
-    root: Path
+    sdk_root: Path
     executable: Path
     include_dir: Path
     python_version: str
@@ -549,7 +560,9 @@ def resolve_target_python(target: Target) -> TargetPython:
     spec = runtime_spec(target)
     ensure_sdk(target)
     info = sdk_info(target)
-    sdk_root = Path(str(info.get("root") or spec.sdk_root)).resolve()
+    # Both providers name this key the same way, so neither can hand back its
+    # release runtime where the compiler expects the SDK.
+    sdk_root = Path(str(info.get("sdk_root") or spec.sdk_root)).resolve()
     executable = Path(str(info.get("python_executable") or ""))
     if not executable.exists():
         executable = _find_target_executable(spec.root, target)
@@ -562,7 +575,7 @@ def resolve_target_python(target: Target) -> TargetPython:
     major_minor = ".".join(actual.split(".")[:2])
     abi = f"cp{major_minor.replace('.', '')}"
     suffix = target_extension_suffix(target, major_minor, abi)
-    return TargetPython(target, spec.root, executable, include, actual, major_minor, abi, suffix)
+    return TargetPython(target, sdk_root, executable, include, actual, major_minor, abi, suffix)
 
 
 def build_config() -> dict:

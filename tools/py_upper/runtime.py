@@ -152,7 +152,7 @@ def _local_info(target: Target) -> dict:
         "provider": "local",
         "target": target.key,
         "target_triple": target.triple,
-        "root": str(spec.root),
+        "runtime_root": str(spec.root),
         "sdk_root": str(spec.sdk_root),
         "python_executable": str((spec.sdk_root / manifest["python_executable"]).resolve()),
         "include_dir": str((spec.sdk_root / manifest["include_dir"]).resolve()),

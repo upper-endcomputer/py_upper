@@ -2,7 +2,7 @@
 
 本文是 `py_upper` 的完整开发与使用手册：从环境准备、日常开发、打包发布，到 Qt 应用处理、依赖管理和排错。README 讲的是"是什么"，本文讲的是"怎么用、为什么这么设计、出问题怎么查"。
 
-当前稳定线：**0.17.7**。
+当前稳定线：**0.17.8**。
 
 ---
 
@@ -156,7 +156,7 @@ py_upper/
 ```toml
 [project]
 name = "py_upper"
-version = "0.17.7"
+version = "0.17.8"
 requires-python = ">=3.8,<3.14"
 dependencies = ["PySide6==6.11.0", "pyserial==3.5"]
 
@@ -217,7 +217,7 @@ architectures = ["arm64", "x86_64"]
 architectures = ["x86_64", "arm64"]
 ```
 
-Windows + PBS：发布 runtime 来自 python.org 官方 embeddable ZIP；PBS full SDK 只用于编译、目标 pip 解析和 Qt import 闭包，不会进入 dist。官方 embed ZIP 的 `_pth` 和根目录 `.pyd` 布局由 launcher 处理，打包后的 launcher smoke 验证依赖 import。精确版本必须同时存在官方 ZIP 与 PBS SDK（例如 3.13.5；3.11.13 无官方 ZIP）。
+Windows + PBS：发布 runtime 来自 python.org 官方 embeddable ZIP；PBS full SDK 只用于编译、目标 pip 解析和 Qt import 闭包，不会进入 dist。编译侧读的一切（`Python.h`、`libs/python3XX.lib`）都只从 SDK 取：发布 runtime 是嵌入形状，没有 `libs/`，也不是链接输入。官方 embed ZIP 的 `_pth` 和根目录 `.pyd` 布局由 launcher 处理，打包后的 launcher smoke 验证依赖 import。精确版本必须同时存在官方 ZIP 与 PBS SDK（例如 3.13.5；3.11.13 无官方 ZIP）。
 
 ### 环境变量
 
@@ -504,6 +504,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | Windows 目标机报缺 `VCRUNTIME140.dll` | launcher 动态链接 CRT | ≥0.17.5 launcher 使用静态 CRT（`/MT`） |
 | 非 ASCII 安装路径下应用起不来 | 窄字符路径按 ANSI 代码页解释 | ≥0.17.5 入口/路径全程 UTF-8，`std::filesystem` 走 `u8path` |
 | 改了代码但该模块没有重新编译 | 增量缓存命中（源码文本与上次一致） | 确认文件内容真的变了；强制全量用 `[tool.py_upper.build].incremental = false` 或 `--clean` |
+| Windows 编译扩展报 `Import library of target Python ... not found under the SDK tree` | 导库是编译器输入，只从 SDK 取；发布 runtime 是嵌入形状，没有 `libs/` | ≥0.17.8 已从 SDK 取；SDK 缓存不完整时删 `.cache/pbs-sdk/<target>/<python>` 重新下载 |
 
 调试技巧：`PY_UPPER_TRACEBACK=1 python tools/build.py`；`python tools/build.py --doctor` 看宿主/目标/工具链；`--verify` 可反复执行定位到具体失败项。
 

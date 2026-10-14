@@ -1030,12 +1030,18 @@ def test_target_python_smoke_does_not_write_bytecode_into_staging(tmp_path, monk
 
 
 def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypatch):
-    """Link the versioned import library, not the stable-ABI shim.
+    """Link the versioned import library, from the SDK, never from the runtime.
 
     A CPython tree carries both ``python313.lib`` and ``python3.lib``. The shim
     exports a subset of the same functions and names ``python3.dll`` in the
     import table, a DLL the dependency closure does not know as part of the
     runtime. Choosing between the two by sort order picked the shim.
+
+    The library is also a compiler input, so it is read from the SDK tree. The
+    runtime tree below carries one anyway: it is the layout the PBS release
+    runtime used to have, and reading the linker's search path out of ``dist/``
+    is exactly the bug this pins. The packaged runtime is the python.org
+    embeddable layout and has no ``libs/`` at all.
     """
     from types import SimpleNamespace
 
@@ -1044,14 +1050,17 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
     from py_upper.toolchain import Toolchain
 
     target = TARGETS["windows-x86_64"]
-    runtime = tmp_path / "runtime"
-    libs = runtime / "libs"
+    sdk = tmp_path / "sdk"
+    libs = sdk / "install" / "libs"
     libs.mkdir(parents=True)
     (libs / "python3.lib").write_bytes(b"")
-    include = tmp_path / "sdk" / "include"
+    include = sdk / "install" / "include"
     include.mkdir(parents=True)
+    runtime_libs = tmp_path / "runtime" / "libs"
+    runtime_libs.mkdir(parents=True)
+    (runtime_libs / "python313.lib").write_bytes(b"")
     target_python = SimpleNamespace(
-        root=runtime,
+        sdk_root=sdk,
         include_dir=include,
         python_major_minor="3.13",
         extension_suffix=".cp313-win_amd64.pyd",
@@ -1082,7 +1091,8 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
     monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
     monkeypatch.setattr(python_build.subprocess, "run", fake_run)
 
-    # The shim alone is not an import library this build can use.
+    # Neither the shim, nor the copy the runtime tree happens to carry, is an
+    # import library this build can use.
     with pytest.raises(RuntimeError, match="python313.lib not found"):
         python_build.build_target_extensions(target, [source])
 
@@ -1093,6 +1103,42 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
     setup_text = generated_setup["text"]
     assert "TARGET_LIBRARIES=['python313']" in setup_text
     assert f"TARGET_LIBDIR={str(libs)!r}" in setup_text
+    assert str(tmp_path / "runtime") not in setup_text
+
+
+def test_target_python_points_the_compiler_at_the_sdk(tmp_path, monkeypatch):
+    """``resolve_target_python`` reports the SDK tree, not the runtime tree.
+
+    The SDK info dict exposed the tree the compiler reads under ``root``, and
+    the local provider filled that key with its *runtime* path. Both providers
+    now say ``sdk_root``, so a lookup cannot end up walking ``dist/``.
+    """
+    from py_upper import config, runtime
+
+    target = config.TARGETS["windows-x86_64"]
+    runtime_root = tmp_path / "runtimes" / "windows-x86_64" / "3.13.5"
+    sdk = tmp_path / ".cache" / "pbs-sdk" / "windows-x86_64" / "3.13.5"
+    include = sdk / "install" / "include"
+    include.mkdir(parents=True)
+    (include / "Python.h").write_text("", encoding="utf-8")
+    (sdk / "install" / "python.exe").write_bytes(b"")
+    runtime_root.mkdir(parents=True)
+
+    spec = config.RuntimeSpec("pbs", "3.13.5", target, runtime_root, sdk)
+    monkeypatch.setattr(config, "runtime_spec", lambda value: spec)
+    monkeypatch.setattr(runtime, "ensure_sdk", lambda value: sdk)
+    monkeypatch.setattr(runtime, "sdk_info", lambda value: {
+        "sdk_root": str(sdk),
+        "runtime_root": str(runtime_root),
+        "python_executable": str(sdk / "install" / "python.exe"),
+        "include_dir": str(include),
+        "python": "3.13.5",
+    })
+
+    resolved = config.resolve_target_python(target)
+
+    assert resolved.sdk_root == sdk
+    assert resolved.include_dir == include
 
 
 def test_windows_launcher_does_not_ask_for_the_python_import_library(tmp_path):

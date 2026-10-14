@@ -426,7 +426,7 @@ def sdk_info(target: Target) -> dict:
     actual_python = str(marker.get("python") or python_version())
     return {
         "provider": "pbs",
-        "root": str(root),
+        "sdk_root": str(root),
         "tag": marker.get("tag"),
         "asset": marker.get("asset"),
         "url": marker.get("url"),

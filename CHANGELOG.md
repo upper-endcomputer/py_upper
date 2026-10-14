@@ -1,3 +1,25 @@
+## 0.17.8
+
+### Problem
+- A Windows build stopped at the first compiler step with `RuntimeError: Target Python import library not found under ...\runtimes\windows-x86_64\3.13.5`. Every Linux and macOS leg built, so the failure belonged to the shape of the Windows runtime rather than to the target: the import library the linker needs was being read out of the release runtime, which since 0.17.7 is the python.org embeddable ZIP and carries no `libs/` directory at all.
+
+### Root cause
+- The tree the compiler reads and the tree that ships were addressed by one field. `TargetPython.root` held the *runtime* root while the include directory beside it already came from the SDK through the runtime manifest; the import-library lookup was the one consumer that kept walking the packaged tree, and it only worked by accident — before 0.17.7 the release runtime *was* the PBS install tree, which happens to carry `libs/python3XX.lib`.
+- The SDK info dict exposed the compiler-facing tree under `root`, and the two providers filled that key with different trees: PBS with the SDK, `local` with the runtime. Reading it decided which of the two a build got.
+
+### Changes
+- `TargetPython.root` is `sdk_root` now, and `resolve_target_python()` reads `info["sdk_root"]`. Both providers name the SDK tree the same way; where the packaged tree is reported it is called `runtime_root`, so no key means two different directories.
+- `_windows_import_library()` searches `libs/` and `install/libs/` under the SDK. A missing versioned import library now reports the SDK path and states that the library is a compiler input and is never taken from the runtime.
+- The development guide states which tree each Windows build input comes from and lists the failure in the troubleshooting table.
+
+### Verification
+- `python -m pytest app/tests -q`: 141 passed, 5 skipped.
+- The import-library test now plants a `libs/python313.lib` in the *runtime* tree and leaves only the shim in the SDK: the build must fail there, and the successful case asserts the linker's search path is the SDK path and never the runtime path. On the old lookup this test passes silently instead.
+- Full macOS arm64 PySide6 build on the same pin: `[1/6]`…`[6/6]` green, 40 PASS, `--run` exit 0, `codesign --verify --deep --strict` valid.
+
+### Limitations
+- The Windows legs of CI remain the only end-to-end evidence for the Windows bundle; this machine cannot execute a PE binary.
+
 ## 0.17.7
 
 ### Problem
