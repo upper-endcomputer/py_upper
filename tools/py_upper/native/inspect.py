@@ -10,9 +10,16 @@ class BinaryInfo:
     path: Path
     format: str
     arch: str
+    # PE only: IMAGE_OPTIONAL_HEADER.Subsystem.  None for every other format and
+    # for truncated images where the optional header is not fully readable.
+    subsystem: int | None = None
 
 
 PE_MACHINE = {0x8664: "x86_64", 0xAA64: "arm64", 0x14C: "x86"}
+
+PE_SUBSYSTEM_GUI = 2
+PE_SUBSYSTEM_CONSOLE = 3
+PE_SUBSYSTEM = {PE_SUBSYSTEM_GUI: "gui", PE_SUBSYSTEM_CONSOLE: "console"}
 MACH_CPU = {0x01000007: "x86_64", 0x0100000C: "arm64", 7: "x86"}
 
 # ARM64EC images declare IMAGE_FILE_MACHINE_AMD64 (0x8664) so that x64 code can
@@ -55,6 +62,19 @@ def _pe_has_arm64ec_section(data: bytes, pe: int) -> bool:
     return any(entries[offset:offset + 8].startswith(_ARM64EC_SECTION) for offset in range(0, len(entries) - 7, 40))
 
 
+def _pe_subsystem(data: bytes, pe: int) -> int | None:
+    """Return the PE optional header's Subsystem field.
+
+    PE32 and PE32+ disagree about the layout of the fields before Subsystem
+    (PE32+ drops BaseOfData), but the byte offset from the start of the optional
+    header is 68 in both cases, so one offset serves either optional header.
+    """
+    offset = pe + 24 + 68
+    if offset + 2 > len(data):
+        return None
+    return struct.unpack_from("<H", data, offset)[0] or None
+
+
 def _mach_arches(data: bytes, magic: int) -> set[str]:
     little = magic in _MACH_LITTLE_MAGICS
     endian = "<" if little else ">"
@@ -88,7 +108,7 @@ def inspect(path: Path) -> BinaryInfo:
             arch = PE_MACHINE.get(machine, f"0x{machine:04x}")
             if machine == _ARM64EC_MACHINE and _pe_has_arm64ec_section(raw, pe):
                 arch = "arm64ec"
-            return BinaryInfo(path, "PE", arch)
+            return BinaryInfo(path, "PE", arch, _pe_subsystem(raw, pe))
     if len(data) >= 4:
         magic = struct.unpack_from(">I", data, 0)[0]
         if magic in _MACH_LITTLE_MAGICS | _MACH_BIG_MAGICS:

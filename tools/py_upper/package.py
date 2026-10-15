@@ -24,6 +24,10 @@ from .runtime import optimize_runtime_tree
 from .toolchain import resolve_toolchain
 from .verify import smoke_modules
 
+# CMake spells the Windows processor architecture the way the MSVC toolchain
+# does; the packaging targets use the Python platform tag vocabulary instead.
+CMAKE_WINDOWS_PROCESSOR = {"x86": "x86", "x86_64": "AMD64", "arm64": "ARM64"}
+
 
 def build_launcher(target: Target):
     sdk = resolve_target_python(target)
@@ -67,7 +71,7 @@ def build_launcher(target: Target):
         # defaults (notably -arch) to a Windows compiler.
         cmd += [
             "-DCMAKE_SYSTEM_NAME=Windows",
-            f"-DCMAKE_SYSTEM_PROCESSOR={'ARM64' if target.arch == 'arm64' else 'AMD64'}",
+            f"-DCMAKE_SYSTEM_PROCESSOR={CMAKE_WINDOWS_PROCESSOR[target.arch]}",
             f"-DCMAKE_RC_COMPILER={rc}",
             # MinGW uses the ANSI WinMain entry unless the Unicode entry point
             # is explicitly selected; MSVC infers it from WIN32_EXECUTABLE.
@@ -76,6 +80,8 @@ def build_launcher(target: Target):
             # keeps the real launcher's wWinMain link intact.
             "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
             "-DCMAKE_CXX_FLAGS=-municode",
+            # The GUI subsystem itself is requested by the launcher's
+            # CMakeLists, which cannot rely on WIN32_EXECUTABLE alone.
             "-DCMAKE_EXE_LINKER_FLAGS=-municode",
         ]
     if target.os == "macos":

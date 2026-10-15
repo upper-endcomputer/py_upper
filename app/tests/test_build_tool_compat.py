@@ -642,6 +642,64 @@ def test_launcher_build_passes_the_configured_app_name(tmp_path, monkeypatch):
     assert f"-DPY_UPPER_APP_NAME={app_name()}" in configure
 
 
+def test_zig_launcher_configure_names_every_windows_architecture(tmp_path, monkeypatch):
+    """The configure step must carry the target architecture, x86 included.
+
+    CMAKE_SYSTEM_PROCESSOR used to be spelled with an arm64/AMD64 ternary, which
+    reported every 32-bit configure as AMD64.  It now comes from the packaging
+    target, which has an entry for each Windows arch the tooling can build.
+    """
+    from types import SimpleNamespace
+
+    from py_upper import package
+    from py_upper.config import TARGETS
+    from py_upper.package import CMAKE_WINDOWS_PROCESSOR
+
+    for target in TARGETS.values():
+        if target.os == "windows":
+            assert CMAKE_WINDOWS_PROCESSOR[target.arch]
+    assert CMAKE_WINDOWS_PROCESSOR["x86"] == "x86"
+
+    monkeypatch.setattr(package, "BUILD", tmp_path)
+    monkeypatch.setattr(package, "resolve_target_python", lambda target: SimpleNamespace(include_dir=tmp_path / "include"))
+    monkeypatch.setattr(package, "resolve_toolchain", lambda target: SimpleNamespace(
+        env={}, deployment_target=None, compiler=str(tmp_path / "zig"),
+        compiler_args=("cc", "-target", "aarch64-windows-gnu"),
+    ))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "--build" in cmd:
+            (tmp_path / "launcher" / "windows-arm64" / "PyUpper.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(package.subprocess, "run", fake_run)
+
+    package.build_launcher(TARGETS["windows-arm64"])
+
+    configure = calls[0]
+    assert "-DCMAKE_SYSTEM_PROCESSOR=ARM64" in configure
+    assert "-DCMAKE_EXE_LINKER_FLAGS=-municode" in configure
+
+
+def test_launcher_cmake_requests_the_gui_subsystem_from_every_toolchain():
+    """WIN32_EXECUTABLE alone does not survive the Zig cross build.
+
+    CMake spells it -mwindows for non-MSVC compilers, and clang's driver (which
+    the Zig cross build goes through) drops that as an unused argument, so the
+    launcher came out as a console image that pops a console window for every
+    user.  The subsystem is requested on the target instead, where MSVC is
+    guarded out because its linker does not accept -Wl,... arguments.
+    """
+    cmake = (Path(__file__).parents[2] / "launcher" / "CMakeLists.txt").read_text(encoding="utf-8")
+    compact = "".join(cmake.split())
+    assert "set_target_properties(PyUpperPROPERTIESWIN32_EXECUTABLETRUE)" in compact
+    assert 'if(NOTMSVC)' in compact
+    assert 'target_link_options(PyUpperPRIVATE"-Wl,--subsystem,windows")' in compact
+    # The console escape hatch is the one build that must stay a console image.
+    assert "PY_UPPER_LAUNCHER_CONSOLE" in cmake
+
+
 def test_entry_scripts_include_a_rename_safe_static_entry(tmp_path):
     from py_upper.config import STATIC_ENTRY, TARGETS, entry_module
     from py_upper.package import write_entry_scripts
@@ -902,7 +960,7 @@ def test_macho_arm64_and_universal_validation(tmp_path):
     assert verify_arch(universal, TARGETS["macos-arm64"]).arch == "universal"
 
 
-def _synthetic_pe(machine: int, sections: tuple[str, ...]) -> bytes:
+def _synthetic_pe(machine: int, sections: tuple[str, ...], subsystem: int | None = None) -> bytes:
     """A minimal PE whose section table carries the given names."""
     pe_offset = 0x80
     optional_size = 0xF0
@@ -914,10 +972,65 @@ def _synthetic_pe(machine: int, sections: tuple[str, ...]) -> bytes:
     data[pe_offset + 4:pe_offset + 6] = machine.to_bytes(2, "little")
     data[pe_offset + 6:pe_offset + 8] = len(sections).to_bytes(2, "little")
     data[pe_offset + 20:pe_offset + 22] = optional_size.to_bytes(2, "little")
+    if subsystem is not None:
+        # IMAGE_OPTIONAL_HEADER.Subsystem sits at the same offset from the start
+        # of the optional header in PE32 and PE32+.
+        start = pe_offset + 24 + 68
+        data[start:start + 2] = subsystem.to_bytes(2, "little")
     for index, name in enumerate(sections):
         start = table + index * 40
         data[start:start + len(name)] = name.encode("ascii")
     return bytes(data)
+
+
+def test_pe_subsystem_is_reported(tmp_path):
+    """The GUI/console subsystem decides whether Windows flashes a console window.
+
+    CMake's WIN32_EXECUTABLE reaches MSVC through -mwindows, which Zig's clang
+    frontend drops without an error, so the subsystem is the only honest way to
+    tell a cross-built GUI launcher from a console one.
+    """
+    from py_upper.native.inspect import PE_SUBSYSTEM, PE_SUBSYSTEM_CONSOLE, PE_SUBSYSTEM_GUI, inspect
+
+    gui = tmp_path / "gui.exe"
+    gui.write_bytes(_synthetic_pe(0x8664, (".text",), subsystem=PE_SUBSYSTEM_GUI))
+    info = inspect(gui)
+    assert info.arch == "x86_64" and info.subsystem == 2
+    assert PE_SUBSYSTEM[info.subsystem] == "gui"
+
+    console = tmp_path / "console.exe"
+    console.write_bytes(_synthetic_pe(0x14C, (".text",), subsystem=PE_SUBSYSTEM_CONSOLE))
+    assert inspect(console).subsystem == 3
+
+    # A non-PE binary has no subsystem at all rather than a bogus default.
+    elf = bytearray(64)
+    elf[0:4] = b"\x7fELF"
+    elf[5] = 1
+    elf[18:20] = (62).to_bytes(2, "little")
+    other = tmp_path / "other"
+    other.write_bytes(bytes(elf))
+    assert inspect(other).subsystem is None
+
+
+def test_launcher_subsystem_check_expects_a_gui_image(tmp_path, monkeypatch):
+    from py_upper.native.inspect import PE_SUBSYSTEM_CONSOLE, PE_SUBSYSTEM_GUI
+    from py_upper.verify import _launcher_subsystem_check
+
+    monkeypatch.delenv("PY_UPPER_LAUNCHER_CONSOLE", raising=False)
+    gui = tmp_path / "gui.exe"
+    gui.write_bytes(_synthetic_pe(0x8664, (".text",), subsystem=PE_SUBSYSTEM_GUI))
+    assert _launcher_subsystem_check(gui) == (True, "launcher subsystem=gui")
+
+    console = tmp_path / "console.exe"
+    console.write_bytes(_synthetic_pe(0x8664, (".text",), subsystem=PE_SUBSYSTEM_CONSOLE))
+    ok, message = _launcher_subsystem_check(console)
+    assert not ok and "console, expected gui" in message
+
+    # PY_UPPER_LAUNCHER_CONSOLE=1 is the documented console build, so it is the
+    # one case where a console subsystem is the expected answer.
+    monkeypatch.setenv("PY_UPPER_LAUNCHER_CONSOLE", "1")
+    assert _launcher_subsystem_check(console) == (True, "launcher subsystem=console")
+    assert not _launcher_subsystem_check(gui)[0]
 
 
 def test_arm64ec_images_satisfy_the_arm64_target(tmp_path):
@@ -1654,15 +1767,36 @@ def test_zig_host_key_requires_native_host():
         pytest.fail("unsupported host must fail")
 
 
-def test_zig_rejects_windows_x86_before_downloading(monkeypatch):
-    from py_upper.config import Target
-    from py_upper.toolchain import ensure_zig
+def test_zig_cross_compiles_windows_x86_from_a_verified_toolchain(tmp_path, monkeypatch):
+    """32-bit Windows is a Zig target like any other.
 
-    monkeypatch.setenv("PY_UPPER_WINDOWS_TOOLCHAIN", "zig")
+    The x86 target used to be rejected before anything was downloaded, on the
+    assumption that Zig 0.16 ships no i686 cross toolchain.  It does: zig cc
+    -target i686-windows-gnu links a PE32 launcher and a PE32 extension against
+    the same python313.lib import library, so the guard only blocked a build
+    that works.  A pre-verified toolchain tree keeps the test offline and proves
+    the download path is not even reached.
+    """
+    import platform as platform_module
+
+    from py_upper import toolchain
+    from py_upper.config import TARGETS
+
+    monkeypatch.setattr(toolchain, "BUILD", tmp_path)
+    host_key = toolchain._zig_host_key(platform_module.system(), toolchain._host_arch())
+    root = tmp_path / "host-tools" / "zig" / f"{toolchain.ZIG_VERSION}-{host_key}"
+    zig = root / "archive" / f"zig-{host_key}" / toolchain._zig_exe_name()
+    zig.parent.mkdir(parents=True)
+    zig.write_text("", encoding="utf-8")
+    (root / ".verified").write_text("verified\n", encoding="utf-8")
 
     def fail(*_args, **_kwargs):
-        raise AssertionError("windows-x86 must be rejected before any download")
+        raise AssertionError("a verified toolchain must not hit the network")
 
-    monkeypatch.setattr("py_upper.toolchain.http_json", fail)
-    with pytest.raises(RuntimeError, match="windows-x86"):
-        ensure_zig(Target("windows", "x86", "x86-pc-windows-msvc"))
+    monkeypatch.setattr(toolchain, "http_json", fail)
+
+    tc = toolchain.ensure_zig(TARGETS["windows-x86"])
+    # Zig spells the 32-bit architecture "x86" and rejects the packaging
+    # triple's "i686" outright, so the arch component is translated too.
+    assert tc.compiler_args == ("cc", "-target", "x86-windows-gnu")
+    assert "-target x86-windows-gnu" in tc.env["CC"]

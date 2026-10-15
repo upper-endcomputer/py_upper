@@ -13,7 +13,10 @@ from .config import (
     target_extension_suffix, target_runtime_dir,
 )
 from .manifest import read_manifest, validate_manifest
-from .native.inspect import inspect, target_format, verify_arch
+from .native.inspect import (
+    PE_SUBSYSTEM, PE_SUBSYSTEM_CONSOLE, PE_SUBSYSTEM_GUI, inspect,
+    target_format, verify_arch,
+)
 from .python_build import module_name, selected_sources
 from .runtime import runtime_pip_payloads
 from .third_party import WHEEL_MANIFEST, dependency_specs, wheel_dir
@@ -77,6 +80,28 @@ def _package_root(target: Target) -> Path:
     return DIST / f"{name}.app" if target.os == "macos" else DIST / name
 
 
+def _launcher_subsystem_check(executable: Path) -> tuple[bool, str]:
+    """Assert the launcher is the subsystem Windows will start it as.
+
+    A GUI launcher is the shipped layout, but its subsystem is only implied by
+    the build: CMake's WIN32_EXECUTABLE relies on -mwindows, which MSVC honours
+    and Zig's clang frontend silently ignores, so a cross-built launcher used to
+    come out as a console image that flashes a console window on every start.
+    PY_UPPER_LAUNCHER_CONSOLE=1 is the documented debugging escape hatch that
+    builds the console variant on purpose, and is the only case console is
+    expected.
+    """
+    expected = PE_SUBSYSTEM_CONSOLE if os.environ.get("PY_UPPER_LAUNCHER_CONSOLE") == "1" else PE_SUBSYSTEM_GUI
+    try:
+        subsystem = inspect(executable).subsystem
+    except Exception as exc:
+        return False, f"launcher subsystem: {exc}"
+    if subsystem == expected:
+        return True, f"launcher subsystem={PE_SUBSYSTEM[expected]}"
+    actual = PE_SUBSYSTEM.get(subsystem, subsystem)
+    return False, f"launcher subsystem: {actual}, expected {PE_SUBSYSTEM[expected]}"
+
+
 def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     root = _package_root(target)
     name = app_name()
@@ -112,6 +137,8 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
             checks.append((True, f"launcher arch={target.arch}"))
         except Exception as exc:
             checks.append((False, f"launcher arch: {exc}"))
+        if target.os == "windows":
+            checks.append(_launcher_subsystem_check(executable))
 
     for source in selected_sources():
         expected = _expected_extension(site, source, target)

@@ -242,6 +242,11 @@ def _find_zig(root: Path) -> Path:
     return candidates[0]
 
 
+# Zig's own architecture names, for the components where the packaging triples
+# disagree with them.
+_ZIG_TRIPLE_ARCH = {"i686": "x86"}
+
+
 def ensure_zig(target: Target) -> Toolchain:
     """Download and unpack the pinned host-native Zig, then cross-compile.
 
@@ -255,10 +260,6 @@ def ensure_zig(target: Target) -> Toolchain:
     host_arch = _host_arch()
     if host_os not in {"Windows", "Darwin", "Linux"}:
         raise RuntimeError(f"Windows targets with Zig require a Windows/macOS/Linux build host, not {host_os}")
-    # Zig 0.16 ships no 32-bit Windows cross toolchain, so the target is
-    # rejected before a compiler that cannot serve it is downloaded.
-    if target.arch == "x86":
-        raise RuntimeError("Zig cannot build the launcher for windows-x86; install Visual Studio Build Tools")
     host_key = _zig_host_key(host_os, host_arch)
     root = BUILD / "host-tools" / "zig" / f"{ZIG_VERSION}-{host_key}"
     if not (root / ".verified").is_file():
@@ -301,7 +302,11 @@ def ensure_zig(target: Target) -> Toolchain:
     triple = target.triple
     if triple.endswith("-pc-windows-msvc"):
         triple = triple[:-len("-pc-windows-msvc")] + "-windows-gnu"
-    zig_triple = triple
+    # Zig names the 32-bit x86 architecture "x86" and rejects the packaging
+    # triple's leading "i686" as an unknown architecture.  Every other
+    # component already matches Zig's spelling.
+    arch, separator, remainder = triple.partition("-")
+    zig_triple = _ZIG_TRIPLE_ARCH.get(arch, arch) + separator + remainder
     env.update({
         "CC": str(zig) + " cc -target " + zig_triple,
         "CXX": str(zig) + " c++ -target " + zig_triple,

@@ -46,14 +46,15 @@ Target Contract（目标契约：OS / 架构 / Python 版本 / ABI / wheel 标�
 | 目标 | 宿主要求 | 额外工具 |
 |---|---|---|
 | macOS（arm64 / x86_64） | macOS | Xcode Command Line Tools（`clang`）、`cmake`、`ninja` |
-| Windows（x86 / x86_64 / arm64） | Windows | Visual Studio Build Tools（含 C++）、`cmake`；无 VS 的 macOS/Linux 宿主可用 Zig 交叉构建（x86 目标除外） |
+| Windows（x86 / x86_64 / arm64） | Windows | Visual Studio Build Tools（含 C++）、`cmake`；无 VS 的 macOS/Linux 宿主可用 Zig 交叉构建 |
 | Linux（x86_64 / arm64） | Linux | `gcc`/`g++`、`cmake`、`ninja`、`binutils`（可选 `patchelf`） |
 
 交叉目标（例如在 macOS 上打 Linux 包）可以 build/verify，但不会冒充在当前机器运行；带平台标记的第三方依赖需要目标平台的宿主，见 §8.1。
 
 **Windows 的 Zig 回退（无 VS 构建）：** 在 macOS/Linux 宿主上设置 `PY_UPPER_WINDOWS_TOOLCHAIN=zig`，构建工具会自动下载、SHA256 校验并使用**宿主原生** Zig（`PY_UPPER_ZIG_VERSION`，默认 `0.16.0`），用 `zig cc -target <arch>-windows-gnu` 交叉编译 launcher 和 Cython 扩展。注意：
 - 产物使用 MinGW-w64 CRT/ABI（Zig 0.16 不提供 MSVC 交叉 CRT），与 CPython 官方 `python313.lib` 兼容；
-- `windows-x86` 不支持 Zig 回退（需 Visual Studio Build Tools）；
+- launcher 的子系统由 `launcher/CMakeLists.txt` 显式要求（非 MSVC 链接器传 `-Wl,--subsystem,windows`）——CMake 的 `WIN32_EXECUTABLE` 只对 MSVC 生效，clang 驱动会静默丢掉 `-mwindows`；`verify` 会断言产物子系统，默认要 GUI；
+- `PY_UPPER_LAUNCHER_CONSOLE=1` 构建控制台子系统的调试版 launcher（stdout/stderr 常连），此时 `verify` 期望的子系统随之变成 console；
 - 交叉目标不执行目标运行时/launcher 冒烟，静态验证照常执行；
 - 有 VS 的 Windows 宿主不受影响（MSVC 路径不变）。
 

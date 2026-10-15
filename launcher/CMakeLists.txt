@@ -26,6 +26,14 @@ if(WIN32)
   # the debugging escape hatch: it keeps stdout/stderr attached unconditionally.
   if(NOT PY_UPPER_LAUNCHER_CONSOLE)
     set_target_properties(PyUpper PROPERTIES WIN32_EXECUTABLE TRUE)
+    # WIN32_EXECUTABLE only reaches MSVC's linker: it is spelled -mwindows for
+    # everyone else, and clang's driver (the Zig cross build) reports it as an
+    # unused argument and drops it, silently linking a console-subsystem image
+    # that pops a console window for every user. Non-MSVC linkers are handed
+    # the subsystem directly so the GUI launcher survives every toolchain.
+    if(NOT MSVC)
+      target_link_options(PyUpper PRIVATE "-Wl,--subsystem,windows")
+    endif()
   else()
     target_compile_definitions(PyUpper PRIVATE PY_UPPER_CONSOLE)
   endif()
