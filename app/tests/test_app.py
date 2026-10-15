@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.app import run_application
+from application import run_application
 
 
 def test_application(capsys):
@@ -61,7 +61,7 @@ def test_gui_opens_a_window_headlessly(monkeypatch, capsys):
     """
     pytest.importorskip("PySide6.QtWidgets", reason="PySide6 is only required for the packaged application")
 
-    from core.app import run_gui
+    from application import run_gui
 
     monkeypatch.setenv("PY_UPPER_HEADLESS", "1")
     monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)

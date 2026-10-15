@@ -263,7 +263,7 @@ def _prepare_repo() -> Path:
 
     main_py = repo / "app" / "src" / "main.py"
     main_py.write_text(
-        "from core.app import run_application\n"
+        "from application import run_application\n"
         "import demo_native\n"
         "import demo_pkg\n\n\n"
         "def main() -> None:\n"

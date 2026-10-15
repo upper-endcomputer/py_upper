@@ -371,6 +371,17 @@ RuntimeLoad load_python(const fs::path& home) {
         r.error = r.error.empty() ? reason : reason + "\n" + r.error;
     }
     r.stdlib = home / "Lib";
+    // The embedded launcher configures its own module search paths, so the
+    // runtime ZIP must not also activate python.org's isolated ._pth handling;
+    // with it enabled CPython ignores site-packages entirely.
+    for (const auto& e : fs::directory_iterator(home)) {
+        auto name = path_to_utf8(e.path().filename());
+        if (e.is_regular_file() && name.rfind("python", 0) == 0 && name.find("._pth") != std::string::npos) {
+            std::error_code rename_ec;
+            fs::rename(e.path(), e.path().string() + ".disabled", rename_ec);
+            break;
+        }
+    }
     // Windows CPython keeps its dynamic stdlib extensions (zlib, _ssl, _socket,
     // ...) in DLLs; without it on the module search path the packaged app
     // cannot import them.

@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.8"
+version = "0.17.9"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -65,6 +65,14 @@ manylinux = ["manylinux_2_39", "manylinux_2_34"]
 #     does not use), and leaving it in makes the payload arch guard reject the
 #     whole windows-arm64 bundle.
 exclude = [
+    # macOS and Windows wheels use different PySide6 plugin/qml prefixes, and
+    # these optional SQL/design payloads cannot be bundled.
+    "PySide6/plugins/sqldrivers/*qsqlibase*",
+    "PySide6/plugins/sqldrivers/*qsqlmimer*",
+    "PySide6/plugins/sqldrivers/*qsqlodbc*",
+    "PySide6/plugins/sqldrivers/*qsqloci*",
+    "PySide6/plugins/sqldrivers/*qsqlpsql*",
+    "PySide6/qml/QtQuick/Shapes/DesignHelpers/*",
     "PySide6/Qt/plugins/sqldrivers/*qsqlmimer*",
     "PySide6/Qt/plugins/sqldrivers/*qsqlodbc*",
     "PySide6/Qt/plugins/sqldrivers/*qsqlpsql*",

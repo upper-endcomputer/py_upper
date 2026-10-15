@@ -2,7 +2,7 @@
 
 本文是 `py_upper` 的完整开发与使用手册：从环境准备、日常开发、打包发布，到 Qt 应用处理、依赖管理和排错。README 讲的是"是什么"，本文讲的是"怎么用、为什么这么设计、出问题怎么查"。
 
-当前稳定线：**0.17.8**。
+当前稳定线：**0.17.9**。
 
 ---
 
@@ -46,10 +46,16 @@ Target Contract（目标契约：OS / 架构 / Python 版本 / ABI / wheel 标�
 | 目标 | 宿主要求 | 额外工具 |
 |---|---|---|
 | macOS（arm64 / x86_64） | macOS | Xcode Command Line Tools（`clang`）、`cmake`、`ninja` |
-| Windows（x86 / x86_64 / arm64） | Windows | Visual Studio Build Tools（含 C++）、`cmake` |
+| Windows（x86 / x86_64 / arm64） | Windows | Visual Studio Build Tools（含 C++）、`cmake`；无 VS 的 macOS/Linux 宿主可用 Zig 交叉构建（x86 目标除外） |
 | Linux（x86_64 / arm64） | Linux | `gcc`/`g++`、`cmake`、`ninja`、`binutils`（可选 `patchelf`） |
 
 交叉目标（例如在 macOS 上打 Linux 包）可以 build/verify，但不会冒充在当前机器运行；带平台标记的第三方依赖需要目标平台的宿主，见 §8.1。
+
+**Windows 的 Zig 回退（无 VS 构建）：** 在 macOS/Linux 宿主上设置 `PY_UPPER_WINDOWS_TOOLCHAIN=zig`，构建工具会自动下载、SHA256 校验并使用**宿主原生** Zig（`PY_UPPER_ZIG_VERSION`，默认 `0.16.0`），用 `zig cc -target <arch>-windows-gnu` 交叉编译 launcher 和 Cython 扩展。注意：
+- 产物使用 MinGW-w64 CRT/ABI（Zig 0.16 不提供 MSVC 交叉 CRT），与 CPython 官方 `python313.lib` 兼容；
+- `windows-x86` 不支持 Zig 回退（需 Visual Studio Build Tools）；
+- 交叉目标不执行目标运行时/launcher 冒烟，静态验证照常执行；
+- 有 VS 的 Windows 宿主不受影响（MSVC 路径不变）。
 
 ### 2.2 开发 Python（Build Tool 的解释器）
 
@@ -88,8 +94,10 @@ cp app/pyproject.toml.example app/pyproject.toml
 
 # 1. 写代码：app/src 就是应用源码
 app/src/
-├── main.py            # 入口（由 [tool.py_upper].entry 指定）
-├── core/app.py
+├── main.py            # 入口（由 [tool.py_upper].entry 指定），只把控制权交给 application
+├── application.py     # ★ 装配处：MVVM 的对象图在这里接起来（见 §9.4）
+├── mvvm/              # MVVM 骨架：core / models / view_models / views / services
+├── utils/             # 运行时胶水：paths（launcher 契约）、qt_compat（Qt 名字唯一入口）
 └── ...
 
 # 2. 声明依赖与目标
@@ -156,7 +164,7 @@ py_upper/
 ```toml
 [project]
 name = "py_upper"
-version = "0.17.8"
+version = "0.17.9"
 requires-python = ">=3.8,<3.14"
 dependencies = ["PySide6==6.11.0", "pyserial==3.5"]
 
@@ -245,12 +253,15 @@ launcher 运行时还会向应用导出 `PY_UPPER_HOME` / `PY_UPPER_RUNTIME` / `
 
 ```bash
 cd app
-PYTHONPATH=src python -c "from core.app import main; main()"
+PYTHONPATH=src python -c "from application import main; main()"
 # 或
 PYTHONPATH=src python src/main.py
 ```
 
 注意：直接运行 `main()` 会尝试打开 Qt 窗口；CI/无显示环境加 `PY_UPPER_HEADLESS=1`。
+
+还没装 Qt 时也能看到装配跑通：`import application` 不加载任何 binding（见 §9.4），
+`PYTHONPATH=src python -c "from application import run_application; run_application()"` 只打印问候语，不碰 Qt。
 
 ### 6.2 测试
 
@@ -356,7 +367,28 @@ no_index = true
 
 ## 9. Qt 应用
 
-### 9.1 窗口与 headless
+### 9.1 引用 Qt：只 import `utils.qt_compat`
+
+应用代码不直接 import binding，而是从这个 shim 拿模块对象：
+
+```python
+from utils.qt_compat import QtCore, QtWidgets, Signal
+
+class Window(QtWidgets.QMainWindow):
+    closed = Signal()
+```
+
+`utils.qt_compat` 是**模块代理**，不是函数表：`QtWidgets`、`QtCore`、`QtNetwork` 这类名字在被访问时才解析成当前 binding 的同名子模块，返回的是真正的模块对象，所以 IDE 能补全 `QtWidgets.QMainWindow`、能跳转定义、类型检查读 `TYPE_CHECKING` 分支里的 PySide6 stub（开发环境装 PySide6 就够）。运行期按 `PySide6` → `PyQt6` → `PySide2` → `PyQt5` 取第一个可用的，并在进程内固定——同一个解释器加载两个 binding 会直接崩，所以这个选择不做动态切换。
+
+规则：
+
+1. import `utils.qt_compat` 本身不加载任何 binding，没装 Qt 的环境里也能 import、lint、Cython 编译；
+2. 拼错的子模块（`QtWidget`）在 import 那一行就报 `ImportError`，不会拖到用的时候；
+3. `Signal` / `Slot` 由这里转出：PySide 侧是 `Signal`/`Slot`，PyQt 侧是 `pyqtSignal`/`pyqtSlot`，应用代码只写一种拼法；
+4. 整个 `app/src` 里只有 `utils/qt_compat.py` 允许出现 binding 名，`app/tests/test_qt_compat.py` 用 ast 不变式锁住这条；换 binding 只改 `app/pyproject.toml` 的依赖，应用代码与 Qt 剪枝都跟着走；
+5. 应用自己的模块也别在模块级 import Qt：`mvvm/views/*.py` 和 `mvvm/mvvm_bootstrap.py` 把 Qt 名字放在真正建窗口的那个函数里（见 §9.4）。模块级 import 会让「import 应用入口」变成「必须装 Qt」——pytest、pyflakes、Cython 编译全被拖进来，而它们本来不需要 binding。
+
+### 9.2 窗口与 headless
 
 应用入口建议：
 
@@ -368,7 +400,7 @@ def main() -> int:
 
 `run_gui()` 在 `PY_UPPER_HEADLESS=1` 时用 offscreen 平台建同一个窗口、跑一次事件循环后退出并打印 `GUI OK offscreen`。CI 与 smoke 靠这个在不接显示器的环境里验证 Qt 真的可用。
 
-### 9.2 按 import 裁剪（体积关键）
+### 9.3 按 import 裁剪（体积关键）
 
 PySide6 的 wheel 会带上整个 Qt，`QtWebEngineCore` 一个约 450 MB。开启：
 
@@ -379,14 +411,77 @@ qt = "imports"
 
 规则：
 
-1. 扫描 `app/src` 引用的 `PySide6.Qt*` 模块；
+1. 用 `ast` 读 `app/src` 每个文件的 import 语句（多行括号 import 一样算；函数内的 import 也在遍历范围里，所以 `mvvm/views` 在 `__init__` 里 import 的 Qt 名字不会被漏掉）：直接写 binding 前缀（`PySide6.QtWidgets`）和走 shim（`from utils.qt_compat import QtWidgets`）归到同一个 Qt 模块名，具体是哪个 binding 由 site-packages 里实际存在的那个决定；解析不了的源文件直接报错，不静默降级；
 2. 用目标解释器导入并解析**传递闭包**；
 3. 删除未用到的 wrapper 模块、Qt 库、插件类别、QML 树、shiboken QML 辅助库、Qt 工具二进制、工具翻译；
 4. 插件按**依赖的 Qt 模块**判定：需要额外 Qt 模块的插件（如虚拟键盘输入法插件拉 QtQml/QtQuick、`libqpdf` 拉 QtPdf）会被删除；**平台插件类别永不裁剪**（删了应用起不来）；SVG 图标插件走例外保留。
 
-实测（PySide6 6.11.0，macOS arm64）：**1.2 GB → 154 MB**（PySide6 本体 1.1 GB → 104 MB）；再开 `strip_native = true` 可到 141 MB。
+实测（PySide6 6.11.0，macOS arm64）：staging 的 `site-packages` **1.2 GB → 109 MB**（PySide6 本体 1.2 GB → 105 MB），打包后 `dist/MyApp.app` 100 MB、其中 PySide6 58 MB；再开 `strip_native = true` 原生库还能更小。
 
 限制：动态加载（`importlib`、QML 内 import）静态看不到，这类应用请显式写模块列表；交叉目标无法执行目标解释器，会保留完整 Qt。
+
+### 9.4 MVVM 应用骨架
+
+`app/src/mvvm/` 是一个能跑的最小 MVVM 骨架，依赖方向单向：View → ViewModel → Model/Service，反向靠属性的变更通知回来。
+
+```text
+app/src/
+├── main.py                  # 入口，只把控制权交给 application.py
+├── application.py           # ★ 装配处：唯一同时认识下面四层的文件
+├── utils/qt_compat.py       # Qt 名字的唯一入口（见 §9.1）；utils/ 也是 launcher 契约的家
+└── mvvm/
+    ├── core/                # ObservableProperty / RelayCommand / 工厂 / ViewModel 基类
+    ├── models/              # 数据与业务规则
+    ├── view_models/         # 界面状态与命令
+    ├── views/               # 渲染与绑定
+    └── services/            # 被注入的能力（通信、仓库、后端）
+```
+
+规则：
+
+1. 四层互相不 import 具体实现，`application.py` 是唯一同时 import models / view_models / views / services 的文件；换实现只改这一个文件；
+2. `models/`、`view_models/`、`services/` 不 import Qt——它们只持有数据和命令，界面能不能显示与它们无关；
+3. Qt 名字在真正建窗口的地方才 import（`MainWindow.__init__`、`create_application()`），所以 `import application` 不加载任何 binding；
+4. 「服务」是注入进去的能力，不是全局单例：`GreetingService` 由装配处注册进容器，再传给 ViewModel；
+5. 一个 ViewModel 可以配多个 View。绑的是属性与命令，不是控件——同一份状态换一个窗口照样能用。
+
+容器 API（`mvvm/mvvm_application.py`）：
+
+```python
+application.register_service("greeting", GreetingService())
+application.resolve_service(GreetingService)          # 按类型取；按名字取用 get_service()
+application.register_viewmodel("main", MainViewModel(...))
+application.get_viewmodel("main")
+application.register_view("main", MainWindow(...))
+application.get_view("main")
+application.start()   # 置位运行标记 + 依次 show 所有已注册 View
+application.stop()    # close 所有 View → dispose 所有 ViewModel → 清空注册表
+```
+
+`MVVMQtApplication`（`mvvm/mvvm_bootstrap.py`）只固定顺序：`setup()` 建容器 → `initialize_viewmodels()` → `initialize_views()` → `start()`，`run()` 再进 Qt 事件循环。子类只写 `initialize_viewmodels()` 和 `initialize_views()` 这两个钩子。
+
+绑定 API（`mvvm/views/base_view.py`，View 继承 `ViewBase`）：
+
+```python
+self.bind_property("message", label, "setText")       # 属性 → 控件：setter 方法被调用，普通属性才 setattr
+self.bind_command("show_about", button)               # 命令 → 控件事件（默认 clicked）
+binding = self.bind_property("title", line_edit, "setText", getter_name="text")
+binding.update_viewmodel_from_ui()                    # 反向：UI → ViewModel
+```
+
+双向绑定必须显式给 `getter_name`，缺了直接抛 `ValueError`：Qt 的 setter 与 getter 不同形（`setText`/`text`、`setWindowTitle`/`windowTitle`），从 setter 反推 getter 猜错了就是静默读错值。
+
+示例：桌面上的「关于 MVVM 架构」按钮。它是这个骨架的参考实现，整条链路没有一处绕过 ViewModel：
+
+```text
+MainWindow 的按钮 ─CommandBinding→ MainViewModel.show_about_command
+                                        └─ about_visible = True
+                                                │（ObservableProperty 通知）
+MainWindow._on_viewmodel_property_changed ─────→ AboutWindow.show()
+AboutWindow 的「关闭」按钮 ─CommandBinding→ MainViewModel.hide_about_command → about_visible = False → AboutWindow.close()
+```
+
+`about_visible` 是唯一真相源：主窗口和「关于」窗口都不自己存可见状态，谁都不需要知道对方存在。主窗口拿到的「关于」窗口是构造参数（`MainWindow(viewmodel, about_window)`），不是自己 new 的。
 
 ---
 
@@ -495,6 +590,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | 构建卡在 native dependency 很久 | 依赖闭包退化成全树扫描 | ≥0.17.1 已改为一次建索引 |
 | `codesign` 报 `code object is not signed at all` | 嵌套 bundle 未按由内向外签名 | ≥0.17.2 按路径深度倒序签名 |
 | 应用体积 1 GB+ | 完整 Qt 被打包 | 设 `qt = "imports"` |
+| 构建日志出现 `app/src does not reference a Qt binding, keeping the full Qt payload` | 剪枝没在 `app/src` 找到任何 Qt import（binding 前缀或 `utils.qt_compat` 前缀），于是整块保留 | ≥0.17.9 用 `ast` 读 import 并认识 `utils.qt_compat`；仍有这行说明应用确实没 import Qt，或者 `qt` 设成了 `"all"` |
 | pip 下载大 wheel 超时 | 默认 15s socket 超时 | 设 `timeout`/`retries` 或 `PY_UPPER_PIP_TIMEOUT` |
 | VS Code 调试报 `No module named 'Cython'` | 探测 Cython 时抛预期异常 | ≥0.16.8 改用 `importlib.metadata`，不会停在异常上 |
 | 双击打包好的应用"没反应" | 入口/runtime/初始化失败，而 GUI 子系统没有控制台 | ≥0.17.5 会弹原生错误对话框显示原因；自动化场景设 `PY_UPPER_NO_DIALOG=1` 只取退出码 |
@@ -524,11 +620,11 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | 模块 | 职责 |
 |---|---|
 | `config.py` | 目标契约、配置解析、平台标签、pip 传输参数 |
-| `toolchain.py` | 宿主工具链（clang/gcc/MSVC）解析 |
+| `toolchain.py` | 宿主工具链解析（clang/gcc/MSVC，以及无 VS 宿主上的 Zig 交叉路径） |
 | `pbs.py` | PBS 解析：release 元数据、资产匹配、runtime/SDK 获取与校验 |
 | `runtime.py` | 目标 runtime：provider 分发（pbs/local）、获取、release 安全裁剪 |
 | `third_party.py` | wheel 解析/安装、site 优化、依赖清单 |
-| `qt_prune.py` | 按 import 裁剪 Qt 负载 |
+| `qt_prune.py` | 按 import 裁剪 Qt 负载（用 `ast` 读语句，认识 binding 前缀与 `utils.qt_compat`） |
 | `python_build.py` | Cython 化、目标扩展编译（Unix/Windows）、增量产物缓存、并行调度、staging |
 | `native/inspect.py` | 二进制格式与架构识别 |
 | `native/deps.py` | 依赖解析（otool/readelf/dumpbin + 索引/缓存） |

@@ -4,7 +4,8 @@ A PySide6 install ships every Qt module, and QtWebEngineCore alone is roughly
 450 MB of Chromium. Other packagers look smaller because they only bundle the Qt
 modules the application imports; py_upper does the same here:
 
-1. read the ``PySide6.Qt*`` modules referenced by ``app/src``;
+1. read the Qt modules ``app/src`` imports, whichever binding it names and
+   whether it names the binding directly or through ``utils.qt_compat``;
 2. ask the target runtime which modules that pulls in transitively;
 3. drop every other Qt wrapper module, Qt library and Qt plugin category.
 
@@ -13,6 +14,7 @@ application and opens a real window in the packaged bundle.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
@@ -25,7 +27,75 @@ from .config import APP, Target, host_target, optimize_config, runtime_executabl
 from .native.deps import dependency_names
 
 WRAPPER_SUFFIXES = {".so", ".pyd"}
-IMPORT_PATTERN = re.compile(r"PySide6(?:\.|\s+import\s+)(Qt[A-Za-z0-9_]+)")
+
+# Every supported Qt binding. The pruning pipeline detects which one the
+# application uses from its imports and site-packages layout, then applies the
+# same module/plugin/translation policy per binding.
+BINDINGS = ("PySide6", "PyQt6", "PySide2", "PyQt5")
+
+# The binding-neutral shim the application imports Qt through. It forwards every
+# ``Qt<Module>`` name it is asked for to the detected binding, so an import from
+# it names a Qt module exactly as directly as a binding import does. Miss this
+# and the scanner sees no Qt usage at all, which silently keeps the full 665 MB
+# payload instead of failing. ``test_qt_compat_module_exists`` keeps this name
+# and the application module in step.
+QT_COMPAT_MODULE = "utils.qt_compat"
+
+# A Qt submodule name: QtCore, QtWidgets, QtNetwork. Qt class names do not
+# match — QtCore.Qt and QApplication are not modules.
+QT_SUBMODULE = re.compile(r"^Qt[A-Za-z0-9_]+$")
+
+
+def detect_binding(site: Path) -> str | None:
+    """The Qt binding present in this site-packages, in preference order."""
+    for binding in BINDINGS:
+        if (site / binding).is_dir():
+            return binding
+    return None
+
+
+def _imported_modules(path: Path) -> set[str]:
+    """Dotted paths of every module this source file imports.
+
+    ``import a.b`` contributes ``a.b``; ``from a.b import c`` contributes both
+    ``a.b`` and ``a.b.c``, because that form imports the module ``c`` when one
+    exists. Reading the import statements instead of matching text keeps a
+    parenthesised multi-line import from being invisible.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+    except SyntaxError as exc:
+        raise RuntimeError(f"Qt pruning: cannot parse {path}: {exc}") from exc
+
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return modules
+
+
+def _qt_module_of_import(dotted: str) -> str | None:
+    """The Qt submodule an imported dotted path refers to, or None.
+
+    Both shapes collapse to the same answer: ``PySide6.QtWidgets`` names the
+    submodule directly, and ``utils.qt_compat.QtWidgets`` names it through the
+    shim. Everything after the first match is a class or attribute, not a
+    module.
+    """
+    parts = dotted.split(".")
+    if parts[0] == QT_COMPAT_MODULE.split(".")[0] and ".".join(parts[:2]) == QT_COMPAT_MODULE:
+        candidates = parts[2:]
+    elif parts[0] in BINDINGS:
+        candidates = parts[1:]
+    else:
+        return None
+    for part in candidates:
+        if QT_SUBMODULE.match(part):
+            return part
+    return None
 
 # Plugin categories every Qt application needs at runtime.
 BASE_PLUGIN_CATEGORIES = {
@@ -117,7 +187,17 @@ class _QtLayout:
     """Glob patterns for shiboken's QML bridge library."""
 
 
-def _qt_layout(pyside: Path) -> _QtLayout:
+def _qt_layout(pyside: Path, binding: str) -> _QtLayout:
+    # The QML bridge helper name follows the binding: pyside6qml / pyside2qml
+    # for the official bindings, qmlpy / qmlpy3 style for PyQt.
+    if binding == "PySide2":
+        qml_helpers = ("libpyside2qml*",)
+    elif binding == "PyQt5":
+        qml_helpers = ("qmlpy*",)
+    elif binding == "PyQt6":
+        qml_helpers = ("qmlpy*",)
+    else:
+        qml_helpers = ("libpyside6qml*",)
     nested = pyside / "Qt"
     if nested.is_dir():
         return _QtLayout(
@@ -129,7 +209,7 @@ def _qt_layout(pyside: Path) -> _QtLayout:
             translations=nested / "translations",
             metatypes=nested / "metatypes",
             helpers=(nested / "libexec",),
-            qml_helpers=("libpyside6qml*",),
+            qml_helpers=qml_helpers,
         )
     return _QtLayout(
         libraries=(pyside,),
@@ -140,7 +220,7 @@ def _qt_layout(pyside: Path) -> _QtLayout:
         translations=pyside / "translations",
         metatypes=pyside / "metatypes",
         helpers=(pyside / "QtWebEngineProcess.exe",),
-        qml_helpers=("pyside6qml.abi3.dll", "pyside6qml.abi3.lib"),
+        qml_helpers=("pyside6qml.abi3.dll", "pyside6qml.abi3.lib") if binding == "PySide6" else qml_helpers,
     )
 
 
@@ -149,7 +229,10 @@ def used_qt_modules(source_root: Path | None = None) -> set[str]:
     root = source_root or (APP / "src")
     modules: set[str] = set()
     for path in sorted(root.rglob("*.py")):
-        modules.update(IMPORT_PATTERN.findall(path.read_text(encoding="utf-8", errors="replace")))
+        for dotted in _imported_modules(path):
+            module = _qt_module_of_import(dotted)
+            if module:
+                modules.add(module)
     return modules
 
 
@@ -168,11 +251,12 @@ def _runtime_closure(site: Path, target: Target, modules: set[str]) -> set[str] 
     python = _native_runtime_python(target)
     if python is None:
         return None
+    binding = detect_binding(site) or "PySide6"
     script = (
         "import importlib, json, sys\n"
         f"for name in {sorted(modules)!r}:\n"
-        "    importlib.import_module('PySide6.' + name)\n"
-        "print(json.dumps(sorted(m for m in sys.modules if m.startswith('PySide6.'))))\n"
+        f"    importlib.import_module('{binding}.' + name)\n"
+        f"print(json.dumps(sorted(m for m in sys.modules if m.startswith('{binding}.'))))\n"
     )
     env = {"PYTHONPATH": str(site), "PYTHONDONTWRITEBYTECODE": "1", "PATH": "/usr/bin:/bin:/usr/local/bin"}
     probe = subprocess.run([str(python), "-c", script], capture_output=True, text=True, check=False, env=env)
@@ -183,7 +267,7 @@ def _runtime_closure(site: Path, target: Target, modules: set[str]) -> set[str] 
     try:
         loaded = json.loads(probe.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
-        raise RuntimeError(f"Qt pruning: {python} printed no PySide6 module list for {requested}")
+        raise RuntimeError(f"Qt pruning: {python} printed no {binding} module list for {requested}")
     return {name.split(".", 1)[1] for name in loaded if name.count(".") == 1}
 
 
@@ -214,7 +298,7 @@ def configured_modules(target: Target, site: Path) -> set[str] | None:
             raise RuntimeError("[tool.py_upper.optimize].qt must be 'all', 'imports', or an array of Qt module names")
         requested = used_qt_modules()
         if not requested:
-            print("Qt pruning: app/src does not reference PySide6, keeping the full Qt payload")
+            print("Qt pruning: app/src does not reference a Qt binding, keeping the full Qt payload")
             return None
     elif isinstance(value, list):
         requested = {str(item).strip() for item in value if str(item).strip()}
@@ -276,11 +360,11 @@ def _qt_module_of(dependency: str) -> str | None:
         name = dependency.split(".framework/", 1)[0].rsplit("/", 1)[-1]
         return name if name.startswith("Qt") else None
     base = Path(dependency).name
-    match = re.match(r"^(?:lib)?(Qt6?[A-Za-z0-9_]+?)(?:\.[0-9.]+)?(?:\.so.*|\.dylib|\.dll)?$", base)
+    match = re.match(r"^(?:lib)?(Qt[56]?[A-Za-z0-9_]+?)(?:\.[0-9.]+)?(?:\.so.*|\.dylib|\.dll)?$", base)
     if not match:
         return None
     name = match.group(1)
-    if name.startswith("Qt6"):
+    if name.startswith("Qt6") or name.startswith("Qt5"):
         return "Qt" + name[3:]
     return name if name.startswith("Qt") else None
 
@@ -309,16 +393,17 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
 
     ``modules`` defaults to the configured policy (``[tool.py_upper.optimize].qt``).
     """
-    pyside = site / "PySide6"
-    if not pyside.is_dir():
+    binding = detect_binding(site)
+    if binding is None:
         return None
+    pyside = site / binding
     if modules is None:
         modules = configured_modules(target, site)
     if modules is None:
         return None
 
     counters = {"files": 0, "dirs": 0, "bytes": 0}
-    layout = _qt_layout(pyside)
+    layout = _qt_layout(pyside, binding)
 
     def size_of(path: Path) -> int:
         if path.is_file() or path.is_symlink():

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,6 +42,42 @@ def build_launcher(target: Target):
         # configured application name instead of its own filename.
         f"-DPY_UPPER_APP_NAME={app_name()}",
     ]
+    if target.os == "windows" and tc.compiler_args:
+        # CMake needs to invoke a single executable. Zig's compiler frontend is
+        # reached through a wrapper because the compiler itself needs target
+        # arguments appended to every invocation.
+        if platform.system() == "Windows":
+            for name, arg in (("CC", "cc"), ("CXX", "c++")):
+                wrapper = b / f"zig-{arg}.cmd"
+                frontend = [tc.compiler, "c++" if arg == "c++" else arg, *tc.compiler_args[1:]]
+                wrapper.write_text("@echo off\n" + subprocess.list2cmdline(frontend) + " %*\n", encoding="utf-8")
+                env[name] = str(wrapper)
+        else:
+            for name, arg in (("CC", "cc"), ("CXX", "c++")):
+                wrapper = b / f"zig-{arg}.sh"
+                frontend = [tc.compiler, arg, *tc.compiler_args[1:]]
+                wrapper.write_text("#!/bin/sh\nexec " + shlex.join(frontend) + ' "$@"\n', encoding="utf-8")
+                make_executable(wrapper)
+                env[name] = str(wrapper)
+        rc = b / ("zig-rc.cmd" if platform.system() == "Windows" else "zig-rc.sh")
+        rc.write_text(("@echo off\n" + subprocess.list2cmdline([tc.compiler, "rc"]) + " %*\n") if platform.system() == "Windows" else ("#!/bin/sh\nexec " + shlex.join([tc.compiler, "rc"]) + ' "$@"\n'), encoding="utf-8")
+        if platform.system() != "Windows":
+            make_executable(rc)
+        # Declaring the cross build keeps CMake from applying Darwin host
+        # defaults (notably -arch) to a Windows compiler.
+        cmd += [
+            "-DCMAKE_SYSTEM_NAME=Windows",
+            f"-DCMAKE_SYSTEM_PROCESSOR={'ARM64' if target.arch == 'arm64' else 'AMD64'}",
+            f"-DCMAKE_RC_COMPILER={rc}",
+            # MinGW uses the ANSI WinMain entry unless the Unicode entry point
+            # is explicitly selected; MSVC infers it from WIN32_EXECUTABLE.
+            # CMake's compiler probe builds a main() executable, which is the
+            # wrong entry for MinGW's Unicode launcher; compile-only probing
+            # keeps the real launcher's wWinMain link intact.
+            "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+            "-DCMAKE_CXX_FLAGS=-municode",
+            "-DCMAKE_EXE_LINKER_FLAGS=-municode",
+        ]
     if target.os == "macos":
         cmd += [f"-DCMAKE_OSX_ARCHITECTURES={target.arch}"]
         if tc.deployment_target:

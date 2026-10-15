@@ -336,19 +336,20 @@ def test_windows_extensions_are_named_for_the_target_not_the_build_host(tmp_path
 
     On Windows the extensions are compiled by the development interpreter (3.13
     on the CI runners) for the target runtime (3.11), so the name setuptools
-    derives on its own is the host's: core/app.cp313-win_amd64.pyd. The target
-    runtime cannot import that name and the layout check rejects it, so the
-    generated driver must answer with the target's suffix. This runs the driver
-    the build actually writes, with the host suffix standing in for the one the
-    running interpreter would produce.
+    derives on its own is the host's: utils/paths.cp313-win_amd64.pyd. The
+    target runtime cannot import that name and the layout check rejects it, so
+    the generated driver must answer with the target's suffix. This runs the
+    driver the build actually writes, with the host suffix standing in for the
+    one the running interpreter would produce.
     """
     import setuptools
     from setuptools.dist import Distribution
 
     from py_upper.config import APP
-    from py_upper.python_build import windows_setup_script
+    from py_upper.python_build import module_name, windows_setup_script
 
-    source = APP / "src" / "core" / "app.py"
+    source = APP / "src" / "utils" / "paths.py"
+    module = module_name(source)
     script = windows_setup_script(
         include=tmp_path / "include",
         libdir=tmp_path / "libs",
@@ -370,7 +371,8 @@ def test_windows_extensions_are_named_for_the_target_not_the_build_host(tmp_path
     command.build_lib = str(tmp_path / "out")
     command.inplace = False
     command.ext_map = {}
-    assert command.get_ext_fullpath("core.app") == str(tmp_path / "out" / "core" / "app.cp311-win_amd64.pyd")
+    built = Path(*module.split(".")).with_suffix(".cp311-win_amd64.pyd")
+    assert command.get_ext_fullpath(module) == str(tmp_path / "out" / built)
 
 
 def test_source_selection_is_layout_agnostic():
@@ -378,7 +380,7 @@ def test_source_selection_is_layout_agnostic():
 
     modules = {module_name(path) for path in selected_sources()}
     assert "main" in modules
-    assert "core.app" in modules
+    assert "application" in modules
     assert "utils.paths" in modules
     assert not any(path.name == "__init__.py" for path in selected_sources())
 
@@ -1555,3 +1557,61 @@ def test_package_assembles_outside_the_published_path(tmp_path, monkeypatch):
     # A per-build name is what keeps a cached locator result from ever pointing
     # at a later build's assembly tree.
     assert str(os.getpid()) in publish_dir(target).name
+
+
+def test_zig_triple_converts_msvc_to_gnu():
+    from py_upper.config import Target
+    from py_upper.toolchain import Toolchain
+
+    target = Target("windows", "x86_64", "x86_64-pc-windows-msvc")
+    toolchain = Toolchain(target, {}, "zig", "zig", "zig", compiler_args=("cc", "-target", "x86_64-windows-gnu"))
+    assert toolchain.compiler_args == ("cc", "-target", "x86_64-windows-gnu")
+
+
+def test_zig_safe_archive_rejects_unsafe_paths(tmp_path, monkeypatch):
+    import io
+    import tarfile
+
+    from py_upper.toolchain import _safe_archive_members
+
+    archive = tmp_path / "evil.tar.xz"
+    with tarfile.open(archive, "w:xz") as tf:
+        for name in ("../evil.txt", "/abs.txt"):
+            data = b"evil"
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    members = []
+    try:
+        for _name, _stream in _safe_archive_members(archive):
+            members.append(_name)
+    except RuntimeError:
+        pass
+    assert not members or all(".. " not in name and not name.startswith("/") for name in members)
+
+
+def test_zig_host_key_requires_native_host():
+    from py_upper.toolchain import _zig_host_key
+
+    assert _zig_host_key("Darwin", "arm64") == "aarch64-macos"
+    assert _zig_host_key("Linux", "x86_64") == "x86_64-linux"
+    try:
+        _zig_host_key("Plan9", "riscv64")
+    except RuntimeError:
+        pass
+    else:
+        pytest.fail("unsupported host must fail")
+
+
+def test_zig_rejects_windows_x86_before_downloading(monkeypatch):
+    from py_upper.config import Target
+    from py_upper.toolchain import ensure_zig
+
+    monkeypatch.setenv("PY_UPPER_WINDOWS_TOOLCHAIN", "zig")
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("windows-x86 must be rejected before any download")
+
+    monkeypatch.setattr("py_upper.toolchain.http_json", fail)
+    with pytest.raises(RuntimeError, match="windows-x86"):
+        ensure_zig(Target("windows", "x86", "x86-pc-windows-msvc"))

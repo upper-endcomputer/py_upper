@@ -307,7 +307,7 @@ def windows_setup_script(
 
     setuptools names an extension after the interpreter that runs the build,
     and on Windows that interpreter is the build host. A 3.13 host compiling
-    for a 3.11 runtime would emit core/app.cp313-win_amd64.pyd: a name the
+    for a 3.11 runtime would emit utils/paths.cp313-win_amd64.pyd: a name the
     target runtime cannot import, and one the layout check in
     build_target_extensions rejects. TargetBuildExt answers with the target's
     own suffix instead, the same value that names the Unix outputs.
@@ -386,6 +386,75 @@ def compile_windows_extensions(
     sources: list[Path],
     host_python: Path,
 ) -> list[Path]:
+    tc_probe = resolve_toolchain(target)
+    if tc_probe.compiler_args is not None:
+        return compile_windows_extensions_with_zig(target, generated, tc_probe)
+    return _compile_windows_extensions_msvc(target, generated, sources, host_python, tc_probe)
+
+
+def compile_windows_extensions_with_zig(
+    target: Target,
+    generated: dict[Path, Path],
+    tc,
+) -> list[Path]:
+    """Compile CPython extensions for Windows with the executable Zig toolchain.
+
+    Unlike MSVC this does not need the host setuptools driver: the compiler is
+    told the target triple and the import library directly, so the host Python
+    version no longer matters for the produced artifacts.
+    """
+    target_python = resolve_target_python(target)
+    include, libdir, python_lib = _windows_import_library(target_python)
+    suffix = target_python.extension_suffix
+    root = native_output_root(target)
+    root.mkdir(parents=True, exist_ok=True)
+    incremental = incremental_build_enabled()
+
+    outputs: dict[Path, Path] = {}
+    stale: list[tuple[Path, Path, list[str]]] = []
+    for source, c_source in generated.items():
+        rel = source.relative_to(APP / "src").with_suffix("")
+        artifact = root.joinpath(*rel.parts[:-1], rel.name + suffix)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        compiler_args = list(tc.compiler_args or tc.compiler.split()[1:])
+        zig = tc.compiler
+        cmd = [
+            zig, *compiler_args,
+            "-shared",
+            "-O2", "-DNDEBUG",
+            f"-I{include}",
+            str(c_source),
+            f"-L{libdir}",
+            "-l" + python_lib,
+            "-o", str(artifact),
+        ]
+        outputs[source] = artifact
+        key = _windows_native_key(c_source, artifact, include, libdir, [python_lib], suffix, tc.env)
+        if incremental and _is_current(artifact, key):
+            continue
+        stale.append((source, artifact, cmd))
+
+    if not stale:
+        print(f"Compile: {len(outputs)} extension(s) up to date")
+        return list(outputs.values())
+
+    print(f"Compile: {len(stale)} of {len(outputs)} extension(s) changed")
+    keys = [_windows_native_key(generated[source], artifact, include, libdir, [python_lib], suffix, tc.env) for source, artifact, _ in stale]
+    _run_parallel([(cmd, None, tc.env) for _, _, cmd in stale])
+    for (source, artifact, _), key in zip(stale, keys):
+        if not artifact.exists():
+            raise RuntimeError(f"Zig compiler completed but did not produce {artifact}")
+        _mark_current(artifact, key)
+    return list(outputs.values())
+
+
+def _compile_windows_extensions_msvc(
+    target: Target,
+    generated: dict[Path, Path],
+    sources: list[Path],
+    host_python: Path,
+    tc_probe=None,
+) -> list[Path]:
     """Compile the target extensions with MSVC, reusing unchanged outputs.
 
     MSVC cross-compilation uses setuptools because Visual Studio's import
@@ -394,7 +463,7 @@ def compile_windows_extensions(
     cache, which is what keeps a rebuild proportional to the edit.
     """
     target_python = resolve_target_python(target)
-    tc = resolve_toolchain(target)
+    tc = tc_probe or resolve_toolchain(target)
     include, libdir, python_lib = _windows_import_library(target_python)
     suffix = target_python.extension_suffix
 

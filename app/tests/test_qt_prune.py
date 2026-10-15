@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from py_upper.config import TARGETS
-from py_upper.qt_prune import _qt_module_of, prune, used_qt_modules
+from py_upper.qt_prune import QT_COMPAT_MODULE, _qt_module_of, prune, used_qt_modules
 
 
 def _touch(path: Path, payload: bytes = b"\xcf\xfa\xed\xfe") -> Path:
@@ -110,12 +110,57 @@ def test_qt_module_mapping_ignores_system_frameworks():
 
 def test_used_qt_modules_reads_application_sources(tmp_path):
     source = tmp_path / "src"
-    (source / "core").mkdir(parents=True)
-    (source / "core" / "app.py").write_text(
+    source.mkdir()
+    (source / "application.py").write_text(
         "from PySide6.QtWidgets import QApplication\nimport PySide6.QtCore\n", encoding="utf-8"
     )
     (source / "main.py").write_text("print('no qt here')\n", encoding="utf-8")
     assert used_qt_modules(source) == {"QtWidgets", "QtCore"}
+
+
+def test_used_qt_modules_reads_the_compat_shim(tmp_path):
+    """The shim names Qt modules exactly as directly as a binding import.
+
+    The application imports Qt from the shim, so a scanner that only knew
+    binding prefixes would report no Qt usage, configured_modules() would keep
+    the whole 665 MB payload, and the build would still pass — a silent
+    regression rather than a visible failure.
+    """
+    source = tmp_path / "src"
+    shim = source / Path(*QT_COMPAT_MODULE.split(".")).with_suffix(".py")
+    shim.parent.mkdir(parents=True)
+    shim.write_text("# binding-neutral shim, no import of its own\n", encoding="utf-8")
+    (source / "window.py").write_text(
+        f"from {QT_COMPAT_MODULE} import (\n    QtWidgets,\n    QtCore,\n)\n", encoding="utf-8"
+    )
+    (source / "main.py").write_text(
+        f"from {QT_COMPAT_MODULE} import QtWidgets, Signal\nimport {QT_COMPAT_MODULE}\n", encoding="utf-8"
+    )
+    # Signal is a factory, not a module: only names that could be a Qt
+    # submodule count, and a bare shim import names no module.
+    assert used_qt_modules(source) == {"QtWidgets", "QtCore"}
+
+
+def test_used_qt_modules_reports_a_source_it_cannot_parse(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "broken.py").write_text("def f(:\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="broken.py"):
+        used_qt_modules(source)
+
+
+def test_qt_compat_module_names_a_real_shim():
+    """The constant Qt pruning scans for must point at the application's shim.
+
+    Rotting on either side is invisible: the scanner finds nothing and keeps the
+    whole payload instead of failing.
+    """
+    from py_upper.config import APP
+    from py_upper.qt_prune import QT_COMPAT_MODULE
+
+    path = APP / "src" / Path(*QT_COMPAT_MODULE.split(".")).with_suffix(".py")
+    assert path.is_file(), f"{QT_COMPAT_MODULE} names no module under {APP / 'src'}"
+    assert "QtWidgets" in used_qt_modules(), "application sources name no Qt module through the shim"
 
 
 def test_prune_keeps_only_the_imported_qt_payload(tmp_path, monkeypatch):

@@ -257,6 +257,9 @@ def run_packaged_launcher(
 
 
 def run_launcher_smoke(target: Target, launcher: Path) -> None:
+    if target != host_target():
+        print("SKIP launcher smoke: cross target")
+        return
     name = app_name()
     script_name = f"{name}.smoke.int"
     if target.os == "macos":

@@ -7,7 +7,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Target
+from .config import BUILD, Target
+from .fs import make_executable, sha256
+from .net import http_json
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,10 @@ class Toolchain:
     cxx: str
     linker: str
     deployment_target: str | None = None
+    # Extra arguments that turn ``compiler`` into a working frontend command,
+    # such as clang's cross-compilation target. None means the compiler string
+    # is the complete command itself.
+    compiler_args: tuple[str, ...] | None = None
 
 
 # MSVC host/target pairs as vcvarsall.bat spells them. The host half matters:
@@ -67,6 +73,8 @@ def _vs_install(host_arch: str) -> Path | None:
     """The Visual Studio installation that owns the host C++ toolset."""
     vswhere = _vswhere()
     if not vswhere:
+        return None
+    if os.environ.get("PY_UPPER_WINDOWS_TOOLCHAIN") == "zig":
         return None
     result = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires", VC_HOST_COMPONENT[host_arch], "-property", "installationPath"], capture_output=True, text=True, check=False)
     values = [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -142,18 +150,174 @@ def _msvc_environment(bat: Path, vc_target: str) -> dict[str, str]:
     return env
 
 
+# A pinned, executable Zig release replaces MSVC when Visual Studio is absent.
+# The compiler always runs on the build host, so the archive is selected by the
+# host platform and the Windows target is selected with clang's -target flag.
+# Zig bundles the Windows headers and static CRT the launcher links. The
+# archive identity is verified against the upstream index before unpacking.
+ZIG_VERSION = os.environ.get("PY_UPPER_ZIG_VERSION", "0.16.0")
+ZIG_INDEX_URL = "https://ziglang.org/download/index.json"
+ZIG_HOST_KEYS = {
+    "x86_64": {"Windows": "x86_64-windows", "Darwin": "x86_64-macos", "Linux": "x86_64-linux"},
+    "arm64": {"Windows": "aarch64-windows", "Darwin": "aarch64-macos", "Linux": "aarch64-linux"},
+    "x86": {"Windows": "x86-windows", "Linux": "x86-linux"},
+}
+
+
+def _zig_host_key(host_os: str, host_arch: str) -> str:
+    key = ZIG_HOST_KEYS.get(host_arch, {}).get(host_os)
+    if not key:
+        raise RuntimeError(f"No executable Zig release for host {host_os}/{host_arch}")
+    return key
+
+
+def _zig_entry(entry: dict) -> tuple[str, str]:
+    tarball = str(entry.get("tarball") or "").strip()
+    shasum = str(entry.get("shasum") or "").strip()
+    if not tarball or not shasum:
+        raise RuntimeError("Zig download index entry is missing a tarball or shasum")
+    return tarball, shasum
+
+
+def _zig_release(host_os: str, host_arch: str) -> tuple[str, str]:
+    try:
+        index = http_json(ZIG_INDEX_URL)
+    except Exception as exc:
+        raise RuntimeError(f"Unable to resolve Zig {ZIG_VERSION} from {ZIG_INDEX_URL}: {exc}") from exc
+    entry = index.get(ZIG_VERSION) if isinstance(index, dict) else None
+    if not isinstance(entry, dict):
+        raise RuntimeError(f"Zig {ZIG_VERSION} is not published in {ZIG_INDEX_URL}; update ZIG_VERSION in tools/py_upper/toolchain.py")
+    return _zig_entry(entry.get(_zig_host_key(host_os, host_arch)) or {})
+
+
+def _zig_exe_name() -> str:
+    # The executable is named by the host the compiler runs on: the Windows
+    # release ships zig.exe, every other release ships zig.
+    return "zig.exe" if platform.system() == "Windows" else "zig"
+
+
+def _safe_archive_members(archive: Path):
+    if archive.suffix == ".zip":
+        import zipfile
+        with zipfile.ZipFile(archive) as zf:
+            members = zf.infolist()
+            names = {entry.filename for entry in members}
+            if len(names) != len(members):
+                raise RuntimeError(f"Duplicate member in Zig archive: {archive.name}")
+            for entry in members:
+                name = entry.filename
+                if entry.is_dir():
+                    continue
+                if (not name or name.endswith("/") or name in {".", ".."}
+                        or chr(92) in name or name.startswith("/")
+                        or ".." in Path(name).parts):
+                    raise RuntimeError(f"Unsafe Zig archive path: {name}")
+                with zf.open(entry) as stream:
+                    yield name, stream
+        return
+    import tarfile
+    with tarfile.open(archive, "r:*") as tf:
+        seen = set()
+        for entry in tf:
+            name = entry.name
+            if name in seen:
+                raise RuntimeError(f"Duplicate member in Zig archive: {archive.name}")
+            seen.add(name)
+            if not entry.isfile():
+                continue
+            if (not name or name in {".", ".."} or chr(92) in name
+                    or name.startswith("/") or ".." in Path(name).parts):
+                raise RuntimeError(f"Unsafe Zig archive path: {name}")
+            stream = tf.extractfile(entry)
+            if stream is None:
+                continue
+            yield name, stream
+
+
+def _find_zig(root: Path) -> Path:
+    name = _zig_exe_name()
+    candidates = [path for path in root.rglob(name) if path.is_file()]
+    if not candidates:
+        raise RuntimeError(f"{name} not found after unpacking the Zig archive under {root}")
+    return candidates[0]
+
+
+def ensure_zig(target: Target) -> Toolchain:
+    """Download and unpack the pinned host-native Zig, then cross-compile.
+
+    The compiler must run on the build host while emitting target code, so the
+    archive is selected by host platform and the Windows target is passed with
+    clang's -target flag. Everything lives under
+    build/host-tools/zig/<version>-<host>; a verified archive marker means a
+    previous build already unpacked this exact release.
+    """
+    host_os = platform.system()
+    host_arch = _host_arch()
+    if host_os not in {"Windows", "Darwin", "Linux"}:
+        raise RuntimeError(f"Windows targets with Zig require a Windows/macOS/Linux build host, not {host_os}")
+    # Zig 0.16 ships no 32-bit Windows cross toolchain, so the target is
+    # rejected before a compiler that cannot serve it is downloaded.
+    if target.arch == "x86":
+        raise RuntimeError("Zig cannot build the launcher for windows-x86; install Visual Studio Build Tools")
+    host_key = _zig_host_key(host_os, host_arch)
+    root = BUILD / "host-tools" / "zig" / f"{ZIG_VERSION}-{host_key}"
+    if not (root / ".verified").is_file():
+        url, expected = _zig_release(host_os, host_arch)
+        archive = root / url.rsplit("/", 1)[-1]
+        from .net import download
+
+        download(url, archive)
+        actual = sha256(archive)
+        if actual.lower() != expected.lower():
+            raise RuntimeError(f"Zig SHA256 mismatch for {url}: expected {expected}, got {actual}")
+        marker = root / ".verified"
+        if marker.exists():
+            marker.unlink()
+        extract = root / "archive"
+        if extract.exists():
+            shutil.rmtree(extract)
+        extract.mkdir(parents=True)
+        for name, stream in _safe_archive_members(archive):
+            destination = extract / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with stream, destination.open("wb") as out:
+                shutil.copyfileobj(stream, out)
+        zig = _find_zig(extract)
+        if host_os != "Windows":
+            make_executable(zig)
+        marker.write_text(f"{ZIG_VERSION}\n{host_key}\n{expected}\n", encoding="utf-8")
+    else:
+        zig = _find_zig(root)
+    if host_os != "Windows":
+        make_executable(zig)
+    env = dict(os.environ)
+    env["PATH"] = str(zig.parent) + os.pathsep + env.get("PATH", "")
+    # Zig 0.16 does not bundle the MSVC ABI's CRT for cross builds; the GNU
+    # ABI's bundled MinGW-w64 CRT links the same python313.lib import library
+    # and produces a loadable extension, so that is the ABI used here.
+    # Zig 0.16 rejects the "pc" vendor for Windows targets, so the compiler
+    # target is spelled arch-windows-gnu (or arch-windows-msvc when Zig gains
+    # MSVC CRT support for cross builds).
+    triple = target.triple
+    if triple.endswith("-pc-windows-msvc"):
+        triple = triple[:-len("-pc-windows-msvc")] + "-windows-gnu"
+    zig_triple = triple
+    env.update({
+        "CC": str(zig) + " cc -target " + zig_triple,
+        "CXX": str(zig) + " c++ -target " + zig_triple,
+    })
+    return Toolchain(target, env, str(zig), env["CXX"], env["CC"], compiler_args=("cc", "-target", zig_triple))
+
+
 def resolve_toolchain(target: Target) -> Toolchain:
     host_os = platform.system()
     host_arch = _host_arch()
     if target.os == "windows":
-        if host_os != "Windows":
-            raise RuntimeError("Windows targets require a Windows/MSVC build host")
+        if host_os != "Windows" and os.environ.get("PY_UPPER_WINDOWS_TOOLCHAIN") != "zig":
+            raise RuntimeError("Windows targets require a Windows/MSVC build host; set PY_UPPER_WINDOWS_TOOLCHAIN=zig to opt into executable Zig")
         install = _vs_install(host_arch)
         if not install:
-            raise RuntimeError(
-                "Visual Studio Build Tools with C++ are required; vswhere could not find "
-                f"{VC_HOST_COMPONENT[host_arch]}"
-            )
+            return ensure_zig(target)
         bat = install / "VC" / "Auxiliary" / "Build" / "vcvarsall.bat"
         if not bat.exists():
             raise RuntimeError(f"vcvarsall.bat not found: {bat}")
@@ -172,10 +336,9 @@ def resolve_toolchain(target: Target) -> Toolchain:
             raise RuntimeError("Xcode Command Line Tools with clang/clang++ are required")
         arch = target.arch
         env = dict(os.environ)
-        env.update({"CC": clang, "CXX": clangxx, "ARCHFLAGS": f"-arch {arch}"})
+        env.update({"CC": clang, "CXX": clangxx})
         env["MACOSX_DEPLOYMENT_TARGET"] = os.environ.get("MACOSX_DEPLOYMENT_TARGET", "11.0" if arch == "arm64" else "10.15")
-        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
-            env[key] = (env.get(key, "") + f" -arch {arch}").strip()
+
         return Toolchain(target, env, clang, clangxx, clang, env["MACOSX_DEPLOYMENT_TARGET"])
 
     if target.os == "linux":
