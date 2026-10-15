@@ -1,5 +1,7 @@
 """关于窗口的内容：属于 Model 层的数据，不含任何界面代码。"""
 
+from __future__ import annotations
+
 from mvvm.models.base_model import BaseModel
 
 DEFAULT_TITLE = "关于 MVVM 架构"

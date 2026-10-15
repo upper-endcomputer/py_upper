@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import stat
 import sys
@@ -35,6 +36,56 @@ def test_every_build_tool_module_imports():
     assert "py_upper.python_build" in names and "py_upper.pbs" in names
     for name in names:
         importlib.import_module(name)
+
+
+def _defers_annotations(tree) -> bool:
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+
+
+def _runtime_annotations(tree, builtin_generics):
+    """Annotation nodes CPython evaluates while the module is being defined."""
+    found = []
+    for node in ast.walk(tree):
+        for field in ("annotation", "returns"):
+            value = getattr(node, field, None)
+            if value is None:
+                continue
+            for child in ast.walk(value):
+                if isinstance(child, ast.Subscript) and isinstance(child.value, ast.Name) and child.value.id in builtin_generics:
+                    found.append(child)
+                elif isinstance(child, ast.BinOp) and isinstance(child.op, ast.BitOr):
+                    found.append(child)
+    return found
+
+
+def test_every_source_module_defers_its_annotations():
+    """The 3.8 leg must fail here, not only in the matrix.
+
+    A PEP 585 generic or a PEP 604 union in a signature is evaluated when the
+    module is defined, so ``list[str]`` / ``Path | None`` raise TypeError on 3.8
+    before a single test runs. ``py_compile`` cannot see that, which is how a
+    missing ``from __future__ import annotations`` in ``app/tests/conftest.py``
+    turned the 3.8 job red while 3.9 through 3.13 stayed green. The future
+    import defers evaluation, and every module the toolchain ships or runs has
+    to carry it.
+    """
+    builtin_generics = {"dict", "frozenset", "list", "set", "tuple", "type"}
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+    for package in ("app/src", "app/tests", "tools"):
+        for path in sorted((root / package).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            if _defers_annotations(tree):
+                continue
+            lines = sorted({node.lineno for node in _runtime_annotations(tree, builtin_generics)})
+            if lines:
+                offenders.append(f"{path.relative_to(root)}: {lines}")
+    assert not offenders, f"these modules need 'from __future__ import annotations': {offenders}"
 
 
 def test_msvc_host_target_pairs_cover_every_combination():
