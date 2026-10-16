@@ -116,17 +116,15 @@ python tools/build.py
 产物：
 
 ```
-dist/MyApp.app/Contents/          # macOS
-├── MacOS/MyApp                   # launcher（可执行）
+dist/Upper.app/Contents/          # macOS
+├── MacOS/Upper                   # launcher（可执行，入口程序编译在它里面）
 └── Resources/
-    ├── MyApp.int                 # 入口脚本
     ├── runtime/                  # bundled CPython
     ├── site-packages/            # 你的模块 + 第三方
     └── resources/                # app/resources 的内容（没有该目录时不生成）
 
-dist/MyApp/                       # Windows / Linux
-├── MyApp(.exe)                   # launcher
-├── MyApp.int
+dist/Upper/                       # Windows / Linux
+├── Upper(.exe)                   # launcher（入口程序编译在它里面）
 ├── runtime/                      # Windows PBS：官方 python.org embed ZIP（pythonXY.zip、.pyd、DLL）
 ├── site-packages/
 └── resources/                    # 同上，可选
@@ -173,7 +171,7 @@ dependencies = ["PySide6==6.11.0", "pyserial==3.5"]
 entry = "main.py"                 # app/src 下的入口文件
 
 [tool.py_upper.app]
-name = "MyApp"                    # 最终应用名（.app / 可执行文件 / 窗口标题，见 §10.2）
+name = "Upper"                    # 最终应用名（.app / 可执行文件 / 窗口标题，见 §10.2 与 README「App 名称」）
 identifier = "com.example.pyupper" # macOS bundle identifier
 
 [tool.py_upper.runtime]
@@ -242,7 +240,7 @@ Windows + PBS：发布 runtime 来自 python.org 官方 embeddable ZIP；PBS ful
 | `PY_UPPER_LAUNCHER_CONSOLE=1` | Windows：构建控制台子系统 launcher，用于调试（等价 `-DPY_UPPER_LAUNCHER_CONSOLE=ON`） |
 | `PY_UPPER_E2E=1` | 打开本地端到端测试 |
 
-launcher 运行时还会向应用导出 `PY_UPPER_HOME` / `PY_UPPER_RUNTIME` / `PY_UPPER_SITE_PACKAGES` / `PY_UPPER_SCRIPT` / `PY_UPPER_EXECUTABLE`，见 §10.2。
+launcher 运行时还会向应用导出 `PY_UPPER_HOME` / `PY_UPPER_RUNTIME` / `PY_UPPER_SITE_PACKAGES` / `PY_UPPER_EXECUTABLE`，以及（仅当入口真是文件时）`PY_UPPER_SCRIPT`，见 §10.2。
 
 ---
 
@@ -388,6 +386,7 @@ class Window(QtWidgets.QMainWindow):
 3. `Signal` / `Slot` 由这里转出：PySide 侧是 `Signal`/`Slot`，PyQt 侧是 `pyqtSignal`/`pyqtSlot`，应用代码只写一种拼法；
 4. 整个 `app/src` 里只有 `utils/qt_compat.py` 允许出现 binding 名，`app/tests/test_qt_compat.py` 用 ast 不变式锁住这条；换 binding 只改 `app/pyproject.toml` 的依赖，应用代码与 Qt 剪枝都跟着走；
 5. 应用自己的模块也别在模块级 import Qt：`mvvm/views/*.py` 和 `mvvm/mvvm_bootstrap.py` 把 Qt 名字放在真正建窗口的那个函数里（见 §9.4）。模块级 import 会让「import 应用入口」变成「必须装 Qt」——pytest、pyflakes、Cython 编译全被拖进来，而它们本来不需要 binding。
+6. 事件循环也从这里进：Qt6 的入口叫 `exec`，Qt5 只有 `exec_`，应用代码写死任一个就等于绑死一个 Qt 大版本（PySide2 包会开完窗口再崩在 `AttributeError: ... has no attribute 'exec'`）。唯一入口是 `utils.qt_compat.exec_loop(app)`，`app/src` 里再出现 `.exec(`/`.exec_(` 会被 `app/tests/test_qt_compat.py` 的 ast 不变式拦下。
 
 ### 9.2 窗口与 headless
 
@@ -417,7 +416,7 @@ qt = "imports"
 3. 删除未用到的 wrapper 模块、Qt 库、插件类别、QML 树、shiboken QML 辅助库、Qt 工具二进制、工具翻译；
 4. 插件按**依赖的 Qt 模块**判定：需要额外 Qt 模块的插件（如虚拟键盘输入法插件拉 QtQml/QtQuick、`libqpdf` 拉 QtPdf）会被删除；**平台插件类别永不裁剪**（删了应用起不来）；SVG 图标插件走例外保留。
 
-实测（PySide6 6.11.0，macOS arm64）：staging 的 `site-packages` **1.2 GB → 109 MB**（PySide6 本体 1.2 GB → 105 MB），打包后 `dist/MyApp.app` 100 MB、其中 PySide6 58 MB；再开 `strip_native = true` 原生库还能更小。
+实测（PySide6 6.11.0，macOS arm64）：staging 的 `site-packages` **1.2 GB → 109 MB**（PySide6 本体 1.2 GB → 105 MB），打包后 `dist/Upper.app` 100 MB、其中 PySide6 58 MB；再开 `strip_native = true` 原生库还能更小。
 
 限制：动态加载（`importlib`、QML 内 import）静态看不到，这类应用请显式写模块列表；交叉目标无法执行目标解释器，会保留完整 Qt。
 
@@ -459,7 +458,7 @@ application.start()   # 置位运行标记 + 依次 show 所有已注册 View
 application.stop()    # close 所有 View → dispose 所有 ViewModel → 清空注册表
 ```
 
-`MVVMQtApplication`（`mvvm/mvvm_bootstrap.py`）只固定顺序：`setup()` 建容器 → `initialize_viewmodels()` → `initialize_views()` → `start()`，`run()` 再进 Qt 事件循环。子类只写 `initialize_viewmodels()` 和 `initialize_views()` 这两个钩子。
+`MVVMQtApplication`（`mvvm/mvvm_bootstrap.py`）只固定顺序：`setup()` 建容器 → `initialize_viewmodels()` → `initialize_views()` → `start()`，`run()` 再进 Qt 事件循环。`run()` 进循环走 `utils.qt_compat.exec_loop()`，因为 Qt6 把入口叫 `exec`、Qt5 只有 `exec_`（见 §9.1）。子类只写 `initialize_viewmodels()` 和 `initialize_views()` 这两个钩子。
 
 绑定 API（`mvvm/views/base_view.py`，View 继承 `ViewBase`）：
 
@@ -492,14 +491,20 @@ AboutWindow 的「关闭」按钮 ─CommandBinding→ MainViewModel.hide_about_
 
 ### 10.1 入口解析
 
-launcher 用**自身文件名**（stem）在 bundle 根目录按顺序查找入口：
+入口程序**编译在 launcher 里**。打包时 `package.write_embedded_source()` 生成 `py_upper_embedded.cpp`（入口程序 + smoke 程序的 C++ raw string 字面量），CMake 通过 `-DPY_UPPER_EMBEDDED_SOURCE=` 把它编进 launcher，并定义 `PY_UPPER_HAS_EMBEDDED_SOURCE` 让 `PyUpper.cpp` 知道符号存在。入口本来就是从 `[tool.py_upper].entry` 生成的那三行，没有第二份手写副本，改个名字（`Upper.app` → `Renamed.app`、`Upper.exe` → `Renamed.exe`）也不用动任何东西。
+
+产物因此**不再有 `.int` 文件**：老布局里的 `<App>.int`、改名安全副本 `_py_upper_static.int`、以及构建验证数据 `<App>.smoke.int` 都是同一个程序的冗余副本，现在都只在 launcher 里存在一份。`--verify` 断言两件事：产物里没有 `.int` sidecar，且 launcher 二进制里能读到 `entry_source()` 的字节——后者是"编译进去的入口就是配置里那个入口"的证明，文件存在性检查做不到这点。
+
+**只有手工构建的 launcher（没有生成源可内嵌）才走文件链**，用自身文件名（stem）在 bundle 根目录按顺序找：
 
 1. `<stem>.int`（文档化布局）
 2. `<stem>.py`
 3. `<stem>.pyw`
 4. `_py_upper_static.int`（**改名安全兜底**）
 
-打包时 `<App>.int` 与 `_py_upper_static.int` 都会写出，内容相同。把可执行文件改名后，兜底入口仍能让应用启动；`--verify` 里对应 `rename-safe application entry`。`PY_UPPER_SMOKE=1` 时改走 `<stem>.smoke.int`。
+内嵌优先于文件链：打包的 launcher 不看旁边有没有脚本，老布局残留的 sidecar 不能 shadow 编译进去的入口。`PY_UPPER_SMOKE=1` 时跑内嵌 smoke 程序（手工构建回退到 `<stem>.smoke.int`）。
+
+内嵌入口用 `exec(compile(source, ENTRY_FILE, "exec"))` 执行，`__file__` 就是 launcher 自身；文件入口仍走 `runpy.run_path()`。差别之一：`runpy` 的 `_ModifiedArgv0` 会把 `sys.argv[0]` 临时改成入口文件路径，内嵌执行时 `sys.argv[0]` 保持 launcher 路径。
 
 ### 10.2 导出给应用的变量
 
@@ -508,13 +513,13 @@ launcher 用**自身文件名**（stem）在 bundle 根目录按顺序查找入�
 | `PY_UPPER_HOME` | 入口所在目录（macOS：`Contents/Resources`） |
 | `PY_UPPER_RUNTIME` | bundled runtime 根 |
 | `PY_UPPER_SITE_PACKAGES` | `site-packages` |
-| `PY_UPPER_SCRIPT` | 实际选中的入口文件 |
+| `PY_UPPER_SCRIPT` | 实际选中的入口文件；入口编译在 launcher 里时**不导出**（指向不存在的文件比不说更糟） |
 | `PY_UPPER_EXECUTABLE` | launcher 绝对路径 |
 | `PY_UPPER_APP_NAME` | 打包时编译进 launcher 的应用名（改名不会变） |
 
 应用侧取资源目录用 `utils.paths.resource_root()`：优先 `PY_UPPER_HOME/resources`，没有该变量时才回退到"数父目录"。数父目录只对某一天的目录布局成立，launcher 才知道真实答案。`app/resources` 是**可选**的：目录不存在时产物里就没有 `resources/`，调用方要按"可能不存在"处理。
 
-应用名同理只有一个来源：`app/pyproject.toml` 的 `[tool.py_upper.app].name`。打包链由它派生 `.app`/可执行文件/入口脚本/`Info.plist`/Windows 版本资源的名字，并把它编译进 launcher；运行时应用统一调 `utils.paths.app_name()` 读取（先看 `PY_UPPER_APP_NAME`，开发态没有 launcher 时回读同一个 `pyproject.toml`）。**不要**从 `PY_UPPER_EXECUTABLE` 或 `argv[0]` 推名字——可执行文件是允许改名的，也不要在应用代码里硬编码第二份。
+应用名同理只有一个来源：`app/pyproject.toml` 的 `[tool.py_upper.app].name`（改应用名只改这一行，工作副本与 `app/pyproject.toml.example` 两份都要动，操作步骤与旧产物残留的坑见 README「App 名称」）。打包链由它派生 `.app`/可执行文件/`Info.plist`/Windows 版本资源的名字，并把它编译进 launcher；运行时应用统一调 `utils.paths.app_name()` 读取（先看 `PY_UPPER_APP_NAME`，开发态没有 launcher 时回读同一个 `pyproject.toml`）。**不要**从 `PY_UPPER_EXECUTABLE` 或 `argv[0]` 推名字——可执行文件是允许改名的，也不要在应用代码里硬编码第二份。
 
 ### 10.3 失败可见性
 
@@ -579,6 +584,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | 症状 | 根因 | 处理 |
 |---|---|---|
 | `Could not find the Qt platform plugin "cocoa"` / 窗口打不开 | 平台插件被裁剪或缺失 | 升级到 ≥0.17.3；平台插件类别现在永不裁剪。临时可把 `qt` 设为 `"all"` |
+| 打包后双击报 `AttributeError: 'PySide2.QtWidgets.QApplication' object has no attribute 'exec'`（窗口还没出现就弹对话框） | 应用把 Qt6 的 `exec()` 写死了，而 Qt5 binding 只发布 `exec_()` | ≥0.17.11 用 `utils.qt_compat.exec_loop(app)` 进事件循环；`app/src` 里再写 `.exec(`/`.exec_(` 会被 ast 不变式拦下 |
 | `symbol not found: _PyArg_ValidateKeywordArguments` | launcher 用 `RTLD_LOCAL` 加载 libpython | ≥0.16.15 已改为 `RTLD_GLOBAL` |
 | `No module named 'main'` | 扩展后缀不是 CPython 识别的形式 | 应为 `.cpython-310-darwin.so`（macOS）/`.cp310-win_amd64.pyd` |
 | `import zlib` 失败 / Cython 字符串压缩报错 | 搜索路径缺 `lib-dynload`（Unix）或 `DLLs`（Windows） | ≥0.17.1 已加入 launcher 搜索路径 |
@@ -596,10 +602,11 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | VS Code 调试报 `No module named 'Cython'` | 探测 Cython 时抛预期异常 | ≥0.16.8 改用 `importlib.metadata`，不会停在异常上 |
 | 双击打包好的应用"没反应" | 入口/runtime/初始化失败，而 GUI 子系统没有控制台 | ≥0.17.5 会弹原生错误对话框显示原因；自动化场景设 `PY_UPPER_NO_DIALOG=1` 只取退出码 |
 | 应用启动即退出，看不到 traceback | 未捕获异常被解释器写到不存在的 stderr | ≥0.17.5 bootstrap 先落 `TMPDIR/py_upper-<pid>.log`，launcher 在 `Py_FinalizeEx` 后据此上报；双击时会弹对话框 |
-| 把可执行文件改名后起不来 | 入口名跟随可执行文件名 | ≥0.17.5 打包时同时写 `_py_upper_static.int` 兜底 |
+| 把可执行文件改名后起不来 | 入口名跟随可执行文件名 | ≥0.17.11 入口编译在 launcher 里，改名无影响（≥0.17.5 靠 `_py_upper_static.int` 兜底） |
 | Windows 上从 cmd 运行看不到输出 | GUI 子系统没有自己的控制台 | ≥0.17.5 自动 `AttachConsole` 到父控制台（已有重定向优先）；要无条件控制台用 `PY_UPPER_LAUNCHER_CONSOLE=1` 重新构建 |
 | Windows 目标机报缺 `VCRUNTIME140.dll` | launcher 动态链接 CRT | ≥0.17.5 launcher 使用静态 CRT（`/MT`） |
 | 非 ASCII 安装路径下应用起不来 | 窄字符路径按 ANSI 代码页解释 | ≥0.17.5 入口/路径全程 UTF-8，`std::filesystem` 走 `u8path` |
+| 改了 `[tool.py_upper.app].name` 但产物还是旧名，或 `dist/` 里旧名 bundle 还在 | 名字是构建期编译进 launcher 的，且构建不会清理 `dist/` 里的旧产物 | ≥0.17.11 用 `python tools/build.py --clean`（连同 `build/`、`dist/` 一起清掉）重新构建，或手工删掉 `dist/` 下的旧 bundle；只改配置文件不重新构建不生效，见 README「App 名称」 |
 | 改了代码但该模块没有重新编译 | 增量缓存命中（源码文本与上次一致） | 确认文件内容真的变了；强制全量用 `[tool.py_upper.build].incremental = false` 或 `--clean` |
 | Windows 编译扩展报 `Import library of target Python ... not found under the SDK tree` | 导库是编译器输入，只从 SDK 取；发布 runtime 是嵌入形状，没有 `libs/` | ≥0.17.8 已从 SDK 取；SDK 缓存不完整时删 `.cache/pbs-sdk/<target>/<python>` 重新下载 |
 
@@ -630,7 +637,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | `native/inspect.py` | 二进制格式与架构识别 |
 | `native/deps.py` | 依赖解析（otool/readelf/dumpbin + 索引/缓存） |
 | `native/bundle.py` | 依赖闭包、install name 重写、ad-hoc 签名 |
-| `package.py` | launcher 构建（含 Windows 版本资源）、入口脚本、产物组装、原生排除、发布清单 |
+| `package.py` | launcher 构建（含内嵌入口源码与 Windows 版本资源）、产物组装、原生排除、发布清单 |
 | `verify.py` | 静态校验 + 目标 runtime/launcher 真 import smoke |
 | `launcher/` | C++ launcher 实现（CMake 由 `package.build_launcher` 驱动） |
 | `lock.py` / `manifest.py` | 锁文件与 runtime manifest（可复现性） |

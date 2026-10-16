@@ -605,7 +605,8 @@ def test_launcher_uses_global_python_symbols_and_smoke_switch():
     # launcher must disable bytecode caching through the config field. Writing
     # .pyc files into a signed .app mutates the bundle at runtime.
     assert "config.write_bytecode=0;" in compact
-    # A renamed executable must still find its application.
+    # A hand-made launcher still resolves its entry from a file next to it, so
+    # the rename-safe fallback name has to stay in the binary.
     assert "_py_upper_static.int" in text
     # A fatal error in a GUI-subsystem launcher has nowhere to print, so the
     # dialog is the report channel and the env switch is the way out of it.
@@ -613,8 +614,36 @@ def test_launcher_uses_global_python_symbols_and_smoke_switch():
     # The application name is compiled in: a renamed executable must still
     # report the configured name, not its own filename.
     assert "PY_UPPER_APP_NAME" in text
+    # The packaged entry programs are compiled in, which is what lets a bundle
+    # ship no .int sidecar at all. The define is what tells the launcher the
+    # generated symbols exist, and the accessors are what resolve them.
+    assert "PY_UPPER_HAS_EMBEDDED_SOURCE" in text
+    assert "py_upper_embedded::kEntry" in text
+    assert "py_upper_embedded::kSmoke" in text
     cmake = (launcher.parents[1] / "CMakeLists.txt").read_text(encoding="utf-8")
     assert "PY_UPPER_APP_NAME" in cmake
+    assert "PY_UPPER_EMBEDDED_SOURCE" in cmake
+    assert "PY_UPPER_HAS_EMBEDDED_SOURCE" in cmake
+
+
+def test_launcher_escapes_python_literals_without_a_raw_prefix():
+    """A raw literal plus doubled backslashes doubled every Windows separator.
+
+    ``py_quote`` built ``r'...'`` and then escaped ``\\`` as ``\\\\``, which a raw
+    string hands back verbatim: a Windows path reached Python with each
+    separator written twice. The quoting is a normal literal with real escapes
+    now, so ``\\t`` and control bytes are emitted as escapes as well.
+    """
+    launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
+    body = launcher.read_text(encoding="utf-8").split("std::string py_quote", 1)[1].split("\n}\n", 1)[0]
+    backslash = chr(92)
+    # The literal is opened without the raw prefix; that prefix is what made the
+    # doubled backslashes survive into the path Python saw.
+    assert 'std::string r = "\'";' in body
+    assert 'r = "r' not in body
+    assert 'r += "' + backslash * 4 + '"; break;' in body
+    assert 'r += "' + backslash * 2 + 't"; break;' in body
+    assert '"' + backslash * 2 + 'x%02x"' in body
 
 
 def test_launcher_build_passes_the_configured_app_name(tmp_path, monkeypatch):
@@ -640,6 +669,11 @@ def test_launcher_build_passes_the_configured_app_name(tmp_path, monkeypatch):
     configure = calls[0]
     assert configure[0] == "cmake"
     assert f"-DPY_UPPER_APP_NAME={app_name()}" in configure
+    # The entry programs are generated into the build directory and compiled in
+    # through this define; without it the launcher is the hand-made variant.
+    embedded = f"-DPY_UPPER_EMBEDDED_SOURCE={tmp_path / 'launcher' / 'macos-arm64' / 'py_upper_embedded.cpp'}"
+    assert embedded in configure
+    assert (tmp_path / "launcher" / "macos-arm64" / "py_upper_embedded.cpp").is_file()
 
 
 def test_zig_launcher_configure_names_every_windows_architecture(tmp_path, monkeypatch):
@@ -700,22 +734,53 @@ def test_launcher_cmake_requests_the_gui_subsystem_from_every_toolchain():
     assert "PY_UPPER_LAUNCHER_CONSOLE" in cmake
 
 
-def test_entry_scripts_include_a_rename_safe_static_entry(tmp_path):
-    from py_upper.config import STATIC_ENTRY, TARGETS, entry_module
-    from py_upper.package import write_entry_scripts
+def test_embedded_source_carries_the_entry_and_the_smoke_program(tmp_path):
+    """The entry programs are generated as one translation unit, not as files.
+
+    A packaged bundle used to ship ``<App>.int``, a rename-safe copy of the same
+    program under ``_py_upper_static.int``, and the smoke program: two copies of
+    one entry plus build-verification data no user installs. Both now compile
+    into the launcher, so this generated file is the only home the entry has.
+    """
+    from py_upper.config import TARGETS, entry_module, entry_source
+    from py_upper.package import (
+        EMBEDDED_SOURCE_FILE, RAW_STRING_DELIMITER, smoke_source,
+        write_embedded_source,
+    )
 
     target = TARGETS["windows-x86_64"]
-    write_entry_scripts(tmp_path, "MyApp", target)
+    path = write_embedded_source(tmp_path, target)
 
-    named = tmp_path / "MyApp.int"
-    static = tmp_path / STATIC_ENTRY
-    smoke = tmp_path / "MyApp.smoke.int"
-    assert named.is_file() and static.is_file() and smoke.is_file()
-    # The static entry is the same application entry under a name that survives
-    # renaming the executable.
-    assert named.read_text(encoding="utf-8") == static.read_text(encoding="utf-8")
-    assert f"from {entry_module()} import main" in named.read_text(encoding="utf-8")
-    assert "SMOKE PASS" in smoke.read_text(encoding="utf-8")
+    assert path == tmp_path / EMBEDDED_SOURCE_FILE
+    text = path.read_text(encoding="utf-8")
+    assert "namespace py_upper_embedded" in text
+    assert "extern const char* const kEntry;" in text
+    assert "extern const char* const kSmoke;" in text
+    # Raw literals: the program text is not escaped, so what the launcher
+    # compiles is exactly what the configuration names.
+    for payload in (entry_source(), smoke_source(target)):
+        assert f'R"{RAW_STRING_DELIMITER}({payload}){RAW_STRING_DELIMITER}"' in text
+    assert f"from {entry_module()} import main" in text
+    assert "SMOKE PASS launcher" in text
+
+
+def test_embedded_literal_refuses_a_payload_it_cannot_carry():
+    """A payload that breaks the raw literal must fail the build, not be mangled.
+
+    Switching delimiters would silently hide the bug, and the bootstrap wraps
+    the same text in a Python triple-quoted literal, so that has to be absent
+    too. Both are generator invariants, which is why they raise here.
+    """
+    import pytest
+
+    from py_upper.package import RAW_STRING_DELIMITER, _embedded_literal
+
+    ok = _embedded_literal("print('hi')\n", "the application entry")
+    assert ok.startswith(f'R"{RAW_STRING_DELIMITER}(') and ok.endswith(f'){RAW_STRING_DELIMITER}"')
+    with pytest.raises(RuntimeError, match="raw string delimiter"):
+        _embedded_literal(f'x = "){RAW_STRING_DELIMITER}"\n', "the application entry")
+    with pytest.raises(RuntimeError, match="triple quote"):
+        _embedded_literal('doc = """text"""\n', "the application entry")
 
 
 def test_windows_version_resource_carries_a_four_part_version(tmp_path):
@@ -1487,14 +1552,16 @@ def test_package_verification_skips_foreign_format_binaries(tmp_path, monkeypatc
     from py_upper.config import TARGETS
     from py_upper.native.inspect import BinaryInfo
 
+    from py_upper.config import entry_source
+
     target = TARGETS["macos-arm64"]
     root = tmp_path / "MyApp.app"
     resources = root / "Contents" / "Resources"
     (root / "Contents" / "MacOS").mkdir(parents=True)
-    (root / "Contents" / "MacOS" / "MyApp").write_bytes(b"\xcf\xfa\xed\xfe")
+    # The entry rides in the launcher, so the package-side check reads it back
+    # out of these bytes.
+    (root / "Contents" / "MacOS" / "MyApp").write_bytes(b"\xcf\xfa\xed\xfe" + entry_source().encode("utf-8"))
     resources.mkdir(parents=True)
-    (resources / "MyApp.int").write_text("", encoding="utf-8")
-    (resources / "_py_upper_static.int").write_text("", encoding="utf-8")
     stub = resources / "runtime" / "setuptools" / "cli.exe"
     stub.parent.mkdir(parents=True)
     stub.write_bytes(b"MZ")
@@ -1509,6 +1576,10 @@ def test_package_verification_skips_foreign_format_binaries(tmp_path, monkeypatc
 
     verified: list[Path] = []
     monkeypatch.setattr(verify, "DIST", tmp_path)
+    # The bundle root is named after the configured application name, so pin
+    # the name this fixture's directories were built with instead of following
+    # whatever `app/pyproject.toml` currently says.
+    monkeypatch.setattr(verify, "app_name", lambda: "MyApp")
     monkeypatch.setattr(verify, "inspect", fake_inspect)
     monkeypatch.setattr(verify, "verify_arch", lambda path, value: verified.append(path))
 
@@ -1517,6 +1588,13 @@ def test_package_verification_skips_foreign_format_binaries(tmp_path, monkeypatc
     assert stub not in verified
     assert library in verified
     assert not [label for ok, label in checks if not ok and "cli.exe" in label]
+    # No sidecar next to the launcher, and the entry the configuration names is
+    # inside the launcher itself. (The extension checks do fail here: this
+    # fixture has no staging tree, and they are not what this test is about.)
+    entry_checks = [(ok, label) for ok, label in checks
+                    if "sidecar" in label or label.startswith("embedded entry ")]
+    assert len(entry_checks) == 2
+    assert all(ok for ok, _ in entry_checks), entry_checks
 
 
 def test_lock_preserves_existing_target_entries(tmp_path, monkeypatch):
@@ -1695,7 +1773,7 @@ def test_package_assembles_outside_the_published_path(tmp_path, monkeypatch):
     monkeypatch.setattr(pkg, "app_name", lambda: "MyApp")
     monkeypatch.setattr(pkg, "app_identifier", lambda: "com.example.MyApp")
     monkeypatch.setattr(pkg, "project_version", lambda: "0.0.0")
-    monkeypatch.setattr(pkg, "entry_module", lambda: "main")
+    monkeypatch.setattr(pkg, "entry_source", lambda: "from main import main\n")
     monkeypatch.setattr(pkg, "smoke_modules", lambda _: ["main"])
     monkeypatch.setattr(pkg, "prune_excluded_native_files", lambda _: [])
     monkeypatch.setattr(pkg, "bundle_native_dependencies", lambda *_, **__: [])
@@ -1711,7 +1789,9 @@ def test_package_assembles_outside_the_published_path(tmp_path, monkeypatch):
 
     assert out == root / "dist" / "MyApp.app"
     assert (out / "Contents" / "MacOS" / "MyApp").is_file()
-    assert (out / "Contents" / "Resources" / "MyApp.int").is_file()
+    # The launcher carries the entry, so the bundle ships no .int sidecar: not
+    # the named entry, not the rename-safe copy, not the smoke program.
+    assert list((out / "Contents" / "Resources").glob("*.int")) == []
     # The runtime cleanup ran on the private assembly tree, never on dist/.
     assert len(cleaned) == 1
     assert (root / "dist") not in cleaned[0].parents

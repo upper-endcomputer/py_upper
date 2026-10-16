@@ -19,10 +19,6 @@ RUNTIMES = ROOT / "runtimes"
 LAUNCHER = ROOT / "launcher"
 LOCK = ROOT / "py_upper.lock.json"
 MIN_BUILD_PYTHON = (3, 8)
-# Entry file that does not depend on the executable name, so a renamed launcher
-# still finds its application. The launcher searches for it as a fallback after
-# the executable-derived names; keep both sides in sync (launcher/src/PyUpper.cpp).
-STATIC_ENTRY = "_py_upper_static.int"
 # The tracked template and the Git-ignored working copy of the application
 # configuration. Everything reads the working copy; the template is what a
 # fresh clone starts from.
@@ -233,7 +229,7 @@ def app_config() -> dict:
 
 
 def app_name() -> str:
-    value = str(app_config().get("name") or "MyApp").strip()
+    value = str(app_config().get("name") or "Upper").strip()
     if not value or value in {".", ".."} or any(sep in value for sep in ("/", "\\")):
         raise RuntimeError("[tool.py_upper.app].name must be a single application name")
     return value
@@ -261,6 +257,18 @@ def entry_path() -> Path:
 
 def entry_module() -> str:
     return ".".join(entry_path().relative_to(APP / "src").with_suffix("").parts)
+
+
+def entry_source() -> str:
+    """The program the launcher runs, generated from the configured entry module.
+
+    It is not authored anywhere: the packaged entry only hands control to
+    ``entry_module()``, and a hand-written copy would be a second place that
+    names it. The packaging step compiles this text into the launcher, and
+    ``--verify`` reads it back out of the launcher binary, so the two sides
+    cannot drift.
+    """
+    return f'from {entry_module()} import main\n\nif __name__ == "__main__":\n    raise SystemExit(main())\n'
 
 
 def user_agent() -> str:

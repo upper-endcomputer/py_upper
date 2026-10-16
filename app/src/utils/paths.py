@@ -16,7 +16,7 @@ APP_NAME_ENV = "PY_UPPER_APP_NAME"
 _APP_NAME_SECTION = "tool.py_upper.app"
 # Mirrors the packager's own fallback, for the case where neither a launcher nor
 # a pyproject.toml is reachable.
-_DEFAULT_APP_NAME = "MyApp"
+_DEFAULT_APP_NAME = "Upper"
 
 
 def bundle_home() -> Path | None:

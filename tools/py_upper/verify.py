@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .config import (
-    APP, BUILD, DIST, STATIC_ENTRY, Target, app_name, entry_module, host_target,
+    APP, BUILD, DIST, Target, app_name, entry_module, entry_source, host_target,
     optimize_config, runtime_executable, runtime_spec, staging_dir,
     target_extension_suffix, target_runtime_dir,
 )
@@ -109,19 +109,31 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
         executable = root / "Contents" / "MacOS" / name
         resources = root / "Contents" / "Resources"
         site = resources / "site-packages"
-        entry = resources / f"{name}.int"
-        static_entry = resources / STATIC_ENTRY
+        entry_dir = resources
     else:
         executable = root / (f"{name}.exe" if target.os == "windows" else name)
         site = root / "site-packages"
-        entry = root / f"{name}.int"
-        static_entry = root / STATIC_ENTRY
+        entry_dir = root
     checks: list[tuple[bool, str]] = [
         (root.is_dir(), "package"),
         (executable.is_file(), "launcher"),
-        (entry.is_file(), "application entry"),
-        (static_entry.is_file(), "rename-safe application entry"),
     ]
+
+    # The launcher carries the entry programs, so the bundle ships no script
+    # next to the executable at all. A leftover .int is either the old layout or
+    # a stray hand-written entry, and the launcher would not read it either way:
+    # saying so here is what keeps the package from growing a second, unread
+    # copy of the entry.
+    sidecars = sorted(path.relative_to(root).as_posix() for path in entry_dir.glob("*.int"))
+    checks.append((not sidecars, "no entry sidecar next to the launcher" + (f": {', '.join(sidecars)}" if sidecars else "")))
+    if executable.is_file():
+        # The entry is the one thing the launcher cannot get from anywhere else,
+        # and the packaging step compiles it in: reading the bytes back out
+        # proves the binary that was built carries the entry the configuration
+        # names, which a file-based check silently stopped doing the moment the
+        # two sides could disagree.
+        embedded = entry_source().encode("utf-8")
+        checks.append((embedded in executable.read_bytes(), f"embedded entry {entry_module()}"))
     runtime_root = resources / "runtime" if target.os == "macos" else root / "runtime"
     if bool(optimize_config().get("remove_runtime_pip", True)):
         checks.append((not runtime_pip_payloads(runtime_root), "runtime pip/ensurepip removed"))
@@ -287,14 +299,8 @@ def run_launcher_smoke(target: Target, launcher: Path) -> None:
     if target != host_target():
         print("SKIP launcher smoke: cross target")
         return
-    name = app_name()
-    script_name = f"{name}.smoke.int"
-    if target.os == "macos":
-        expected = launcher.parent.parent / "Resources" / script_name
-    else:
-        expected = launcher.parent / script_name
-    if not expected.exists():
-        raise RuntimeError(f"Packaged launcher smoke script missing: {expected}")
+    # The smoke program is compiled into the launcher like the entry is, so the
+    # run below is what proves it: there is no file to check first.
     env = dict(os.environ)
     env["PY_UPPER_SMOKE"] = "1"
     # The smoke test is non-interactive by definition: a failure must surface as

@@ -33,6 +33,18 @@
 
 namespace fs = std::filesystem;
 
+#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
+// The entry programs, written by tools/py_upper at packaging time; see
+// write_embedded_source(). Declared here, at file scope, because that is where
+// the generated translation unit defines them: a declaration inside the
+// anonymous namespace below would name a different, internal symbol and the
+// link would fail with "has internal linkage but is not defined".
+namespace py_upper_embedded {
+extern const char* const kEntry;
+extern const char* const kSmoke;
+}  // namespace py_upper_embedded
+#endif
+
 namespace {
 
 // CPython is never linked into the launcher: every entry point is resolved from
@@ -52,9 +64,11 @@ using RunSimpleString = int (*)(const char*);
 // does not export it: the stable ABI it re-exports leaves the PyConfig API out.
 constexpr const char* kRuntimeEntrySymbol = "PyConfig_InitIsolatedConfig";
 
-// The entry file that survives renaming the executable, so a renamed launcher
-// still finds its application (PyStand's _pystand_static.int).
+// Entry file that does not depend on the executable name, so a launcher built
+// without an embedded entry still finds its application after being renamed
+// (PyStand's _pystand_static.int).
 constexpr const char* kStaticEntry = "_py_upper_static.int";
+
 // Fatal errors must be visible: on Windows the launcher is a GUI-subsystem
 // binary and a macOS bundle started from Finder has no terminal, so a broken
 // package would otherwise look like nothing happened at all. Non-interactive
@@ -191,7 +205,7 @@ void report_fatal(const std::string& message) {
 }
 
 fs::path exe_dir(const std::string& exe) {
-    // argv[0] can be relative ("./MyApp"), which would leave a "." component
+    // argv[0] can be relative ("./Upper"), which would leave a "." component
     // in the parent chain and misplace the bundle root. Normalise first.
     std::error_code ec;
     auto absolute = fs::absolute(path_from_utf8(exe), ec);
@@ -200,8 +214,9 @@ fs::path exe_dir(const std::string& exe) {
     return (ec ? absolute : canonical).parent_path();
 }
 
-// The executable-derived name is the documented layout; the extra suffixes and
-// the static name cover hand-made bundles and a renamed executable.
+// The file layout a launcher built without an embedded entry resolves, which is
+// how a hand-made bundle ships its application. A packaged launcher carries the
+// entry itself and never looks here.
 std::vector<fs::path> entry_candidates(const fs::path& dir, const std::string& stem) {
     return {
         dir / (stem + ".int"),
@@ -209,6 +224,25 @@ std::vector<fs::path> entry_candidates(const fs::path& dir, const std::string& s
         dir / (stem + ".pyw"),
         dir / kStaticEntry,
     };
+}
+
+// The programs the launcher runs. A packaged launcher carries both compiled in
+// (tools/py_upper generates them); a launcher built by hand has neither and
+// resolves its entry from a file next to the executable instead.
+const char* embedded_entry() {
+#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
+    return py_upper_embedded::kEntry;
+#else
+    return nullptr;
+#endif
+}
+
+const char* embedded_smoke() {
+#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
+    return py_upper_embedded::kSmoke;
+#else
+    return nullptr;
+#endif
 }
 
 // A crash report has to survive the interpreter: the bootstrap writes the
@@ -232,14 +266,28 @@ std::string read_text_file(const fs::path& path) {
     return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
 }
 
+// Every value that reaches the bootstrap is a Python string literal. A raw
+// literal cannot work here: it would preserve a backslash that has to escape
+// itself, so a Windows path arrived at Python with every separator doubled.
+// UTF-8 bytes above ASCII pass through unescaped; the program text is UTF-8.
 std::string py_quote(const std::string& s) {
-    std::string r = "r'";
-    for (char c : s) {
-        if (c == '\\') r += "\\\\";
-        else if (c == '\'') r += "\\'";
-        else if (c == '\n') r += "\\n";
-        else if (c == '\r') r += "\\r";
-        else r += c;
+    std::string r = "'";
+    for (unsigned char c : s) {
+        switch (c) {
+            case '\\': r += "\\\\"; break;
+            case '\'': r += "\\'"; break;
+            case '\n': r += "\\n"; break;
+            case '\r': r += "\\r"; break;
+            case '\t': r += "\\t"; break;
+            default:
+                if (c < 0x20 || c == 0x7f) {
+                    char escape[8];
+                    std::snprintf(escape, sizeof(escape), "\\x%02x", c);
+                    r += escape;
+                } else {
+                    r += static_cast<char>(c);
+                }
+        }
     }
     return r + "'";
 }
@@ -285,9 +333,26 @@ def _py_upper_report():
         pass
 
 
+def _py_upper_run():
+    if ENTRY_SOURCE is not None:
+        # The entry rides in the launcher, so there is no file to read. The
+        # namespace is the one runpy gives a script, and __file__ is a path that
+        # exists: the launcher, which is what carries the code.
+        namespace = {
+            "__name__": "__main__",
+            "__file__": ENTRY_FILE,
+            "__package__": None,
+            "__spec__": None,
+            "__builtins__": __builtins__,
+        }
+        exec(compile(ENTRY_SOURCE, ENTRY_FILE, "exec"), namespace)
+    else:
+        runpy.run_path(ENTRY_SCRIPT, run_name="__main__")
+
+
 _py_upper_streams()
 try:
-    runpy.run_path(ENTRY_SCRIPT, run_name="__main__")
+    _py_upper_run()
 except SystemExit:
     raise
 except BaseException:
@@ -295,10 +360,23 @@ except BaseException:
     raise
 )PYUPPER";
 
-std::string bootstrap(const fs::path& script, const fs::path& crash_report) {
-    return "ENTRY_SCRIPT = " + py_quote(path_to_utf8(script)) + "\n"
-        + "CRASH_REPORT = " + py_quote(path_to_utf8(crash_report)) + "\n"
-        + kBootstrapBody;
+// The program the launcher runs arrives from one of two places: compiled into
+// the binary, or as a file next to it. The bootstrap below carries whichever
+// applies as a literal, so the Python side stays one program with one branch.
+std::string bootstrap(const fs::path& script, const fs::path& entry_file, const char* source, const fs::path& crash_report) {
+    std::string text = "ENTRY_FILE = " + py_quote(path_to_utf8(entry_file)) + "\n"
+        "ENTRY_SOURCE = None\n"
+        "ENTRY_SCRIPT = None\n"
+        "CRASH_REPORT = " + py_quote(path_to_utf8(crash_report)) + "\n";
+    if (source != nullptr) {
+        // The generator refuses a payload that carries a triple double quote,
+        // which is what keeps this raw literal from ending early
+        // (see write_embedded_source in tools/py_upper/package.py).
+        text += std::string("ENTRY_SOURCE = r\"\"\"") + source + "\"\"\"\n";
+    } else {
+        text += "ENTRY_SCRIPT = " + py_quote(path_to_utf8(script)) + "\n";
+    }
+    return text + kBootstrapBody;
 }
 
 bool failed(PyStatus s) {
@@ -465,20 +543,33 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         const char* smoke = std::getenv("PY_UPPER_SMOKE");
         const bool smoke_mode = smoke && std::string(smoke) == "1";
 
+        // The program compiled into the launcher wins over a file next to it: a
+        // packaged bundle ships no sidecar, and a leftover one from the older
+        // layout must not be able to shadow the entry this binary was built
+        // with. The file chain is what a hand-made launcher resolves, because
+        // that build has nothing embedded to prefer.
+        const char* embedded = smoke_mode ? embedded_smoke() : embedded_entry();
         fs::path script;
-        if (smoke_mode) {
-            script = entry_dir / (stem + ".smoke.int");
-        } else {
-            for (const fs::path& candidate : entry_candidates(entry_dir, stem)) {
-                if (fs::exists(candidate)) {
-                    script = candidate;
-                    break;
+        if (embedded == nullptr) {
+            if (smoke_mode) {
+                fs::path candidate = entry_dir / (stem + ".smoke.int");
+                if (fs::exists(candidate)) script = candidate;
+            } else {
+                for (const fs::path& candidate : entry_candidates(entry_dir, stem)) {
+                    if (fs::exists(candidate)) {
+                        script = candidate;
+                        break;
+                    }
                 }
             }
-        }
-        if (script.empty()) {
-            report_fatal("Entry script missing in " + path_to_utf8(entry_dir) + "\nExpected " + stem + ".int, " + stem + ".py, " + stem + ".pyw or " + kStaticEntry);
-            return 3;
+            if (script.empty()) {
+                std::string expected = smoke_mode
+                    ? "Expected " + stem + ".smoke.int or a smoke program compiled into the launcher"
+                    : "Expected " + stem + ".int, " + stem + ".py, " + stem + ".pyw, " + kStaticEntry
+                        + " or an entry compiled into the launcher";
+                report_fatal("Entry script missing in " + path_to_utf8(entry_dir) + "\n" + expected);
+                return 3;
+            }
         }
 
         // The bundle layout is exported so the application never has to guess its
@@ -487,7 +578,10 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         set_env("PY_UPPER_HOME", path_to_utf8(entry_dir));
         set_env("PY_UPPER_RUNTIME", path_to_utf8(home));
         set_env("PY_UPPER_SITE_PACKAGES", path_to_utf8(site));
-        set_env("PY_UPPER_SCRIPT", path_to_utf8(script));
+        // Exported only when the entry really is a file. A packaged launcher
+        // carries its entry, and naming a path that does not exist would be
+        // worse than saying nothing.
+        if (!script.empty()) set_env("PY_UPPER_SCRIPT", path_to_utf8(script));
         set_env("PY_UPPER_EXECUTABLE", exe);
 #ifdef PY_UPPER_APP_NAME
         set_env("PY_UPPER_APP_NAME", PY_UPPER_APP_NAME);
@@ -578,7 +672,10 @@ int PyUpper::run(const std::vector<std::string>& argv) {
             return 8;
         }
 
-        const std::string source = bootstrap(script, crash_report);
+        // A compiled-in entry reports the launcher as its own location, a file
+        // entry reports the file.
+        const fs::path entry_file = script.empty() ? path_from_utf8(exe) : script;
+        const std::string source = bootstrap(script, entry_file, embedded, crash_report);
         int rc = run_simple(source.c_str());
         int frc = finalize();
         finalize = nullptr;

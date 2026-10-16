@@ -14,9 +14,18 @@ target_include_directories(PyUpper PRIVATE "${PYSTAND_PYTHON_INCLUDE}")
 
 if(PY_UPPER_APP_NAME)
   # The application name is compiled in at packaging time. The launcher cannot
-  # read it from its own filename: renaming the executable is exactly the case
-  # the static entry exists for.
+  # read it from its own filename: the executable is allowed to be renamed.
   target_compile_definitions(PyUpper PRIVATE PY_UPPER_APP_NAME="${PY_UPPER_APP_NAME}")
+endif()
+
+if(PY_UPPER_EMBEDDED_SOURCE)
+  # Generated at packaging time: the translation unit that carries the
+  # application entry and the smoke program. A packaged launcher then runs
+  # without a script next to it, and the define is what tells PyUpper.cpp the
+  # symbols exist. A launcher built by hand has neither, so the file chain is
+  # what resolves its entry.
+  target_sources(PyUpper PRIVATE "${PY_UPPER_EMBEDDED_SOURCE}")
+  target_compile_definitions(PyUpper PRIVATE PY_UPPER_HAS_EMBEDDED_SOURCE)
 endif()
 
 if(WIN32)

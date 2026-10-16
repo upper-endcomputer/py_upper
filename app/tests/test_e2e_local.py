@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from py_upper.compat import tomllib
 from py_upper.config import host_target
 from py_upper.native.bundle import ad_hoc_sign
 from py_upper.toolchain import resolve_toolchain
@@ -294,9 +295,17 @@ def _run_build(repo: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _packaged_root(repo: Path, target) -> Path:
+    """The bundle directory, named after the configured application name.
+
+    Read from the fixture's own ``app/pyproject.toml``: a hardcoded name would
+    make a rename silently point this test at a directory that no longer
+    exists.
+    """
+    with (repo / "app" / "pyproject.toml").open("rb") as handle:
+        app_name = tomllib.load(handle)["tool"]["py_upper"]["app"]["name"]
     if target.os == "macos":
-        return repo / "dist" / "MyApp.app" / "Contents" / "Resources"
-    return repo / "dist" / "MyApp"
+        return repo / "dist" / f"{app_name}.app" / "Contents" / "Resources"
+    return repo / "dist" / app_name
 
 
 @pytest.mark.skipif(os.environ.get("PY_UPPER_E2E") != "1", reason="set PY_UPPER_E2E=1 to run the full local build E2E")

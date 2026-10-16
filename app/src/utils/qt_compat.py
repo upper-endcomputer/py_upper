@@ -17,7 +17,10 @@ interpreter crashes immediately. Nothing here imports a binding on module
 import, so the shim stays importable — and lintable, and Cython-compilable —
 where no Qt is installed. Signal/Slot are re-exported here and resolve at call
 time to the spelling the detected binding actually ships (Signal on PySide,
-pyqtSignal on PyQt), so application code writes one name across all four.
+pyqtSignal on PyQt), so application code writes one name across all four. The
+blocking event loop is the same kind of difference -- Qt6 binds it as ``exec``,
+the Qt5 bindings only as ``exec_`` -- so ``exec_loop`` is the one place that
+tells them apart.
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 # The names the TYPE_CHECKING block resolves for editors. Runtime lookup goes
 # through __getattr__ and covers every Qt<Module>, binding or not, so this is
 # the IDE surface rather than the set of importable names.
-__all__ = ["QtCore", "QtGui", "QtWidgets", "Signal", "Slot"]
+__all__ = ["QtCore", "QtGui", "QtWidgets", "Signal", "Slot", "exec_loop"]
 
 if TYPE_CHECKING:  # IDE/static: editors resolve completion and types here.
     from PySide6 import QtCore as QtCore, QtGui as QtGui, QtWidgets as QtWidgets  # type: ignore # noqa
@@ -160,3 +163,32 @@ def Signal(*args: Any, **kwargs: Any) -> Any:
 
 def Slot(*args: Any, **kwargs: Any) -> Any:
     return _qt_factory("Slot", "pyqtSlot")(*args, **kwargs)
+
+
+# The names the two Qt majors use for a blocking event loop entry. Qt6 spells it
+# exec; the Qt5 wrappers were generated while exec was still a statement and only
+# publish exec_. One binding ships one of the two, so probing the object is the
+# whole detection -- no version table to falsify.
+_EVENT_LOOP_ENTRIES = ("exec", "exec_")
+
+
+def exec_loop(target: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run ``target``'s blocking event loop under the name it actually ships.
+
+    Application code that writes either spelling is bound to one Qt major: a
+    PySide2 bundle builds its window and then dies with ``AttributeError:
+    'QApplication' object has no attribute 'exec'`` before anything is shown.
+    This is the same capability probe ``Signal``/``Slot`` use, applied to the
+    call that never returns until the application is done.
+
+    ``target`` is a ``QApplication``, a ``QDialog`` or anything else with a
+    blocking loop; a missing entry reports the binding it was probed against.
+    """
+    for name in _EVENT_LOOP_ENTRIES:
+        method = getattr(target, name, None)
+        if method is not None:
+            return method(*args, **kwargs)
+    raise AttributeError(
+        f"{type(target).__name__} has neither exec nor exec_ "
+        f"(binding {qt_binding()}, Qt {qt_major()})"
+    )

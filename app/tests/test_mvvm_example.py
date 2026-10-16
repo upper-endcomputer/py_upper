@@ -24,6 +24,8 @@ CREATED: dict[str, list] = {
     "buttons": [],
     "browsers": [],
     "layouts": [],
+    "applications": [],
+    "qt_attributes": [],
 }
 
 
@@ -114,14 +116,36 @@ class FakeVBoxLayout:
         self.widgets.append(widget)
 
 
-class FakeApplication:
+class FakeQtFlags:
+    """The ``QtCore.Qt`` namespace; only the Qt5 path reads it (high-DPI attr)."""
+
+    AA_EnableHighDpiScaling = 5
+
+
+class FakeApplicationSurface:
+    """Everything the bootstrap and the example touch on a QApplication.
+
+    The blocking-loop spelling is deliberately absent here: Qt6 binds it as
+    ``exec``, the Qt5 bindings only as ``exec_``, and one binding ships one of
+    the two. ``exec_loop`` in the shim reads whichever exists, so each
+    application fake below carries exactly one binding's name.
+    """
+
     def __init__(self, argv=None) -> None:
         self.argv = argv
         self.processed = 0
+        self.loops = 0
+        CREATED["applications"].append(self)
 
     @classmethod
     def instance(cls):
         return None
+
+    @classmethod
+    def setAttribute(cls, attribute) -> None:  # noqa: N802 - Qt spelling
+        # Static in Qt: the application attributes are read while the instance is
+        # built, which is why this records on the class and not on an object.
+        CREATED["qt_attributes"].append(attribute)
 
     def processEvents(self) -> None:  # noqa: N802 - Qt spelling
         self.processed += 1
@@ -129,34 +153,77 @@ class FakeApplication:
     def platformName(self) -> str:  # noqa: N802 - Qt spelling
         return os.environ.get("QT_QPA_PLATFORM", "unknown")
 
-    def exec(self) -> int:
-        return 0
-
     def quit(self) -> None:
         pass
+
+    def _enter_loop(self) -> int:
+        self.loops += 1
+        return 0
+
+
+class FakeApplication(FakeApplicationSurface):
+    """PySide6/PyQt6 shape: the loop entry is ``exec``."""
+
+    def exec(self) -> int:
+        return self._enter_loop()
+
+
+class FakeQt5Application(FakeApplicationSurface):
+    """PySide2/PyQt5 shape: the loop entry is ``exec_``, and ``exec`` does not exist.
+
+    This is the shape a packaged application met on Windows: ``AttributeError:
+    'PySide2.QtWidgets.QApplication' object has no attribute 'exec'``. Qt5
+    bindings were generated while ``exec`` was still a statement, so they only
+    publish the trailing-underscore name.
+
+    The constructor also carries Qt5's high-DPI rule: Qt reads those attributes
+    while the application is built, so the fake refuses to be constructed before
+    one was set, exactly as Qt5 logs a warning and ignores the attribute when it
+    is set too late.
+    """
+
+    def __init__(self, argv=None) -> None:
+        assert CREATED["qt_attributes"], "Qt5 attributes must be set before the application exists"
+        super().__init__(argv)
+
+    def exec_(self) -> int:  # noqa: N802 - Qt spelling
+        return self._enter_loop()
+
+
+def _qt_widgets(application) -> dict[str, object]:
+    """The QtWidgets members the example's views and the bootstrap touch."""
+    return {
+        "QApplication": application,
+        "QMainWindow": FakeMainWindow,
+        "QDialog": FakeDialog,
+        "QWidget": FakeWindow,
+        "QVBoxLayout": FakeVBoxLayout,
+        "QLabel": FakeLabel,
+        "QPushButton": FakeButton,
+        "QTextBrowser": FakeTextBrowser,
+    }
 
 
 @pytest.fixture
 def fake_qt(monkeypatch):
+    """The Qt6 shape: PySide6, whose application spells the loop entry ``exec``."""
     for entries in CREATED.values():
         entries.clear()
     install_fake_binding(
         monkeypatch,
-        {
-            "PySide6": {
-                "QtCore": {"Qt": object()},
-                "QtWidgets": {
-                    "QApplication": FakeApplication,
-                    "QMainWindow": FakeMainWindow,
-                    "QDialog": FakeDialog,
-                    "QWidget": FakeWindow,
-                    "QVBoxLayout": FakeVBoxLayout,
-                    "QLabel": FakeLabel,
-                    "QPushButton": FakeButton,
-                    "QTextBrowser": FakeTextBrowser,
-                },
-            }
-        },
+        {"PySide6": {"QtCore": {"Qt": FakeQtFlags}, "QtWidgets": _qt_widgets(FakeApplication)}},
+    )
+    return CREATED
+
+
+@pytest.fixture
+def fake_qt5(monkeypatch):
+    """The Qt5 shape: PySide2, whose application only spells the loop entry ``exec_``."""
+    for entries in CREATED.values():
+        entries.clear()
+    install_fake_binding(
+        monkeypatch,
+        {"PySide2": {"QtCore": {"Qt": FakeQtFlags}, "QtWidgets": _qt_widgets(FakeQt5Application)}},
     )
     return CREATED
 
@@ -258,3 +325,37 @@ def test_run_gui_headless_uses_the_same_assembly(fake_qt, monkeypatch, capsys):
     # stop() 把窗口关掉、容器清空，冒烟路径不会留下半开的窗口
     assert fake_qt["windows"][0].visible is False
     assert fake_qt["dialogs"][0].visible is False
+
+
+def test_run_gui_enters_the_loop_the_binding_ships(fake_qt5, monkeypatch):
+    """The interactive path, on the binding the packaged Windows application used.
+
+    Every other test here and the build smoke step take the headless branch,
+    which calls ``processEvents()`` and never opens a loop, and every real-Qt leg
+    had PySide6 installed. So the one call that starts the event loop was never
+    spelled on Qt5: the window was built and the process died with
+    ``AttributeError: 'PySide2.QtWidgets.QApplication' object has no attribute
+    'exec'`` before anything was shown.
+    """
+    from application import run_gui
+
+    monkeypatch.delenv("PY_UPPER_HEADLESS", raising=False)
+
+    assert run_gui() == 0
+    assert fake_qt5["applications"][-1].loops == 1
+
+
+def test_the_qt5_high_dpi_attribute_is_set_before_the_window(fake_qt5):
+    """Qt5 only reads the high-DPI attributes while the QApplication is built.
+
+    The old call sat on the instance, after construction, so Qt logged
+    ``Attribute Qt::AA_EnableHighDpiScaling must be set before QCoreApplication is
+    created`` and the scaling never applied. `FakeQt5Application.__init__` refuses
+    to be built before the attribute is recorded, so the order is part of the
+    test rather than a comment.
+    """
+    from application import PyUpperApplication
+
+    PyUpperApplication()
+
+    assert fake_qt5["qt_attributes"] == [FakeQtFlags.AA_EnableHighDpiScaling]

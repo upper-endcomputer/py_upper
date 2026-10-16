@@ -22,10 +22,13 @@ def create_application(argv: list[str] | None = None):
 
     QApplication = QtWidgets.QApplication
     Qt = QtCore.Qt
-    app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
-    # High-DPI attributes are Qt5-era; Qt6 enables them by default.
+    # High-DPI attributes are Qt5-era; Qt6 enables them by default. Qt5 reads
+    # them while the application is constructed, so setting one on an existing
+    # instance is a no-op: Qt logs "Attribute Qt::AA_EnableHighDpiScaling must be
+    # set before QCoreApplication is created" and the scaling never applies.
     if qt_major() < 6:
-        app.setAttribute(Qt.AA_EnableHighDpiScaling)
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
     return app
 
 
@@ -61,8 +64,10 @@ class MVVMQtApplication:
 
     def run(self) -> int:
         """prepare() 之后进入 Qt 事件循环"""
+        from utils.qt_compat import exec_loop
+
         self.prepare()
-        return self.qt_app.exec()
+        return exec_loop(self.qt_app)
 
     def quit(self) -> None:
         """停止应用：停容器、退事件循环"""

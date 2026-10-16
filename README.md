@@ -88,15 +88,39 @@ cp app/pyproject.toml.example app/pyproject.toml
 
 ## App 名称
 
-项目名固定为 `py_upper`，最终 App 名称在你的本地配置 `app/pyproject.toml` 里独立配置：
+项目名固定为 `py_upper`。最终 App 名称只在**一处**配置：本地配置 `app/pyproject.toml`（不入库，克隆后由 `app/pyproject.toml.example` 复制而来）的 `[tool.py_upper.app]` 节，当前是 `Upper`：
 
 ```toml
 [tool.py_upper.app]
-name = "MyApp"
-identifier = "com.example.pyupper"
+# APP NAME, single source of truth: 产物名 / Info.plist / Windows 版本资源
+# 都从这一行派生，并被编译进 launcher（PY_UPPER_APP_NAME）。改名后必须重新构建。
+name = "Upper"
+identifier = "com.example.pyupper"   # macOS bundle id，与名字无关
 ```
 
-`name` 是唯一来源：产物名（`.app` / 可执行文件 / 入口脚本 / `Info.plist` / Windows 版本资源）都由它派生，运行时 launcher 把同一个值编译进去并用 `PY_UPPER_APP_NAME` 导出。应用侧统一调 `utils.paths.app_name()` 读取——开发态没有 launcher 时它会回读这份 `pyproject.toml`——**不要在应用代码里再写一份名字**。
+### 改名怎么操作
+
+1. 改上面那一行 `name = "..."`——`app/pyproject.toml`（工作副本）和 `app/pyproject.toml.example`（入库模板）各有一份，两边都改，否则新克隆的人得到的还是旧名；
+2. 重新构建：`python tools/build.py --clean`。
+
+**旧产物不会自动删除**：构建只写当前名字的产物，`dist/` 里从 `MyApp` 时代的 `MyApp.app`（或 `MyApp/`）会留着，双击旧的那个跑的还是旧包。`--clean` 是唯一会替你清理的开关，它把 `build/` 和 `dist/` 整个删掉；不想全量重建就手工删 `dist/` 下的旧 bundle。
+
+### `name` 决定什么
+
+- 产物名：macOS 的 `dist/<name>.app`，含 `Contents/MacOS/<name>` 可执行文件与 `Info.plist` 的 `CFBundleExecutable` / `CFBundleName` / `CFBundleDisplayName`；Windows / Linux 的 `dist/<name>/` 目录与 `dist/<name>/<name>(.exe)`；
+- Windows 版本资源（`FileDescription` / `ProductName` / `OriginalFilename`）；`Info.plist` 里只有 `CFBundleIdentifier`（来自 `identifier`）和版本字段来自别处，其余名字字段都跟它走；
+- 运行时的 `PY_UPPER_APP_NAME`：这个值是**打包时编译进 launcher** 的，所以改名必须重新构建才生效，只改配置文件不会影响已经打好的包；
+- 应用内展示位：应用侧统一调 `utils.paths.app_name()` 读它，示例 MVVM 应用直接把它当主窗口标题（`app/src/application.py` → `MainViewModel`）。
+
+### `name` 不影响什么
+
+- **可执行文件允许被改名**：入口程序编译在 launcher 里（见 `docs/DEVELOPMENT_GUIDE.md` §10.1），把 `Upper.app` 改成 `Renamed.app` 或把 `Upper.exe` 改成 `Renamed.exe` 照常启动；
+- `identifier` 与项目名 `py_upper`（Python 包名、`tools/` 命令名）都跟这个值无关；
+- 开发态（没有 launcher）`app_name()` 会回读同一份 `pyproject.toml`，所以「`PYTHONPATH=src python src/main.py` 时看到的窗口标题」和打包产物自然一致。
+
+### 不要做的事
+
+**不要在应用代码里再写一份名字。** 名字的唯一来源就是 `[tool.py_upper.app].name`。`app/src/utils/paths.py` 的 `_DEFAULT_APP_NAME` 与 `tools/py_upper/config.py` 的 `or "Upper"` 是「既没有 launcher、也读不到 `pyproject.toml`」时的兜底回退值，两处互为镜像，**改名时同样要一起改成新名**。
 
 ## 构建
 
@@ -258,9 +282,9 @@ Windows XP 场景仍必须使用真正兼容 XP 的 custom/local CPython runtime
 
 ## 启动器与错误可见性
 
-`launcher/` 是不链接 libpython 的 C++ 可执行文件：运行时从 bundled runtime 解析 CPython 符号，所以换目标 Python 版本不需要重新链接。它按 `<可执行名>.int` → `.py` → `.pyw` → `_py_upper_static.int` 的顺序找入口；打包时会同时写出 `<App>.int` 和 `_py_upper_static.int`，因此**把可执行文件改名后应用照样能起来**。
+`launcher/` 是不链接 libpython 的 C++ 可执行文件：运行时从 bundled runtime 解析 CPython 符号，所以换目标 Python 版本不需要重新链接。**入口程序（以及 `PY_UPPER_SMOKE=1` 用的 smoke 程序）在打包时编译进 launcher**，所以产物里没有 `.int` 脚本，**把可执行文件改名后应用照样能起来**，也不会出现"sidecar 被删掉或被改坏"这种故障。手工构建、没有生成源可内嵌的 launcher 才回退到按 `<可执行名>.int` → `.py` → `.pyw` → `_py_upper_static.int` 找入口文件。
 
-launcher 还向应用导出 `PY_UPPER_HOME`（入口目录）、`PY_UPPER_RUNTIME`、`PY_UPPER_SITE_PACKAGES`、`PY_UPPER_SCRIPT`、`PY_UPPER_EXECUTABLE`，应用不必靠数父目录猜自己在哪。
+launcher 还向应用导出 `PY_UPPER_HOME`（入口目录）、`PY_UPPER_RUNTIME`、`PY_UPPER_SITE_PACKAGES`、`PY_UPPER_EXECUTABLE`，以及仅当入口真是文件时的 `PY_UPPER_SCRIPT`，应用不必靠数父目录猜自己在哪。
 
 致命错误先写 stderr，再按需弹原生对话框（Windows `MessageBoxW`、macOS `CFUserNotification`、Linux `zenity`/`xmessage`）——双击启动没有终端时，这是唯一能看到失败原因的通道。应用抛未捕获异常时，bootstrap 先把 traceback 落到 `TMPDIR/py_upper-<pid>.log`，`Py_FinalizeEx` 之后由 launcher 上报。CI 与自动化设 `PY_UPPER_NO_DIALOG=1`，失败只体现为退出码，不会卡在没人能点的对话框上。
 
