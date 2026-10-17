@@ -34,6 +34,19 @@ RUNTIME_SCOPE = "runtime"
 # uses it, so it is never enabled by default.
 PRESETS = {
     "safe": {"site_packages": (), "runtime": ()},
+    # Distribution metadata is not imported by an application; it is what
+    # pip/importlib.metadata read to describe an installed distribution. A
+    # frozen bundle usually does not need it, but code that calls
+    # importlib.metadata.version() or pkg_resources.require() does. "release"
+    # keeps the safe payload rules and only adds this opt-in removal, so it
+    # does not drag in the OpenGL/translation cuts of "minimal".
+    "release": {
+        "site_packages": (
+            "**/*.dist-info",
+            "**/*.egg-info",
+        ),
+        "runtime": (),
+    },
     "minimal": {
         "site_packages": (
             "**/*.pyi",
@@ -59,6 +72,11 @@ PRESETS = {
             "PyQt*/**/plugins/imageformats/*qwebp*",
             "PySide*/**/plugins/imageformats/*qtiff*",
             "PyQt*/**/plugins/imageformats/*qtiff*",
+            # "minimal" is the smallest documented bundle, so it also drops
+            # install metadata. Keep the patterns here rather than in "safe":
+            # importlib.metadata and pkg_resources stop working without them.
+            "**/*.dist-info",
+            "**/*.egg-info",
         ),
         "runtime": (
             "**/idlelib",

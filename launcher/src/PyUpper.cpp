@@ -72,9 +72,11 @@ constexpr const char* kRuntimeEntrySymbol = "PyConfig_InitIsolatedConfig";
 // (PyStand's _pystand_static.int).
 constexpr const char* kStaticEntry = "_py_upper_static.int";
 
-// The encrypted application archive. It has one name so the build and the
-// loader agree without another setting to keep in sync.
-constexpr const char* kEggFile = "app.egg";
+// The encrypted application archive. It lives in its own directory so the
+// bundle root stays readable, and one name keeps the build and the loader in
+// sync without another setting.
+constexpr const char* kEggDir = "bundle";
+constexpr const char* kEggFile = "py_upper.dat";
 
 // Fatal errors must be visible: on Windows the launcher is a GUI-subsystem
 // binary and a macOS bundle started from Finder has no terminal, so a broken
@@ -596,7 +598,7 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         // The loader embedded in the launcher looks for the archive in the
         // bundle root (Contents/Resources on macOS), which is where packaging
         // copies it. It is simply absent when the project ships loose files.
-        const fs::path egg = entry_dir / kEggFile;
+        const fs::path egg = entry_dir / kEggDir / kEggFile;
 
         const char* smoke = std::getenv("PY_UPPER_SMOKE");
         const bool smoke_mode = smoke && std::string(smoke) == "1";

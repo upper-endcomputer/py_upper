@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.16**。
+当前稳定开发线：**0.17.17**。
 
 ## 构建模型
 
@@ -257,7 +257,7 @@ Qt 裁剪只删除 import 能证明的负载：C++ 头文件、示例、`.pyi` �
 
 ```toml
 [tool.py_upper.trim]
-preset = "safe"   # "safe" 只跑下面的显式规则；"minimal" 见下文
+preset = "safe"   # "safe" 只跑显式规则；"release" 加 dist-info；"minimal" 见下文
 site_packages = ["**/*.pyi", "PySide*/**/examples", "PySide*/**/include",
                  "PyQt*/**/examples", "PyQt*/**/include"]
 site_packages_keep = []
@@ -285,10 +285,17 @@ runtime_keep = []
 单元测试覆盖；完整构建只在 Windows x86_64 上实测，macOS/Linux 需在对应宿主
 执行一次 `[1/6]`…`[6/6]`。
 
+`preset = "release"` 只比 safe 多删 `**/*.dist-info` 和 `**/*.egg-info`：这些是
+pip / `importlib.metadata` 用来描述“已安装分发”的元数据，冻结应用通常不需要。
+它不会动 Qt 负载，所以适合“想再小一点，但不想承担 minimal 的 OpenGL/翻译/
+图片插件风险”的发布构建；`minimal` 也包含这两条规则。代价是运行时调用
+`importlib.metadata.version("...")` 或 `pkg_resources.require("...")` 的代码会
+失去数据，确认应用不依赖它们后再开。
+
 ## 加密 egg（可选）
 
 `[tool.py_upper.egg]` 把应用自己的 Python 模块和本次构建产出的扩展收进一个
-`app.egg`，不再以散文件留在 `site-packages`。归档格式是
+`bundle/py_upper.dat`，不再以散文件留在 `site-packages`。归档格式是
 `MAGIC (8 字节) + XOR(zip, SHAKE-256 key stream)`；launcher 在导入应用入口前
 安装内存导入器，所以产物里不会再有 `main.py` / `main.pyd`。
 
@@ -325,9 +332,11 @@ python tools/build.py --no-egg
 python tools/build.py --egg --egg-key <HEX> --egg-backend extract --egg-compression lzma
 ```
 
-stage 下的 `egg.json` 记录本次构建实际使用的 key/backend/compression，
+Windows/Linux 下归档位于可执行文件旁的 `bundle/`，macOS 下位于
+`Contents/Resources/bundle/`，文件名固定为 `py_upper.dat`，不再暴露 egg/zip
+字样。stage 下的 `egg.json` 记录本次构建实际使用的 key/backend/compression，
 `--verify` 和冒烟脚本以它为准，不会拿项目默认值去解一个被 CLI 覆盖过的 egg。
-`--verify` 会检查 `app.egg` 的 MAGIC、成员列表，并确认已打包的应用文件不再以
+`--verify` 会检查 `bundle/py_upper.dat` 的 MAGIC、成员列表，并确认已打包的应用文件不再以
 散文件出现；`memory` 后端还必须带 `_memimporter.pyd`。
 
 **加密不等于变小**：SHAKE-256 密钥流只提高直接读源码/反编译的成本，key 本身

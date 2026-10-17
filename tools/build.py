@@ -105,7 +105,7 @@ def main(argv=None) -> int:
                         help="never remove matching runtime paths; repeatable")
     egg_actions = parser.add_mutually_exclusive_group()
     egg_actions.add_argument("--egg", dest="egg", action="store_true", default=None,
-                             help="pack application code into an encrypted app.egg for this build")
+                             help="pack application code into an encrypted bundle archive for this build")
     egg_actions.add_argument("--no-egg", dest="egg", action="store_false", default=None,
                              help="ship loose application files even when the project enables the egg")
     parser.add_argument("--egg-key", metavar="HEX",

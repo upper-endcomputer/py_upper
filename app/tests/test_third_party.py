@@ -368,3 +368,29 @@ def test_direct_import_fallback_reads_record_instead_of_sibling_scan(tmp_path):
     (tmp_path / "sibling_module.py").write_text("x=1\n", encoding="utf-8")
 
     assert _top_level_imports(dist) == ["actual_pkg", "single_module"]
+
+def test_manifest_records_imports_before_distribution_metadata_trim(tmp_path, monkeypatch):
+    """The release trim deletes dist-info, so imports must be recorded first."""
+    import json
+    import shutil
+
+    import py_upper.third_party as third_party
+    from py_upper.config import host_target
+
+    wheel = make_wheel(tmp_path / "wheelhouse")
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(third_party, "resolve_wheels", lambda target: wheel.parent)
+    monkeypatch.setattr(third_party, "dependency_specs", lambda: ["demo-pkg==1.0.0"])
+    monkeypatch.setattr(third_party, "_manifest_path", lambda target: tmp_path / "manifest.json")
+
+    def trim_entry_metadata(site, target=None, trim=None):
+        for dist in site.glob("*.dist-info"):
+            shutil.rmtree(dist)
+        return {"removed_files": 0, "removed_dirs": 1}
+
+    monkeypatch.setattr(third_party, "optimize_site", trim_entry_metadata)
+    third_party.install_wheels(host_target(), staging)
+
+    data = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert data["imports"] == ["demo_pkg"]
+    assert not list((staging / "site-packages").glob("*.dist-info"))

@@ -307,7 +307,12 @@ def _direct_imports_from_requirements(site: Path) -> list[str]:
     return sorted(result)
 
 
-def _write_manifest(target: Target, wheels: list[Path], site: Path) -> Path:
+def _write_manifest(
+    target: Target,
+    wheels: list[Path],
+    site: Path,
+    imports: list[str] | None = None,
+) -> Path:
     data = {
         "format": MANIFEST_FORMAT,
         "python": python_version(),
@@ -318,7 +323,7 @@ def _write_manifest(target: Target, wheels: list[Path], site: Path) -> Path:
             {"file": path.name, "sha256": wheel_sha256(path), "size": path.stat().st_size}
             for path in wheels
         ],
-        "imports": _direct_imports_from_requirements(site),
+        "imports": _direct_imports_from_requirements(site) if imports is None else list(imports),
     }
     path = _manifest_path(target)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -446,8 +451,12 @@ def install_wheels(target: Target, staging: Path, trim=None) -> Path:
     site.mkdir(parents=True, exist_ok=True)
     for wheel in _wheel_files(out):
         _extract_wheel(wheel, site, staging)
+    # Record the distributions' import names before any trim runs: the release
+    # preset removes ``*.dist-info``/``*.egg-info``, and once the metadata is
+    # gone the manifest has nothing left to derive the smoke-test imports from.
+    imports = _direct_imports_from_requirements(site)
     optimize = optimize_site(site, target, trim)
-    _write_manifest(target, _wheel_files(out), site)
+    _write_manifest(target, _wheel_files(out), site, imports)
     if optimize["removed_files"] or optimize["removed_dirs"]:
         print(f"Third-party optimization: removed {optimize['removed_files']} files and {optimize['removed_dirs']} directories")
     return out

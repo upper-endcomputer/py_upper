@@ -459,11 +459,13 @@ runtime_keep = []
   避免配置错误删到裁剪根之外；
 - 裁剪只作用于 staging 的构建副本，不改 `runtimes/`、wheel 缓存或 `app/src`。
 
-`preset` 有两档：`safe`（默认）只使用显式列出的规则；`minimal` 再展开一组可选
-负载规则——`opengl32sw.dll`、`qdirect2d`/`qminimal` 平台插件、
-`translations/*.qm`、`qwebp`/`qtiff` 图片插件，以及 runtime 的开发目录。
+`preset` 有三档：`safe`（默认）只使用显式列出的规则；`release` 在 safe 之上
+删除 `**/*.dist-info` 与 `**/*.egg-info`（安装元数据，冻结应用通常不需要，
+但 `importlib.metadata` / `pkg_resources` 查询会失效）；`minimal` 再展开
+`opengl32sw.dll`、`qdirect2d`/`qminimal` 平台插件、`translations/*.qm`、
+`qwebp`/`qtiff` 图片插件和 runtime 开发目录，同时包含 release 的元数据规则。
 预设模式与显式模式合并后去重，`keep` 仍然优先；未知预设名在构建开始前报错。
-也可以只在本次构建使用 `--trim-preset minimal`，不写回配置文件。
+也可以只在本次构建使用 `--trim-preset release` 或 `minimal`，不写回配置文件。
 
 minimal 的模式不能按某一种 wheel 布局写死。Qt 的 wheel 至少有三类布局：
 Windows 的 PySide 把 DLL 和 `plugins` 平铺在 binding 目录下；macOS/Linux 的
@@ -503,7 +505,7 @@ Qt 自动裁剪本身也覆盖了这些固定负载：`PySide*/` 与 `PyQt*/` �
 ### 9.6 加密 egg（可选）
 
 `[tool.py_upper.egg]` 把应用自己的 Python 模块与本次构建产出的扩展收进一个
-`app.egg`，不再以散文件留在 `site-packages`。格式是
+`bundle/py_upper.dat`，不再以散文件留在 `site-packages`。格式是
 `MAGIC (8 字节) + XOR(zip, SHAKE-256 key stream)`，launcher 在导入入口前安装
 loader。
 
@@ -532,7 +534,8 @@ compression = "deflated"  # deflated | stored | lzma
   上编译失败只打印 warning；显式 `memory` 则报错。
 
 launcher 内嵌 loader 源码、key 与 backend，并在运行入口前调用
-`install(EGG_PATH, key_hex, backend)`；`PY_UPPER_EGG` 指向包内的 `app.egg`
+`install(EGG_PATH, key_hex, backend)`；`PY_UPPER_EGG` 指向包内的
+`bundle/py_upper.dat`
 （Windows/Linux 在可执行文件旁，macOS 在 `Contents/Resources/`）。stage 下的
 `egg.json` 记录本次构建实际使用的 key/backend/compression；`--verify` 和冒烟
 以它为准，因为 `--egg-key` 等覆盖不会写回项目配置。
@@ -545,13 +548,13 @@ python tools/build.py --no-egg
 python tools/build.py --egg --egg-key <HEX> --egg-backend extract --egg-compression lzma
 ```
 
-验证点：`--verify` 检查 `app.egg` 存在、MAGIC 正确、成员可解，并确认已打包的
+验证点：`--verify` 检查 `bundle/py_upper.dat` 存在、MAGIC 正确、成员可解，并确认已打包的
 应用文件不再以散文件出现；`backend = memory` 的 stage 还必须带
 `_memimporter.pyd`。冒烟脚本内嵌同一份 loader，先 `install()` 再导入入口。
 
 边界：这是混淆而不是现代密码学——key 编在 launcher 里，有决心的逆向者仍能
 取回；它也不会显著缩小产物，runtime/第三方 wheel/Qt 才是体积大头，裁剪仍用
-§9.3/§9.4。memory 后端下模块的 `__file__` 是 `app.egg` 内的虚拟路径，依赖
+§9.3/§9.4。memory 后端下模块的 `__file__` 是 `bundle/py_upper.dat` 内的虚拟路径，依赖
 真实文件路径的代码需要自己处理；extract 后端则指向临时目录。
 
 ### 9.5 MVVM 应用骨架

@@ -13,7 +13,7 @@ from .config import (
     target_extension_suffix, target_runtime_dir,
 )
 from .egg import (
-    EGG_NAME, egg_config, egg_loader_source, read_egg_members, read_egg_meta,
+    EGG_DIR, EGG_NAME, egg_config, egg_loader_source, read_egg_members, read_egg_meta,
 )
 from .egg_loader import MAGIC
 from .manifest import read_manifest, validate_manifest
@@ -46,7 +46,7 @@ def _stage_egg_config(stage) -> "EggConfig":
     egg = read_egg_meta(stage)
     if egg is not None:
         return egg
-    return egg_config(enabled=(stage / EGG_NAME).is_file())
+    return egg_config(enabled=(stage / EGG_DIR / EGG_NAME).is_file())
 
 
 def _checks_for_stage(target: Target) -> list[tuple[bool, str]]:
@@ -70,7 +70,7 @@ def _checks_for_stage(target: Target) -> list[tuple[bool, str]]:
     egg = _stage_egg_config(stage)
     egg_members = None
     if egg.enabled:
-        egg_path = stage / EGG_NAME
+        egg_path = stage / EGG_DIR / EGG_NAME
         checks.append((egg_path.is_file(), f"encrypted egg {EGG_NAME}"))
         if egg_path.is_file():
             try:
@@ -181,7 +181,7 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     # the key of the build that produced it. Stage verification is what proves
     # an enabled project actually produced one, and package() copies it
     # unconditionally, so an absent archive here means a loose build.
-    egg_path = entry_dir / EGG_NAME
+    egg_path = entry_dir / EGG_DIR / EGG_NAME
     egg_members = None
     if egg_path.is_file():
         egg = read_egg_meta(staging_dir(target)) or egg_config()
@@ -294,7 +294,7 @@ def write_smoke_script(target: Target, destination: Path) -> Path:
     # The target interpreter is started with the stage on PYTHONPATH, not
     # through the launcher, so it has to install the egg itself before the
     # imports below. The loader is plain ASCII and safe to inline.
-    egg_path = staging_dir(target) / EGG_NAME
+    egg_path = staging_dir(target) / EGG_DIR / EGG_NAME
     prelude = ""
     if egg_path.is_file():
         egg = read_egg_meta(staging_dir(target)) or egg_config(enabled=True)

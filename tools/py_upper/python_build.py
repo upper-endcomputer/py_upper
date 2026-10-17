@@ -561,13 +561,13 @@ def build_python_package(target: Target, trim=None, egg=None) -> Path:
         # a closure input. The compiled outputs are named relative to the site
         # tree because that is where they were just copied.
         from .egg import (
-            EGG_NAME, application_files, build_memimporter, pack_egg,
+            EGG_DIR, EGG_NAME, application_files, build_memimporter, pack_egg,
             remove_packed_files, write_egg_meta,
         )
 
         compiled = {artifact.relative_to(native_output_root(target)).as_posix() for artifact in outputs}
         files = application_files(site, compiled)
-        pack_egg(site, stage / EGG_NAME, files, egg)
+        pack_egg(site, stage / EGG_DIR / EGG_NAME, files, egg)
         remove_packed_files(site, files)
         write_egg_meta(stage, egg)
         if target.os == "windows" and egg.backend in ("auto", "memory"):

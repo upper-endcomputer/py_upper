@@ -1,3 +1,26 @@
+## 0.17.17
+
+### Problem
+- 0.17.16 put the encrypted archive next to the executable as `app.egg`. The name advertises both the format and the fact that the payload is an archive, and a loose file in the bundle root is easy to confuse with the runtime/site-packages trees.
+- `site-packages` still carried every wheel's `*.dist-info` / `*.egg-info`, which no frozen application imports but which pip and `importlib.metadata` read.
+
+### Root cause
+- The archive location and name were a single constant shared by the build and the launcher; 0.17.16 did not separate the directory from the file name.
+- The trim presets covered optional Qt payload but had no rule for distribution metadata, so the only way to remove it was a hand-written `--trim-site` pattern.
+
+### Changes
+- New `EGG_DIR = "bundle"`; the archive is now `bundle/py_upper.dat` in the output. Windows/Linux place it beside the executable, macOS under `Contents/Resources/bundle/`. The stage mirrors the same layout, and `kEggDir` / `kEggFile` in the launcher resolve it.
+- New `release` trim preset: safe plus `**/*.dist-info` and `**/*.egg-info`. `minimal` now also includes those two patterns. `safe` is unchanged, so nothing is stripped unless the project opts in.
+- The working `app/pyproject.toml` selects `preset = "release"`; the tracked template stays on `safe` and documents all three presets.
+- `README.md`, `docs/DEVELOPMENT_GUIDE.md`, both project files and the version move to 0.17.17.
+- The wheel manifest now records third-party import names before the trim pass, so `release`/`minimal` can delete `*.dist-info` without leaving the smoke-test import list empty.
+- Tests: `EGG_DIR` / renamed archive assertions, a `release` preset case, and a manifest-ordering case; 256 passed, 7 skipped.
+
+### Verification
+1. `python -m pytest app/tests -q`: 256 passed, 7 skipped (0.17.16: 254 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+2. Full Windows x86_64 build (`python tools/build.py --target windows-x86_64 --egg`, PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]`. The output contains `bundle/py_upper.dat` (1,970,782 bytes) and no `app.egg`; `site-packages` contains no `*.dist-info` / `*.egg-info` (0.6 MB less than 0.17.16); launcher and target-runtime smoke both pass.
+3. Limit: `importlib.metadata.version()` and `pkg_resources.require()` no longer see installed distributions under `release`/`minimal`. Projects that need them should stay on `safe` or keep the matching `*.dist-info` directory via `site_packages_keep`.
+
 ## 0.17.16
 
 ### Problem

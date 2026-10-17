@@ -11,7 +11,7 @@ import pytest
 
 from py_upper import egg as egg_module
 from py_upper.egg import (
-    EGG_META_NAME, EGG_NAME, EggConfig, application_files, egg_config,
+    EGG_DIR, EGG_META_NAME, EGG_NAME, EggConfig, application_files, egg_config,
     egg_loader_source, pack_egg, read_egg_members, read_egg_meta,
     remove_packed_files, write_egg_meta,
 )
@@ -33,7 +33,7 @@ def make_site(tmp_path, files, name="site"):
     return site
 
 
-def make_egg(tmp_path, files, name="app.egg", key=KEY, compression="stored"):
+def make_egg(tmp_path, files, name="py_upper.dat", key=KEY, compression="stored"):
     site = make_site(tmp_path, files, "site_" + name.replace(".", "_"))
     config = EggConfig(enabled=True, key_hex=key, compression=compression)
     return pack_egg(site, tmp_path / name, list(files), config)
@@ -334,7 +334,8 @@ def test_write_embedded_source_carries_the_loader_only_when_enabled(tmp_path):
 def test_pack_egg_targets_the_stage_name_used_by_packaging(tmp_path):
     egg = make_egg(tmp_path, {"mod.py": ""})
     assert egg.name == EGG_NAME
-    assert EGG_NAME == "app.egg"
+    assert EGG_NAME == "py_upper.dat"
+    assert EGG_DIR == "bundle"
 
 
 def test_stage_egg_config_honours_a_no_egg_build(tmp_path, monkeypatch):
@@ -344,5 +345,6 @@ def test_stage_egg_config_honours_a_no_egg_build(tmp_path, monkeypatch):
     monkeypatch.setattr(verify_module, "egg_config", lambda enabled=None: EggConfig(
         enabled=True if enabled is None else bool(enabled)))
     assert verify_module._stage_egg_config(tmp_path).enabled is False
-    (tmp_path / EGG_NAME).write_bytes(MAGIC)
+    (tmp_path / EGG_DIR).mkdir()
+    (tmp_path / EGG_DIR / EGG_NAME).write_bytes(MAGIC)
     assert verify_module._stage_egg_config(tmp_path).enabled is True

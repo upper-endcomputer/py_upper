@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.16"
+version = "0.17.17"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -95,7 +95,7 @@ exclude = [
 
 [tool.py_upper.egg]
 # Pack the application's own Python modules and the extensions this build
-# produced into one encrypted app.egg. This raises the cost of reading the
+# produced into one encrypted bundle/py_upper.dat. This raises the cost of reading the
 # shipped code; it is obfuscation, not strong cryptography, and it barely
 # changes the bundle size. Use [tool.py_upper.trim] and Qt pruning for size.
 enabled = false
@@ -137,6 +137,10 @@ strip_native = false
 # 同时覆盖 Windows 平铺、PySide6/Qt、PyQt5/Qt5 和 PyQt6/Qt6 布局；minimal
 # 需要目标机器有可用的 OpenGL 驱动，且应用不依赖这些可选插件/翻译。
 # 也可以在单次构建时选择：python tools/build.py --trim-preset minimal
+# "safe": only the explicit rules below. "release": safe + *.dist-info /
+#         *.egg-info (smaller, but importlib.metadata/pkg_resources stop
+#         seeing installed distributions). "minimal": release + optional
+#         Qt payload (OpenGL fallback, translations, WebP/TIFF, dev stdlib).
 preset = "safe"
 # 打包后从 site-packages / runtime 里删除的路径。glob 相对各自的根目录：
 # `*`、`?`、`[]` 不跨目录，`**` 可以跨目录；匹配到目录时整棵子树都会删除。

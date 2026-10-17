@@ -1,7 +1,8 @@
 """Encrypted application egg: packing, key handling and the loader source.
 
 The application's own Python modules and compiled extensions are packed into a
-single ``app.egg`` instead of shipping as loose files in ``site-packages``:
+single ``bundle/py_upper.dat`` instead of shipping as loose files in
+``site-packages``:
 
     MAGIC (8 bytes) + XOR(zip bytes, SHAKE-256 key stream)
 
@@ -33,7 +34,8 @@ from pathlib import Path
 from .config import APP, BUILD, Target, py_upper_config, resolve_target_python
 from .egg_loader import BACKENDS, DEFAULT_KEY_HEX, MAGIC, keystream_xor
 
-EGG_NAME = "app.egg"
+EGG_DIR = "bundle"
+EGG_NAME = "py_upper.dat"
 # The resolved configuration of the build that produced a stage. It records the
 # per-build overrides (--egg-key and friends) so --verify and the smoke step
 # read the key an egg was actually written with, not the project default.

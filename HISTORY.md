@@ -1,3 +1,13 @@
+## v0.17.17
+
+0.17.16 把加密归档直接放在可执行文件旁、命名 `app.egg`：名字既暴露了“这是 egg/zip”，又让包根目录多出一个和 runtime / site-packages 同级的大文件。0.17.17 新增 `EGG_DIR = "bundle"`，归档固定为 `bundle/py_upper.dat`——Windows/Linux 在可执行文件旁的 `bundle/`，macOS 在 `Contents/Resources/bundle/`；stage 也按同一布局落盘，launcher 的 `kEggDir` / `kEggFile` 负责解析。改目录或文件名只需要改这一处常量并重新构建。
+
+裁剪侧新增 `preset = "release"`：在 safe 的显式规则之上删除 `**/*.dist-info` 与 `**/*.egg-info`。这些目录是 pip 和 `importlib.metadata` 描述“已安装分发”的元数据，冻结应用通常不读；删除后 `site-packages` 更干净，PySide2/shiboken2 两个 dist-info 约 0.6 MB。`minimal` 也包含这两条规则，`safe` 保持原样，不会静默改变别的项目。代价是运行时调用 `importlib.metadata.version()` 或 `pkg_resources.require()` 会失去数据，需要这类查询的应用应留在 safe，或用 `site_packages_keep` 保住对应的 dist-info。工作副本的 `app/pyproject.toml` 已切到 `release`，模板仍是 `safe` 并写明三档差异。
+
+顺带修正了裁剪与 wheel manifest 的顺序：原先先裁剪、再扫描 `*.dist-info` 生成冒烟导入列表，`release` 一开就会得到空列表并让 `[5/6]` 失败；现在先记录第三方导入名，再做裁剪。
+
+验证：`python -m pytest app/tests -q` 256 passed, 7 skipped（上一版 254），compileall 与 `git diff --check` 干净；Windows x86_64 全量构建 `[1/6]`…`[6/6]` 通过，产物里是 `bundle/py_upper.dat`、没有 `app.egg`，`site-packages` 不再有 `*.dist-info` / `*.egg-info`（比 0.17.16 少约 0.6 MB），launcher 与目标 runtime 冒烟均通过。
+
 ## v0.17.16
 
 应用自己的 `.py` 和本次构建产出的扩展原先以散文件躺在 `site-packages` 里，打包后可以直接抄走，构建工具也没有开关能把它们收进一个封套。0.17.16 新增 `[tool.py_upper.egg]`：构建时把 `app/src` 里的应用模块和本次编译的扩展写进 `app.egg`（8 字节 MAGIC + SHAKE-256 密钥流异或的 zip），再从 staging 删掉原文件；launcher 在导入入口前安装内存导入器，所以包体里不再出现 `main.py` / `main.pyd`。

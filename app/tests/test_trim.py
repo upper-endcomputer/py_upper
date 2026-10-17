@@ -170,6 +170,13 @@ def test_site_optimizer_applies_the_site_patterns(tmp_path, monkeypatch):
     assert result["removed_dirs"] == 1
 
 
+def test_release_preset_only_adds_distribution_metadata():
+    policy = TrimPolicy.from_config({"preset": "release"})
+
+    assert policy.site_packages == ("**/*.dist-info", "**/*.egg-info")
+    assert not policy.runtime
+
+
 def test_minimal_preset_adds_the_optional_payload_rules():
     policy = TrimPolicy.from_config({"preset": "minimal"})
 
@@ -181,6 +188,8 @@ def test_minimal_preset_adds_the_optional_payload_rules():
     assert "PyQt*/**/translations/*.qm" in policy.site_packages
     assert "PySide*/**/plugins/imageformats/*qwebp*" in policy.site_packages
     assert "PyQt*/**/plugins/imageformats/*qtiff*" in policy.site_packages
+    assert "**/*.dist-info" in policy.site_packages
+    assert "**/*.egg-info" in policy.site_packages
     assert "**/tkinter" in policy.runtime
     assert policy.has_site_rules and policy.has_runtime_rules
 

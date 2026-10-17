@@ -14,7 +14,7 @@ from .config import (
     APP, BUILD, DIST, LAUNCHER, Target, app_identifier, app_name, entry_source,
     project_version, publish_dir, resolve_target_python, staging_dir, target_runtime_dir,
 )
-from .egg import EGG_NAME, egg_loader_source
+from .egg import EGG_DIR, EGG_NAME, egg_loader_source
 from .fs import (
     copy_file_contents, copy_optional_tree, copy_tree_contents, make_executable,
     retire_tree, sha256,
@@ -312,9 +312,9 @@ def package(target: Target, launcher: Path, trim=None) -> Path:
         if runtime_data.exists():
             copy_tree_contents(runtime_data, out / "runtime", replace=False)
         copy_tree_contents(site, out / "site-packages")
-        stage_egg = stage / EGG_NAME
+        stage_egg = stage / EGG_DIR / EGG_NAME
         if stage_egg.is_file():
-            copy_file_contents(stage_egg, out / EGG_NAME)
+            copy_file_contents(stage_egg, out / EGG_DIR / EGG_NAME)
         _report_pruned(out / "site-packages")
         # Resources are optional: a project without app/resources simply ships none.
         copy_optional_tree(APP / "resources", out / "resources")
@@ -333,9 +333,9 @@ def package(target: Target, launcher: Path, trim=None) -> Path:
     if runtime_data.exists():
         copy_tree_contents(runtime_data, resources / "runtime", replace=False)
     copy_tree_contents(site, resources / "site-packages")
-    stage_egg = stage / EGG_NAME
+    stage_egg = stage / EGG_DIR / EGG_NAME
     if stage_egg.is_file():
-        copy_file_contents(stage_egg, resources / EGG_NAME)
+        copy_file_contents(stage_egg, resources / EGG_DIR / EGG_NAME)
     _report_pruned(resources / "site-packages")
     # Resources are optional: a project without app/resources simply ships none.
     copy_optional_tree(APP / "resources", resources / "resources")
