@@ -9,7 +9,7 @@ from pathlib import Path
 from py_upper.config import (
     BUILD, DIST, TARGETS, app_name, host_description, host_target, pbs_release,
     pbs_sdk_dir, python_version, runtime_provider, target_runtime_dir,
-    validate_build_python_version, validate_target, require_local_python,
+    trim_policy, validate_build_python_version, validate_target, require_local_python,
 )
 from py_upper.lock import verify_lock, write_lock
 from py_upper.package import build_launcher, package, write_release_manifest
@@ -19,6 +19,7 @@ from py_upper.fs import retire_tree
 from py_upper.verify import run_launcher_smoke, run_packaged_launcher, run_target_python_smoke
 from py_upper.toolchain import describe_toolchain
 from py_upper.third_party import resolve_wheels
+from py_upper.trim import PRESETS
 from py_upper.verify import verify
 
 
@@ -90,6 +91,16 @@ def main(argv=None) -> int:
     parser.add_argument("--locked", action="store_true")
     parser.add_argument("--identity")
     parser.add_argument("--notary-profile")
+    parser.add_argument("--trim-preset", choices=tuple(PRESETS), metavar="NAME",
+                        help="add a named trim rule set for this build: " + ", ".join(PRESETS))
+    parser.add_argument("--trim-site", action="append", default=[], metavar="GLOB",
+                        help="remove paths from site-packages; repeatable (relative glob)")
+    parser.add_argument("--trim-site-keep", action="append", default=[], metavar="GLOB",
+                        help="never remove matching site-packages paths; repeatable")
+    parser.add_argument("--trim-runtime", action="append", default=[], metavar="GLOB",
+                        help="remove paths from the bundled runtime; repeatable")
+    parser.add_argument("--trim-runtime-keep", action="append", default=[], metavar="GLOB",
+                        help="never remove matching runtime paths; repeatable")
     args = parser.parse_args(argv)
 
     action = args.command or "build"
@@ -129,15 +140,22 @@ def main(argv=None) -> int:
             os.environ["PY_UPPER_LOCKED"] = "1"
             os.environ["PYSTAND_LOCKED"] = "1"
 
+        trim = trim_policy(args.trim_preset).merge(
+            site_packages=args.trim_site,
+            site_packages_keep=args.trim_site_keep,
+            runtime=args.trim_runtime,
+            runtime_keep=args.trim_runtime_keep,
+        )
+
         print("[1/6] Runtime + SDK")
         ensure_sdk(target)
         ensure_runtime(target)
         print("[2/6] Third-party dependencies")
-        build_python_package(target)
+        build_python_package(target, trim)
         print("[3/6] Target launcher")
         launcher = build_launcher(target)
         print("[4/6] Package + native dependency closure")
-        out = package(target, launcher)
+        out = package(target, launcher, trim)
         print("[5/6] Static verification")
         if verify(target):
             return 1

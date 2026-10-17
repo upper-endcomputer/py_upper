@@ -1,3 +1,74 @@
+## 0.17.15
+
+### Problem
+- The 0.17.14 `minimal` preset was written against one wheel layout: `*/plugins/platforms/*qminimal*`, `*/translations/*.qm`, `*/opengl32sw.dll`. A single `*` does not cross a directory, so it matched `PySide2/plugins/...` on Windows but missed `PySide6/Qt/plugins/...` on macOS/Linux and `PyQt5/Qt5/...` / `PyQt6/Qt6/...` on every platform. The strongest preset silently did nothing there.
+- `qt_prune._qt_layout()` recognised only a `Qt` payload directory. A PyQt POSIX tree was therefore treated as the flat Windows layout: `plugins`, `qml`, `translations` and `metatypes` were looked up in the package root, where they do not exist, and `prune()` left the payload in place. The same hard-coded `pyside / "Qt"` in `prune()` decided where `examples`, `include` and `resources` were removed from.
+
+### Root cause
+- The preset encoded the Windows PySide wheel shape rather than the payload names. PySide POSIX adds a `Qt` level, and PyQt adds a `Qt5`/`Qt6` level on every platform, so layout-dependent patterns have to be written with `**/` between the binding directory and the payload name.
+- `_QtLayout` described the pieces of the payload but not the directory that contains them, so callers re-derived that root independently and only knew the PySide name.
+
+### Changes
+- `PRESETS["minimal"]` now uses layout-independent patterns: `PySide*/**/examples`, `PySide*/**/include`, `PyQt*/**/examples`, `PyQt*/**/include`, `PySide*/**/opengl32sw.dll`, `PyQt*/**/opengl32sw.dll`, and `PySide*/**/` or `PyQt*/**/` prefixes for `plugins/platforms/*qdirect2d*`, `plugins/platforms/*qminimal*`, `translations/*.qm`, `plugins/imageformats/*qwebp*` and `plugins/imageformats/*qtiff*`. `**/` matches zero or more directories, so one rule covers the Windows flat layout, `PySide6/Qt`, `PyQt5/Qt5` and `PyQt6/Qt6`.
+- The tracked `[tool.py_upper.trim]` defaults in both project files now use the same layout-independent form: `PySide*/**/examples`, `PySide*/**/include`, `PyQt*/**/examples` and `PyQt*/**/include`, so the `safe` preset also prunes PySide6 POSIX and PyQt trees instead of relying on `qt_prune` to catch them.
+- `_QtLayout` gains `root`, the directory holding the Qt payload. New `_qt_payload_root()` probes `Qt`, `Qt5` and `Qt6`; `_qt_layout()` reports that root and derives `libraries`, `plugins`, `qml`, `translations`, `metatypes` and `libexec` from it. `prune()` uses `layout.root` instead of re-deriving `pyside / "Qt"`.
+- Tests: the preset test asserts the new cross-layout patterns; a new trim case builds the four wheel layouts and verifies what the preset removes and what it must keep; four parametrized `_qt_layout` cases cover `PySide2/Qt`, `PySide6/Qt`, `PyQt5/Qt5` and `PyQt6/Qt6`, plus a flat-Windows fallback and a `prune()` case on a `PyQt6/Qt6` tree.
+- `README.md`, `docs/DEVELOPMENT_GUIDE.md` §9.4, both project files and the version move to 0.17.15.
+
+### Verification
+1. `python -m pytest app/tests -q`: 223 passed, 7 skipped (0.17.14: 216 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+2. The new tests cover Windows flat PySide2, macOS/Linux `PySide6/Qt`, `PyQt5/Qt5` and `PyQt6/Qt6`; the prune test confirms the PyQt6 payload root is used for `examples`, `include`, translations and the reachability sweep.
+3. A full `python tools/build.py --trim-preset minimal` is re-run on Windows x86_64 to confirm the existing 64.6 MB / 221-file result is unchanged.
+4. Limit: macOS/Linux full builds were not run on this Windows host; the layouts are covered by unit tests, and each POSIX host still needs one `[1/6]`...`[6/6]` build.
+
+## 0.17.14
+
+### Problem
+- 0.17.13 made the safe trim rules configurable, but the largest optional payload (the software OpenGL fallback, unused platform plugins, Qt translations and image-format plugins) still required hand-written globs in every project.
+- There was no single supported way to select a stronger rule bundle while keeping `safe` as the default.
+
+### Changes
+- `TrimPolicy.from_config(config, preset=None)` expands a named `PRESETS` bundle. `safe` is empty (only explicit config patterns run); `minimal` adds `**/*.pyi`, PySide2/PySide6 `examples`/`include`, `*/opengl32sw.dll`, `*/plugins/platforms/*qdirect2d*`, `*/plugins/platforms/*qminimal*`, `*/translations/*.qm`, `*/plugins/imageformats/*qwebp*`, `*/plugins/imageformats/*qtiff*`, plus runtime `**/idlelib`, `**/tkinter`, `**/tcl`, `**/tests`, `**/test`.
+- Preset patterns are merged after explicit config patterns and deduplicated; `keep` still wins.
+- `[tool.py_upper.trim].preset` selects the bundle (`safe` by default), and `tools/build.py --trim-preset {safe,minimal}` overrides it for one build. `config.trim_policy(preset=None)` validates the name before any tree is touched.
+- Both config files document `preset` and remain on `safe` by default; version 0.17.14.
+- Tests: 4 preset cases (bundle contents, dedupe, CLI override, unknown name) plus template and CLI assertions; 216 passed, 7 skipped.
+
+### Verification
+1. `python -m pytest app/tests -q`: 216 passed, 7 skipped (0.17.13: 212 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+2. Full Windows x86_64 build with `python tools/build.py --trim-preset minimal` (PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]` and reports `READY: dist/Upper`: 64.6 MB / 221 files (safe 0.17.13: 92.4 MB / 279 files); `site-packages` 48.4 MB, runtime 15.3 MB, launcher 0.92 MB. Trim removed 103 files / 33.4 MB from site-packages (safe: 45 files / 4.2 MB).
+3. `PySide2/opengl32sw.dll`, `plugins/platforms/qdirect2d.dll`, `qminimal.dll`, `plugins/imageformats/qwebp.dll` and `qtiff.dll` are absent; `qwindows.dll` and `qoffscreen.dll` remain; `translations` holds no files. Launcher and target-runtime smoke both pass.
+4. Risk: `minimal` removes the software OpenGL fallback and optional platform/image plugins. Machines without a usable OpenGL driver (VM/RDP) or applications depending on those plugins, Qt translations, WebP/TIFF may fail or lose functionality; the default remains `safe`.
+
+## 0.17.13
+
+### Problem
+- A packaged Qt application still shipped 120.2 MB in 791 files on Windows even with `qt = "imports"`: Qt pruning can only delete payload an import proves unreachable, while C++ headers, the example tree, type stubs and runtime development modules carry no import edge.
+- There was no supported way to name that dead payload, so every project-specific reduction meant patching the packager.
+- Qt pruning also left `PySide*/examples`, `PySide*/include`, the WebEngine `resources` directory when `QtWebEngineCore` was unused, and the `qwebgl` platform plugin, which drags QtQuick/QtQml and their libraries into the bundle.
+
+### Root cause
+- `optimize_site()` and `optimize_runtime_tree()` were fixed policies, and `tools/build.py` had no per-build override. Anything outside the built-in rules was unreachable through configuration.
+- A trimmer that deletes a matched directory wholesale cannot express "remove this subtree except one file", while one that merely descends loses the parent's removal decision for descendants that no longer match the original pattern. The keep rule had to be carried down the walk as a forced-removal prefix.
+
+### Changes
+- New `tools/py_upper/trim.py`:
+  - `TrimPolicy` reads `site_packages`, `site_packages_keep`, `runtime` and `runtime_keep`; validates that every pattern is relative to the trim root (no absolute path, drive letter, empty/`.`/`..` segment); and merges one build's command-line patterns without mutating the configured policy.
+  - `trim_tree()` implements relative globs (`*`, `?` and `[...]` within one segment; `**` across directories), removes a matched directory with its whole subtree, gives `keep` priority, and propagates a forced-removal prefix so a kept file under a removed parent preserves only itself and its ancestor chain.
+  - `TrimReport` counts removed files, directories and bytes and prints a per-tree summary.
+- `[tool.py_upper.trim]` is read by `config.trim_policy()` and threaded through `third_party.install_wheels()` / `optimize_site()`, `runtime.optimize_runtime_tree()`, `python_build.build_python_package()` and `package.package()`.
+- `tools/build.py` adds repeatable `--trim-site`, `--trim-site-keep`, `--trim-runtime` and `--trim-runtime-keep`; the patterns are merged onto the configured policy for that build only.
+- `qt_prune.prune()` drops `examples` and `include` beside the binding/Qt root, drops `resources` when `QtWebEngineCore` is not kept, and drops `qwebgl` while retaining `qoffscreen` and the rest of the platform category.
+- Both `app/pyproject.toml` and the tracked template declare the safe defaults (`**/*.pyi`, PySide2/PySide6 examples and include, `**/idlelib`, `**/tkinter`, `**/tcl`, `**/tests`, `**/test`), document `*_keep`, and move the project version to 0.17.13.
+- Tests: `app/tests/test_trim.py` adds 18 cases (glob semantics, subtree deletion, keep precedence including a kept file under a removed parent, relative-path validation, policy merge, runtime/site optimizer integration, template and CLI surface); `app/tests/test_qt_prune.py` adds cases for build payload, WebEngine resources, `qwebgl` and `qoffscreen`.
+- Docs: `README.md` and `docs/DEVELOPMENT_GUIDE.md` §9.4 document the interface, glob rules, keep semantics and CLI overrides.
+
+### Verification
+1. `python -m pytest app/tests -q`: 212 passed, 7 skipped (at 0.17.12: 192 passed, 7 skipped; 20 cases were added). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+2. Full Windows x86_64 build (PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`…`[6/6]` and reports `READY: dist/Upper`: the bundle falls from 120.2 MB / 791 files to 92.4 MB / 279 files; `site-packages` falls from 104.0 MB to 77.4 MB and the runtime stays at 15.3 MB. Qt pruning removes 364 files and 29 directories (266 MB before compression), the trim pass removes 45 `.pyi` files (4.2 MB), and the launcher is 0.96 MB.
+3. In the packaged payload `PySide2/examples`, `PySide2/include`, `PySide2/resources` and `plugins/platforms/qwebgl.dll` are absent, while `plugins/platforms/qoffscreen.dll` remains; the launcher smoke and target runtime smoke both pass.
+4. The runtime trim prints nothing on this target because the Windows embeddable runtime keeps its stdlib inside `python38.zip`; the POSIX runtime tree, where `tkinter`/`idlelib`/`tests` are directories, exercises the same code path.
+
 ## 0.17.12
 
 ### Problem

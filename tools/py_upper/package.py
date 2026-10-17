@@ -245,6 +245,13 @@ def _report_pruned(site: Path) -> None:
         print(f"Native exclusions: removed {len(removed)} file(s) matched by [tool.py_upper.native].exclude")
 
 
+def _optimize_runtime(path: Path, trim=None) -> dict[str, int]:
+    """Clean a copied runtime, with trim rules when the build supplied any."""
+    if trim is None:
+        return optimize_runtime_tree(path)
+    return optimize_runtime_tree(path, trim)
+
+
 def _publish(assembly: Path, source: Path, destination: Path) -> Path:
     """Move a finished bundle to its published path in a single rename.
 
@@ -261,7 +268,7 @@ def _publish(assembly: Path, source: Path, destination: Path) -> Path:
     return destination
 
 
-def package(target: Target, launcher: Path) -> Path:
+def package(target: Target, launcher: Path, trim=None) -> Path:
     stage = staging_dir(target)
     runtime = target_runtime_dir(target)
     site = stage / "site-packages"
@@ -280,7 +287,7 @@ def package(target: Target, launcher: Path) -> Path:
         if target.os == "linux":
             make_executable(out / name)
         copy_tree_contents(runtime, out / "runtime")
-        optimize_runtime_tree(out / "runtime")
+        _optimize_runtime(out / "runtime", trim)
         runtime_data = stage / "runtime-data"
         if runtime_data.exists():
             copy_tree_contents(runtime_data, out / "runtime", replace=False)
@@ -298,7 +305,7 @@ def package(target: Target, launcher: Path) -> Path:
     copy_file_contents(launcher, macos / name)
     make_executable(macos / name)
     copy_tree_contents(runtime, resources / "runtime")
-    optimize_runtime_tree(resources / "runtime")
+    _optimize_runtime(resources / "runtime", trim)
     runtime_data = stage / "runtime-data"
     if runtime_data.exists():
         copy_tree_contents(runtime_data, resources / "runtime", replace=False)

@@ -145,20 +145,26 @@ PAYLOAD_KEEP_NAMES = frozenset({"opengl32sw.dll"})
 
 @dataclass(frozen=True)
 class _QtLayout:
-    """Where a PySide6 wheel keeps the parts of the Qt payload.
+    """Where a Qt binding wheel keeps the parts of the Qt payload.
 
     The wheel flavours disagree, and every consumer of the payload has to agree
     with them:
 
-    * POSIX wheels (Linux, macOS) nest everything under ``PySide6/Qt`` -- the
-      libraries in ``Qt/lib``, plus ``plugins``, ``qml``, ``translations``,
-      ``metatypes`` and ``libexec``.
-    * Windows wheels put the Qt DLLs, the Python extension modules and the
-      tooling directly in the package root and keep only ``plugins``, ``qml``,
-      ``translations`` and ``metatypes`` beside them. There is no ``Qt``
-      directory at all, so the POSIX paths silently match nothing and pruning
-      becomes a no-op.
+    * POSIX PySide wheels (Linux, macOS) nest everything under ``PySide6/Qt``
+      -- the libraries in ``Qt/lib``, plus ``plugins``, ``qml``,
+      ``translations``, ``metatypes`` and ``libexec``.
+    * PyQt wheels nest the same payload under ``PyQt6/Qt6`` (or
+      ``PyQt5/Qt5``) on every platform, so the directory name follows the Qt
+      major version rather than the host.
+    * Windows PySide wheels put the Qt DLLs, the Python extension modules and
+      the tooling directly in the package root and keep only ``plugins``,
+      ``qml``, ``translations`` and ``metatypes`` beside them. There is no
+      ``Qt`` directory at all, so the POSIX paths silently match nothing and
+      pruning becomes a no-op.
     """
+
+    root: Path
+    """The directory holding ``plugins``, ``qml`` and the Qt libraries."""
 
     libraries: tuple[Path, ...]
     """Directories the reachability lookup indexes."""
@@ -188,6 +194,22 @@ class _QtLayout:
     """Glob patterns for shiboken's QML bridge library."""
 
 
+def _qt_payload_root(package: Path) -> Path | None:
+    """The directory a binding keeps its Qt payload in, or None for the flat
+    Windows PySide layout.
+
+    PySide POSIX wheels use ``Qt``; PyQt wheels use ``Qt5``/``Qt6`` on every
+    platform. Treating only ``Qt`` as nested made a PyQt POSIX tree look like a
+    Windows one, so the plugin, QML and translation paths all pointed at
+    directories that do not exist and pruning silently removed nothing.
+    """
+    for name in ("Qt", "Qt5", "Qt6"):
+        candidate = package / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _qt_layout(pyside: Path, binding: str) -> _QtLayout:
     # The QML bridge helper name follows the binding: pyside6qml / pyside2qml
     # for the official bindings, qmlpy / qmlpy3 style for PyQt.
@@ -199,9 +221,10 @@ def _qt_layout(pyside: Path, binding: str) -> _QtLayout:
         qml_helpers = ("qmlpy*",)
     else:
         qml_helpers = ("libpyside6qml*",)
-    nested = pyside / "Qt"
-    if nested.is_dir():
+    nested = _qt_payload_root(pyside)
+    if nested is not None:
         return _QtLayout(
+            root=nested,
             libraries=tuple(path for path in (nested / "lib", nested / "bin") if path.is_dir()),
             library_names=None,
             tooling_suffixes=("",),
@@ -213,6 +236,7 @@ def _qt_layout(pyside: Path, binding: str) -> _QtLayout:
             qml_helpers=qml_helpers,
         )
     return _QtLayout(
+        root=pyside,
         libraries=(pyside,),
         library_names="*.dll",
         tooling_suffixes=("", ".exe"),
@@ -416,6 +440,7 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
 
     counters = {"files": 0, "dirs": 0, "bytes": 0}
     layout = _qt_layout(pyside, binding)
+    qt_root = layout.root
 
     def size_of(path: Path) -> int:
         if path.is_file() or path.is_symlink():
@@ -454,6 +479,16 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     for helper in layout.helpers:
         drop(helper)
 
+    # C++ headers and the example tree are build/documentation payload: no
+    # import, plugin or translation can load them at runtime. The WebEngine
+    # resources (ICU data and .pak files, ~15 MB on Windows) belong to
+    # QtWebEngineCore alone, so they go whenever that module is not imported.
+    for name in ("examples", "include"):
+        drop(pyside / name)
+        drop(qt_root / name)
+    if "QtWebEngineCore" not in modules:
+        drop(qt_root / "resources")
+
     wrappers = _wrapper_modules(pyside)
     keep_wrappers = [path for name, path in wrappers.items() if name in modules]
     for name, path in wrappers.items():
@@ -479,7 +514,16 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
             needed = {name for dep in dependency_names(plugin) if (name := _qt_module_of(dep))}
             # Platform plugins decide whether the application starts at all, so
             # the whole category is kept regardless of its extra dependencies.
-            if "platforms" in plugin.parts or needed <= allowed_modules or any(
+            # qwebgl is the exception: it is Qt's WebGL streaming platform, not
+            # a desktop one, and it drags QtQuick/QtQml (and their DLLs) into
+            # the payload. qoffscreen stays because the headless smoke test
+            # needs it.
+            if "platforms" in plugin.parts:
+                if "qwebgl" in plugin.name.lower():
+                    drop(plugin)
+                else:
+                    keep_plugins.append(plugin)
+            elif needed <= allowed_modules or any(
                 token in plugin.name for token in PLUGIN_KEEP_EXCEPTIONS
             ):
                 keep_plugins.append(plugin)

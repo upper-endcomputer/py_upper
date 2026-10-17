@@ -1,3 +1,27 @@
+## v0.17.15
+
+0.17.14 的 `minimal` 预设只按 Windows 的 PySide 平铺布局写：`*/plugins/...` 里的单个 `*` 不跨目录，于是它命中 `PySide2/plugins/...`，却漏掉 macOS/Linux 的 `PySide6/Qt/plugins/...`，也漏掉所有平台上的 `PyQt5/Qt5/...` 与 `PyQt6/Qt6/...`——预设在最需要它的平台上静默变成 no-op。同一类错误还在 Qt 自动裁剪里：`_qt_layout()` 只认 `Qt` 目录，PyQt 的 `Qt5`/`Qt6` 被当成 Windows 平铺布局，`plugins`、`qml`、`translations`、`metatypes` 全指向不存在的包根路径，`prune()` 于是什么也没删；`prune()` 自己又硬编码了一次 `pyside / "Qt"` 来决定 `examples`、`include`、`resources` 的位置。
+
+修法是不再让规则依赖布局：minimal 改成 `PySide*/**/...` 与 `PyQt*/**/...`，`**/` 允许零层或多层目录，Windows 平铺、`PySide6/Qt`、`PyQt5/Qt5`、`PyQt6/Qt6` 四种布局共用同一组规则；`examples`、`include`、`opengl32sw.dll`、平台插件、翻译和 WebP/TIFF 插件都按这个前缀覆盖到四种 binding。模板里的 safe 默认规则也改成 `PySide*/**/examples` / `PySide*/**/include` / `PyQt*/**/...`，不再只匹配平铺布局。`_QtLayout` 新增 `root` 字段，`_qt_payload_root()` 依次探测 `Qt`、`Qt5`、`Qt6`，`prune()` 改用 `layout.root`，不再重新推导。测试新增四种布局的 trim 用例、四个 `_qt_layout` 参数化用例、平铺回退用例和一条 PyQt6 树的 `prune()` 用例。
+
+验证：`python -m pytest app/tests -q` → 223 passed, 7 skipped（上一版 216 passed），compileall 与 `git diff --check` 干净；Windows x86_64 的 minimal 全量构建复跑仍为 64.6 MB / 221 文件。限制：macOS/Linux 的完整构建没有在这台 Windows 宿主上跑过，布局由单元测试覆盖，POSIX 宿主仍需各跑一次 `[1/6]`…`[6/6]` 确认。
+
+## v0.17.14
+
+0.17.13 的裁剪接口默认只做安全删除，最大的几块可选负载——20 MB 的 opengl32sw.dll、qdirect2d/qminimal 平台插件、Qt 翻译和 WebP/TIFF 图片插件——仍要每个项目自己写 glob。0.17.14 增加 `[tool.py_upper.trim].preset`：`safe`（默认）只跑显式配置的规则，`minimal` 在 safe 之外展开一组激进规则，构建时可用 `--trim-preset minimal` 临时覆盖。预设规则与显式规则合并后去重，keep 仍然优先；未知预设名在构建开始前报错。
+
+用 minimal 重打 Windows x86_64（PySide2 5.15.2.1、CPython 3.8.10）：产物从 92.4 MB / 279 文件降到 **64.6 MB / 221 文件**，site-packages 77.4 MB → 48.4 MB，runtime 15.3 MB，launcher 0.92 MB；trim 从上一版的 45 个文件 / 4.2 MB 增至 103 个文件 / 33.4 MB（其中 opengl32sw.dll 约 20 MB）。产包里 opengl32sw.dll、qdirect2d.dll、qminimal.dll、qwebp.dll、qtiff.dll 都不在，qwindows.dll 与 qoffscreen.dll 保留，translations 只剩空目录，`[6/6]` 的 target runtime smoke 与 launcher smoke 都通过。代价：minimal 删掉软件 OpenGL 回退和可选平台/图片插件，VM、RDP 或无可用 GL 驱动的机器可能起不来，依赖 Qt 翻译、WebP/TIFF 的应用会缺功能；默认仍是 safe。测试 216 passed, 7 skipped（上一版 212 passed），compileall 与 git diff --check 干净。
+
+## v0.17.13
+
+打出来的 Qt 包仍然大，不是因为 Qt 剪得不够，而是因为剪裁只敢删 import 能证明的东西：C++ 头文件、示例树、`.pyi` 存根、runtime 里的 `tkinter`/`idlelib`/CPython tests 都没有 import 边，旧实现又没有配置面，只能整包带着；Qt 那边还漏了 `examples`、`include`、未使用 WebEngine 时的 `resources`，以及会牵连 QtQuick/QtQml 的 `qwebgl` 平台插件。
+
+新增 `tools/py_upper/trim.py` 作为通用裁剪接口：`[tool.py_upper.trim]` 的 `site_packages` / `site_packages_keep` / `runtime` / `runtime_keep` 四组相对 glob，构建时分别作用于 staging 的 `site-packages` 与复制后的 runtime；`*`、`?`、`[]` 不跨目录，`**` 跨目录，命中目录删整棵子树，keep 优先并保护整个子树。删除父目录但子路径被 keep 时，实现用“强制裁剪前缀”继续向下走：父目录保留，其余子项照删，不会因为父目录被 keep 就整棵留下。绝对路径、盘符、`.`、`..`、空段和空模式在构建开始前报错，裁剪只改构建副本，不动 `runtimes/`、wheel 缓存和 `app/src`。单次构建用可重复的 `--trim-site`、`--trim-site-keep`、`--trim-runtime`、`--trim-runtime-keep` 追加，叠加在配置之上而不写回文件；日志分别打印两棵树释放的文件数、目录数和字节数。
+
+模板默认带上一组安全规则：`**/*.pyi` 与 PySide2/PySide6 的 `examples`、`include`，runtime 的 `idlelib`、`tkinter`、`tcl`、`tests`、`test`；`opengl32sw.dll` 和 `qoffscreen` 仍由 Qt 裁剪的保留逻辑兜底。Qt 自动裁剪同时补上 `examples`/`include`、未使用 `QtWebEngineCore` 时的 `resources`，以及 `qwebgl` 插件（保留 `qoffscreen` 给 headless 冒烟）。
+
+验证：`python -m pytest app/tests -q` → 212 passed, 7 skipped（0.17.12 是 192 passed, 7 skipped，本次新增 20 条）；`compileall` 与 `git diff --check` 干净。Windows x86_64 全量构建（PySide2 5.15.2.1、CPython 3.8.10）走完 `[1/6]`…`[6/6]` 并 `READY: dist/Upper`：产物从 120.2 MB / 791 文件降到 92.4 MB / 279 文件，`site-packages` 从 104.0 MB 降到 77.4 MB，runtime 15.3 MB，launcher 0.96 MB；Qt 裁剪删 364 个文件、29 个目录（压缩前 266 MB），trim 再删 45 个 `.pyi`（4.2 MB）。打包产物里 `PySide2/examples`、`PySide2/include`、`PySide2/resources` 与 `plugins/platforms/qwebgl.dll` 都不在，`qoffscreen.dll` 保留，launcher smoke 与 target runtime smoke 均通过。限制：Windows embeddable runtime 把 stdlib 压在 `python38.zip` 里，所以这次 runtime 那组规则没有命中、日志没有输出；POSIX 的 runtime 树是展开的目录，同一代码路径会在那里生效。
+
 ## v0.17.12
 
 VS Code 的 launch.json 那条「打包应用」在 Windows 宿主上跑不完整：`tools/build.py --run` 停在 `[4/6] Package + native dependency closure`，报 `ERROR: PermissionError: [WinError 5] 拒绝访问。: '...\dist\Upper' -> '...\build\retired\Upper.37880'`，而在走到这一步之前，每个阶段都至少红过一次。三处根因叠在一起：Qt 剪裁的探针子进程拿着一个手搓的环境块（只有 `PYTHONPATH`、`PYTHONDONTWRITEBYTECODE` 和 POSIX 的 `PATH`），Windows 的 CPython 缺 `SystemRoot` 会在 preinit 就 abort（`_Py_HashRandomization_Init: failed to get random numbers to initialize Python`）；SDK 带的是官方 Windows 构建的 MSVC 版 `pyconfig.h`，`MS_WIN64`/`SIZEOF_VOID_P` 与 `snprintf → _snprintf` 这两处对 MinGW-w64 的 ABI 是错的；CMake 会把 `-DCMAKE_RC_COMPILER` 原样写进 `CMakeRCCompiler.cmake` 当字符串字面量重读，Windows 的反斜杠路径于是变成非法转义 `\X`，资源编译器还没被调用就死在 configure。修法：探针改成继承 `os.environ`、只覆盖它真正需要的那两个变量（与构建工具里其他 subprocess 一致）；新增 `toolchain.windows_gnu_cpython_defines(target)`（`-DHAVE_SNPRINTF` 恒有，`-DMS_WIN64` 只给 x86_64/arm64——32 位的 `pyconfig.h` 本来就走 `MS_WIN32` 分支），由 `ensure_zig()` 同时写进 `CC`/`CXX` 前端与 `Toolchain.compiler_args`，launcher 与扩展编译因此看同一份头文件视图，`python_build.compile_windows_extensions_with_zig()` 转发 `compiler_args`；`package._cmake_path()` 把四个 `-D` 路径值都按 `as_posix()` 拼（POSIX 上是恒等变换）。

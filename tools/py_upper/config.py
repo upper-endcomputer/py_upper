@@ -373,6 +373,23 @@ def optimize_config() -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def trim_config() -> dict:
+    """``[tool.py_upper.trim]``: declarative payload removal patterns."""
+    value = py_upper_config().get("trim", {})
+    return value if isinstance(value, dict) else {}
+
+
+def trim_policy(preset=None):
+    """The configured trim policy, validated before a build touches a tree.
+
+    ``preset`` lets ``--trim-preset`` select a named rule bundle for one build
+    without editing the project configuration.
+    """
+    from .trim import TrimPolicy
+
+    return TrimPolicy.from_config(trim_config(), preset)
+
+
 def native_config() -> dict:
     value = py_upper_config().get("native", {})
     return value if isinstance(value, dict) else {}

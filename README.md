@@ -249,6 +249,42 @@ qt = "imports"          # 默认 "all"，即完整 Qt
 
 限制：动态加载的模块（`importlib`、QML 文件里 import）静态看不到，这类应用请显式列模块；交叉目标无法执行目标解释器，会保留完整 Qt。
 
+## 裁剪接口（`[tool.py_upper.trim]`）
+
+Qt 裁剪只删除 import 能证明的负载：C++ 头文件、示例、`.pyi` 存根，以及 runtime 里的
+`tkinter` / `idlelib` / CPython tests，都没有 import 可以描述。用 `[tool.py_upper.trim]`
+显式声明，构建时分别作用于 staging 的 `site-packages` 和复制后的 `runtime`：
+
+```toml
+[tool.py_upper.trim]
+preset = "safe"   # "safe" 只跑下面的显式规则；"minimal" 见下文
+site_packages = ["**/*.pyi", "PySide*/**/examples", "PySide*/**/include",
+                 "PyQt*/**/examples", "PyQt*/**/include"]
+site_packages_keep = []
+runtime = ["**/idlelib", "**/tkinter", "**/tcl", "**/tests", "**/test"]
+runtime_keep = []
+```
+
+模式是相对各自根目录的 glob：`*` 不跨目录，`**` 跨目录；命中目录删除整棵子树；
+`keep` 优先并保护整个子树。单次构建可用 `--trim-site`、`--trim-site-keep`、
+`--trim-runtime`、`--trim-runtime-keep` 重复追加，不修改配置文件。日志会打印
+两棵树各自释放的体积。模板默认已带上“.pyi + Qt 示例/头文件 + runtime 开发模块”
+这组安全规则；示例/头文件的模式同样用 `**/` 覆盖四种 Qt wheel 布局；`opengl32sw.dll`、`qoffscreen` 等运行时兜底仍由 Qt 裁剪单独保留。
+
+`preset = "minimal"`（或单次 `--trim-preset minimal`）在 safe 之外再删除
+`opengl32sw.dll`（约 20 MB）、`qdirect2d` / `qminimal` 平台插件、Qt 的
+`translations/*.qm`，以及 `qwebp` / `qtiff` 图片插件。规则不绑定宿主布局：
+`PySide*/**/...` 与 `PyQt*/**/...` 同时命中 Windows 平铺的
+`PySide2/plugins/...`、macOS/Linux 的 `PySide6/Qt/plugins/...`、PyQt5 的
+`PyQt5/Qt5/...` 和 PyQt6 的 `PyQt6/Qt6/...`；`examples`、`include` 也按同一方式
+覆盖四种 binding。实测同一 Windows x86_64 PySide2 包从 **92.4 MB / 279 文件**
+降到 **64.6 MB / 221 文件**（`site-packages` 77.4 MB → 48.4 MB，runtime
+15.3 MB，launcher 0.92 MB）。代价是目标机器必须有可用的 OpenGL 驱动，且应用
+不能依赖被删的平台插件、翻译或 WebP/TIFF 解码；VM、RDP 或无 GPU 驱动的机器
+可能因此起不来。默认仍是 `safe`，确认目标环境后再切到 `minimal`。四种布局由
+单元测试覆盖；完整构建只在 Windows x86_64 上实测，macOS/Linux 需在对应宿主
+执行一次 `[1/6]`…`[6/6]`。
+
 ## 可选 native 组件排除
 
 个别 wheel 会带上无法在 bundle 内满足依赖的可选组件，例如 PySide6 的 macOS wheel 把 ODBC/Mimer/PostgreSQL 三个 Qt SQL 驱动链接到构建机绝对路径，并引用了它自己没有附带的 `QtQuickShapesDesignHelpers` framework。这类组件可以在打包时显式丢弃：

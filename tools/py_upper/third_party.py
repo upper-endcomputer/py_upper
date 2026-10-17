@@ -384,7 +384,7 @@ def resolve_wheels(target: Target) -> Path:
     return out
 
 
-def optimize_site(site: Path, target: Target | None = None) -> dict[str, int]:
+def optimize_site(site: Path, target: Target | None = None, trim=None) -> dict[str, int]:
     cfg = optimize_config()
     profile = str(cfg.get("profile") or "safe").lower()
     if profile not in {"safe", "aggressive"}:
@@ -428,16 +428,25 @@ def optimize_site(site: Path, target: Target | None = None) -> dict[str, int]:
             )
             removed_files += qt["files"]
             removed_dirs += qt["dirs"]
+
+    if trim is not None and trim.has_site_rules:
+        from .trim import trim_tree
+
+        report = trim_tree(site, trim.site_packages, trim.site_packages_keep)
+        if report:
+            print(report.describe("site-packages"))
+            removed_files += report.removed_files
+            removed_dirs += report.removed_dirs
     return {"removed_files": removed_files, "removed_dirs": removed_dirs}
 
 
-def install_wheels(target: Target, staging: Path) -> Path:
+def install_wheels(target: Target, staging: Path, trim=None) -> Path:
     out = resolve_wheels(target)
     site = staging / "site-packages"
     site.mkdir(parents=True, exist_ok=True)
     for wheel in _wheel_files(out):
         _extract_wheel(wheel, site, staging)
-    optimize = optimize_site(site, target)
+    optimize = optimize_site(site, target, trim)
     _write_manifest(target, _wheel_files(out), site)
     if optimize["removed_files"] or optimize["removed_dirs"]:
         print(f"Third-party optimization: removed {optimize['removed_files']} files and {optimize['removed_dirs']} directories")

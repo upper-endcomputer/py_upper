@@ -538,7 +538,7 @@ def copy_native_outputs(outputs: list[Path], site: Path, target: Target) -> None
         copy_file_contents(artifact, site / artifact.relative_to(root))
 
 
-def build_python_package(target: Target) -> Path:
+def build_python_package(target: Target, trim=None) -> Path:
     stage = staging_dir(target)
     if stage.exists():
         shutil.rmtree(stage)
@@ -548,7 +548,7 @@ def build_python_package(target: Target) -> Path:
     # Third-party dependencies are resolved/installed exactly once here. They are
     # not Cythonized; only application source modules are compiled below.
     from .third_party import install_wheels
-    install_wheels(target, stage)
+    install_wheels(target, stage, trim)
     copy_python_tree(site)
     sources = selected_sources()
     outputs = build_target_extensions(target, sources)

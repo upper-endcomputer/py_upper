@@ -472,3 +472,133 @@ def test_runtime_closure_probe_inherits_the_host_environment(tmp_path, monkeypat
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     dropped = {name: value for name, value in os.environ.items() if env.get(name) != value}
     assert not dropped, f"the probe dropped host variables: {sorted(dropped)}"
+
+
+def test_prune_drops_build_payload_and_webengine_resources(tmp_path, monkeypatch):
+    """Headers, examples, WebEngine resources and the WebGL platform plugin.
+
+    None of these can be reached from an import: the C++ headers and example
+    tree are build payload, ``resources`` belongs to QtWebEngineCore, and
+    ``qwebgl`` is Qt's streaming platform plugin rather than a desktop one.
+    ``qoffscreen`` has to stay because the headless smoke test opens a window
+    through it.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    _touch(pyside / "examples" / "widgets" / "demo.py")
+    _touch(pyside / "include" / "QtWidgets" / "qwidget.h")
+    _touch(pyside / "resources" / "icudtl.dat")
+    _touch(pyside / "plugins" / "platforms" / "qwebgl.dll")
+    _touch(pyside / "plugins" / "platforms" / "qoffscreen.dll")
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    counters = prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert counters and counters["bytes"] > 0
+    assert not (pyside / "examples").exists()
+    assert not (pyside / "include").exists()
+    assert not (pyside / "resources").exists()
+    assert not (pyside / "plugins" / "platforms" / "qwebgl.dll").exists()
+    assert (pyside / "plugins" / "platforms" / "qoffscreen.dll").exists()
+    # The platform category itself survives, so a real desktop plugin would too.
+    assert (pyside / "plugins" / "platforms").is_dir()
+
+
+def test_prune_keeps_webengine_resources_when_the_module_is_used(tmp_path, monkeypatch):
+    """``resources`` is WebEngine payload, not unconditional build output."""
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    _touch(pyside / "resources" / "qtwebengine_resources.pak")
+    _touch(pyside / "include" / "QtCore" / "qobject.h")
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore", "QtWebEngineCore"})
+
+    assert (pyside / "resources" / "qtwebengine_resources.pak").exists()
+    assert not (pyside / "include").exists()
+
+
+@pytest.mark.parametrize(("binding", "qt_dir"), [
+    ("PySide2", "Qt"),
+    ("PySide6", "Qt"),
+    ("PyQt5", "Qt5"),
+    ("PyQt6", "Qt6"),
+])
+def test_qt_layout_reads_each_bindings_payload_directory(tmp_path, binding, qt_dir):
+    """PySide POSIX uses ``Qt``; PyQt uses ``Qt<major>`` on every platform.
+
+    Recognising only ``Qt`` made a PyQt POSIX tree look like the flat Windows
+    layout: ``plugins``, ``qml`` and ``translations`` were then read from the
+    package root, where they do not exist, and pruning became a no-op.
+    """
+    from py_upper import qt_prune
+
+    package = tmp_path / "site-packages" / binding
+    plugins = package / qt_dir / "plugins"
+    plugins.mkdir(parents=True)
+    (package / qt_dir / "bin").mkdir()
+    (package / qt_dir / "translations").mkdir()
+
+    layout = qt_prune._qt_layout(package, binding)
+
+    assert layout.root == package / qt_dir
+    assert layout.plugins == plugins
+    assert layout.translations == package / qt_dir / "translations"
+    assert package / qt_dir / "bin" in layout.libraries
+    assert layout.library_names is None
+
+
+def test_qt_layout_falls_back_to_the_flat_windows_pyside_root(tmp_path):
+    from py_upper import qt_prune
+
+    package = tmp_path / "site-packages" / "PySide2"
+    (package / "plugins" / "platforms").mkdir(parents=True)
+
+    layout = qt_prune._qt_layout(package, "PySide2")
+
+    assert layout.root == package
+    assert layout.plugins == package / "plugins"
+    assert layout.library_names == "*.dll"
+
+
+def test_prune_reads_the_pyqt_payload_directory(tmp_path, monkeypatch):
+    """The payload root is not hard-coded to ``Qt``.
+
+    A PyQt6 tree keeps its libraries, plugins and translations under ``Qt6``.
+    ``prune()`` used to derive that root from ``pyside / "Qt"`` alone, so on
+    PyQt it treated the package root as the payload root and left examples,
+    headers and unused translations in the bundle.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    package = site / "PyQt6"
+    _touch(package / "QtCore.pyd")
+    _touch(package / "Qt6" / "bin" / "Qt6Core.dll")
+    _touch(package / "Qt6" / "plugins" / "platforms" / "qwindows.dll")
+    _touch(package / "Qt6" / "translations" / "qtbase_zh_CN.qm")
+    _touch(package / "Qt6" / "translations" / "qtmultimedia_zh_CN.qm")
+    _touch(package / "Qt6" / "examples" / "widgets" / "main.cpp")
+    _touch(package / "Qt6" / "include" / "QtCore" / "qobject.h")
+
+    def dependencies(path: Path) -> list[str]:
+        return {
+            "QtCore.pyd": ["Qt6Core.dll"],
+            "qwindows.dll": ["Qt6Core.dll"],
+        }.get(path.name, [])
+
+    monkeypatch.setattr(qt_prune, "dependency_names", dependencies)
+
+    counters = prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert counters and counters["bytes"] > 0
+    assert (package / "Qt6" / "bin" / "Qt6Core.dll").exists()
+    assert (package / "Qt6" / "plugins" / "platforms" / "qwindows.dll").exists()
+    assert (package / "Qt6" / "translations" / "qtbase_zh_CN.qm").exists()
+    assert not (package / "Qt6" / "translations" / "qtmultimedia_zh_CN.qm").exists()
+    assert not (package / "Qt6" / "examples").exists()
+    assert not (package / "Qt6" / "include").exists()

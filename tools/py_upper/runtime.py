@@ -221,7 +221,7 @@ def runtime_pip_payloads(root: Path) -> list[Path]:
     return found
 
 
-def optimize_runtime_tree(root: Path) -> dict[str, int]:
+def optimize_runtime_tree(root: Path, trim=None) -> dict[str, int]:
     """Apply release-safe cleanup to a copied runtime tree, never the source runtime."""
     cfg = optimize_config()
     removed_files = 0
@@ -245,4 +245,12 @@ def optimize_runtime_tree(root: Path) -> dict[str, int]:
             elif path.is_file() or path.is_symlink():
                 path.unlink()
                 removed_files += 1
+    if trim is not None and trim.has_runtime_rules:
+        from .trim import trim_tree
+
+        report = trim_tree(root, trim.runtime, trim.runtime_keep)
+        if report:
+            print(report.describe("runtime"))
+            removed_files += report.removed_files
+            removed_dirs += report.removed_dirs
     return {"removed_files": removed_files, "removed_dirs": removed_dirs}

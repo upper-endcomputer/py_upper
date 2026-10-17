@@ -96,7 +96,7 @@ cp app/pyproject.toml.example app/pyproject.toml
 # 1. 写代码：app/src 就是应用源码
 app/src/
 ├── main.py            # 入口（由 [tool.py_upper].entry 指定），只把控制权交给 application
-├── application.py     # ★ 装配处：MVVM 的对象图在这里接起来（见 §9.4）
+├── application.py     # ★ 装配处：MVVM 的对象图在这里接起来（见 §9.5）
 ├── mvvm/              # MVVM 骨架：core / models / view_models / views / services
 ├── utils/             # 运行时胶水：paths（launcher 契约）、qt_compat（Qt 名字唯一入口）
 └── ...
@@ -259,7 +259,7 @@ PYTHONPATH=src python src/main.py
 
 注意：直接运行 `main()` 会尝试打开 Qt 窗口；CI/无显示环境加 `PY_UPPER_HEADLESS=1`。
 
-还没装 Qt 时也能看到装配跑通：`import application` 不加载任何 binding（见 §9.4），
+还没装 Qt 时也能看到装配跑通：`import application` 不加载任何 binding（见 §9.5），
 `PYTHONPATH=src python -c "from application import run_application; run_application()"` 只打印问候语，不碰 Qt。
 
 ### 6.2 测试
@@ -385,7 +385,7 @@ class Window(QtWidgets.QMainWindow):
 2. 拼错的子模块（`QtWidget`）在 import 那一行就报 `ImportError`，不会拖到用的时候；
 3. `Signal` / `Slot` 由这里转出：PySide 侧是 `Signal`/`Slot`，PyQt 侧是 `pyqtSignal`/`pyqtSlot`，应用代码只写一种拼法；
 4. 整个 `app/src` 里只有 `utils/qt_compat.py` 允许出现 binding 名，`app/tests/test_qt_compat.py` 用 ast 不变式锁住这条；换 binding 只改 `app/pyproject.toml` 的依赖，应用代码与 Qt 剪枝都跟着走；
-5. 应用自己的模块也别在模块级 import Qt：`mvvm/views/*.py` 和 `mvvm/mvvm_bootstrap.py` 把 Qt 名字放在真正建窗口的那个函数里（见 §9.4）。模块级 import 会让「import 应用入口」变成「必须装 Qt」——pytest、pyflakes、Cython 编译全被拖进来，而它们本来不需要 binding。
+5. 应用自己的模块也别在模块级 import Qt：`mvvm/views/*.py` 和 `mvvm/mvvm_bootstrap.py` 把 Qt 名字放在真正建窗口的那个函数里（见 §9.5）。模块级 import 会让「import 应用入口」变成「必须装 Qt」——pytest、pyflakes、Cython 编译全被拖进来，而它们本来不需要 binding。
 6. 事件循环也从这里进：Qt6 的入口叫 `exec`，Qt5 只有 `exec_`，应用代码写死任一个就等于绑死一个 Qt 大版本（PySide2 包会开完窗口再崩在 `AttributeError: ... has no attribute 'exec'`）。唯一入口是 `utils.qt_compat.exec_loop(app)`，`app/src` 里再出现 `.exec(`/`.exec_(` 会被 `app/tests/test_qt_compat.py` 的 ast 不变式拦下。
 
 ### 9.2 窗口与 headless
@@ -420,7 +420,87 @@ qt = "imports"
 
 限制：动态加载（`importlib`、QML 内 import）静态看不到，这类应用请显式写模块列表；交叉目标无法执行目标解释器，会保留完整 Qt。
 
-### 9.4 MVVM 应用骨架
+### 9.4 通用裁剪接口（`[tool.py_upper.trim]`）
+
+按 import 裁剪只能处理 Qt 能通过 import 证明的负载。C++ 头文件、示例树、类型存根
+（`.pyi`）和 runtime 里的开发模块（`tkinter`、`idlelib`、CPython 自带 tests）没有
+import 可以描述，旧版本只能整包装进去。`[tool.py_upper.trim]` 把它们变成配置：
+
+```toml
+[tool.py_upper.trim]
+preset = "safe"
+site_packages = [
+  "**/*.pyi",
+  "PySide*/**/examples",
+  "PySide*/**/include",
+  "PyQt*/**/examples",
+  "PyQt*/**/include",
+]
+site_packages_keep = []
+
+runtime = [
+  "**/idlelib",
+  "**/tkinter",
+  "**/tcl",
+  "**/tests",
+  "**/test",
+]
+runtime_keep = []
+```
+
+两棵树的模式分别相对 `site-packages` 与打包副本里的 `runtime` 根目录。规则：
+
+- `*`、`?`、`[...]` 只匹配单层目录，`**` 跨目录；`**/*.pyi` 也匹配根目录下的存根；
+- 命中目录时删除整棵子树；
+- `keep` 优先于删除，并保护匹配路径的整个子树；
+- 删除父目录但 keep 了其中某个文件时，父目录保留，其余子项仍然删除（不会因为
+  父目录被 keep 就整棵留下）；
+- 只接受相对路径。绝对路径、盘符、`.`、`..`、空段和空模式在构建开始前报错，
+  避免配置错误删到裁剪根之外；
+- 裁剪只作用于 staging 的构建副本，不改 `runtimes/`、wheel 缓存或 `app/src`。
+
+`preset` 有两档：`safe`（默认）只使用显式列出的规则；`minimal` 再展开一组可选
+负载规则——`opengl32sw.dll`、`qdirect2d`/`qminimal` 平台插件、
+`translations/*.qm`、`qwebp`/`qtiff` 图片插件，以及 runtime 的开发目录。
+预设模式与显式模式合并后去重，`keep` 仍然优先；未知预设名在构建开始前报错。
+也可以只在本次构建使用 `--trim-preset minimal`，不写回配置文件。
+
+minimal 的模式不能按某一种 wheel 布局写死。Qt 的 wheel 至少有三类布局：
+Windows 的 PySide 把 DLL 和 `plugins` 平铺在 binding 目录下；macOS/Linux 的
+PySide 把它们嵌在 `PySide6/Qt/`；PyQt5/PyQt6 在**所有平台**都嵌在
+`PyQt5/Qt5/`、`PyQt6/Qt6/`。因此预设写成 `PySide*/**/plugins/...`、
+`PyQt*/**/plugins/...`，`**/` 允许零层或多层目录，四种布局用同一组规则命中；
+`examples`、`include`、`opengl32sw.dll` 和翻译目录同理。单层的
+`*/plugins/...` 只能命中 Windows 平铺布局，在 POSIX 和 PyQt 上会静默变成
+no-op。`qt_prune._qt_layout()` 也按 `Qt`、`Qt5`、`Qt6` 探测 payload 根目录，
+不再假设它一定叫 `Qt`。
+
+实测 Windows x86_64/PySide2 包从 92.4 MB/279 文件降到 64.6 MB/221 文件；
+Windows 平铺、`PySide6/Qt`、`PyQt5/Qt5`、`PyQt6/Qt6` 四种布局由单元测试覆盖。
+风险：minimal 会让没有可用 OpenGL 驱动的 VM/RDP 机器起不来，并移除 Qt 翻译和
+WebP/TIFF 解码；默认保持 `safe`。完整构建只在 Windows x86_64 上跑过，
+macOS/Linux 需要在对应宿主执行一次全量构建确认。
+
+单次构建可以追加规则，四个参数都可重复，并叠加在配置之上：
+
+```bash
+python tools/build.py \
+  --trim-site "PySide2/translations/*.qm" \
+  --trim-site-keep "PySide2/translations/qtbase_*.qm" \
+  --trim-runtime "**/tkinter" \
+  --trim-runtime-keep "**/tkinter/__init__.py"
+```
+
+`--trim-preset minimal` 选择激进预设，同样只作用于本次构建。日志会分别打印
+site-packages 与 runtime 释放的文件数、目录数和字节数。自定义规则
+仍需避开运行时真正依赖的内容：动态 import、按文件名加载的插件、`opengl32sw.dll`
+和 `qoffscreen` 平台插件都有独立的保留逻辑，不要用删除规则覆盖它们。
+
+Qt 自动裁剪本身也覆盖了这些固定负载：`PySide*/` 与 `PyQt*/` 下的
+`examples`、`include`，未使用 `QtWebEngineCore` 时的 `resources`，以及
+`qwebgl` 平台插件（它会牵连 QtQuick/QtQml；`qoffscreen` 保留给 headless 冒烟）。
+
+### 9.5 MVVM 应用骨架
 
 `app/src/mvvm/` 是一个能跑的最小 MVVM 骨架，依赖方向单向：View → ViewModel → Model/Service，反向靠属性的变更通知回来。
 
@@ -634,6 +714,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | `runtime.py` | 目标 runtime：provider 分发（pbs/local）、获取、release 安全裁剪 |
 | `third_party.py` | wheel 解析/安装、site 优化、依赖清单 |
 | `qt_prune.py` | 按 import 裁剪 Qt 负载（用 `ast` 读语句，认识 binding 前缀与 `utils.qt_compat`） |
+| `trim.py` | 声明式负载裁剪：相对 glob、keep 优先、site-packages / runtime 两棵树 |
 | `python_build.py` | Cython 化、目标扩展编译（Unix/Windows）、增量产物缓存、并行调度、staging |
 | `native/inspect.py` | 二进制格式与架构识别 |
 | `native/deps.py` | 依赖解析（otool/readelf/dumpbin + 索引/缓存） |

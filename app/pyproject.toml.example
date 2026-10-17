@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.12"
+version = "0.17.15"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -112,6 +112,45 @@ remove_python_caches = true
 remove_tests = false
 remove_docs = false
 strip_native = false
+
+[tool.py_upper.trim]
+# 预设："safe"（默认）只使用下面的规则；"minimal" 再移除 opengl32sw.dll、
+# qdirect2d/qminimal 平台插件、Qt 翻译和 WebP/TIFF 图片插件。预设用 `**/`
+# 同时覆盖 Windows 平铺、PySide6/Qt、PyQt5/Qt5 和 PyQt6/Qt6 布局；minimal
+# 需要目标机器有可用的 OpenGL 驱动，且应用不依赖这些可选插件/翻译。
+# 也可以在单次构建时选择：python tools/build.py --trim-preset minimal
+preset = "safe"
+# 打包后从 site-packages / runtime 里删除的路径。glob 相对各自的根目录：
+# `*`、`?`、`[]` 不跨目录，`**` 可以跨目录；匹配到目录时整棵子树都会删除。
+# `*_keep` 里的模式优先于删除，适合在删除某个目录时保住其中少数文件。
+# 单次构建也可以临时追加，例如：
+#   python tools/build.py --trim-site "PySide2/translations/*.qm"
+site_packages = [
+  # 类型存根、Qt 的 C++ 头文件和示例都只在开发期有用。`**/` 同时覆盖
+  # Windows 平铺、PySide6/Qt、PyQt5/Qt5 和 PyQt6/Qt6 布局。
+  "**/*.pyi",
+  "PySide*/**/examples",
+  "PySide*/**/include",
+  "PyQt*/**/examples",
+  "PyQt*/**/include",
+  # 软件 OpenGL 回退约 20 MB；没有可用 GL 驱动的机器会因此起不来，
+  # 确认目标机器都有驱动后再打开：
+  # "PySide*/**/opengl32sw.dll",
+  # "PyQt*/**/opengl32sw.dll",
+]
+site_packages_keep = []
+
+# 打包副本里的 Python runtime。默认去掉与 Qt 桌面应用无关的开发负载；
+# 如果应用确实使用 Tk，或依赖某个包自带的 tests 目录，把对应模式移到
+# runtime_keep。
+runtime = [
+  "**/idlelib",
+  "**/tkinter",
+  "**/tcl",
+  "**/tests",
+  "**/test",
+]
+runtime_keep = []
 
 [tool.py_upper.windows]
 architectures = ["x86", "x86_64", "arm64"]
