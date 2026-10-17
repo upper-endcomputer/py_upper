@@ -97,29 +97,98 @@ def test_patterns_must_stay_relative_to_the_trim_root(pattern):
 
 def test_policy_accepts_one_pattern_and_merges_command_line_entries():
     policy = TrimPolicy.from_config({
-        "site_packages": "**/*.pyi",
-        "runtime": ["**/tests"],
-        "runtime_keep": ["**/tests/keep.py"],
+        "site_packages": "PySide2/resources",
+        "runtime": ["**/tkinter"],
+        "runtime_keep": ["**/tkinter/keep.py"],
     })
 
-    assert policy.site_packages == ("**/*.pyi",)
+    assert policy.site_packages[-1] == "PySide2/resources"
+    assert policy.runtime[-1] == "**/tkinter"
     assert policy.has_site_rules and policy.has_runtime_rules
 
-    merged = policy.merge(site_packages=["PySide2/resources"], runtime_keep=["**/keep.py"])
-    assert merged.site_packages == ("**/*.pyi", "PySide2/resources")
-    assert merged.runtime_keep == ("**/tests/keep.py", "**/keep.py")
+    merged = policy.merge(site_packages=["PySide2/translations"], runtime_keep=["**/keep.py"])
+    assert merged.site_packages[-1] == "PySide2/translations"
+    assert merged.runtime_keep == ("**/tkinter/keep.py", "**/keep.py")
     # The configured policy is immutable, so a CLI override cannot leak into it.
-    assert policy.site_packages == ("**/*.pyi",)
+    assert policy.site_packages[-1] == "PySide2/resources"
 
     # A single string is one pattern, not a sequence of characters.
     single = policy.merge(runtime="**/idlelib")
-    assert single.runtime == ("**/tests", "**/idlelib")
+    assert single.runtime[-1] == "**/idlelib"
 
 
-def test_missing_trim_section_is_an_empty_policy():
+def test_missing_trim_section_still_applies_the_global_rules():
     policy = TrimPolicy.from_config({})
-    assert not policy.has_site_rules
-    assert not policy.has_runtime_rules
+
+    assert "**/*.dist-info" in policy.site_packages
+    assert "**/*.egg-info" in policy.site_packages
+    assert "**/*.pyi" in policy.site_packages
+    assert "PySide*/**/examples" in policy.site_packages
+    assert "PySide*/**/include" in policy.site_packages
+    assert "PyQt*/**/examples" in policy.site_packages
+    assert "PyQt*/**/include" in policy.site_packages
+    assert "**/idlelib" in policy.runtime
+    assert "**/test" in policy.runtime
+    assert "**/tests" in policy.runtime
+    assert "**/include" in policy.runtime
+    assert "**/pkgconfig" in policy.runtime
+    assert policy.has_site_rules and policy.has_runtime_rules
+
+
+def test_global_rules_are_not_duplicated_by_presets_or_config():
+    policy = TrimPolicy.from_config({
+        "preset": "minimal",
+        "site_packages": ["**/*.pyi"],
+        "runtime": ["**/idlelib"],
+    })
+
+    assert policy.site_packages.count("**/*.pyi") == 1
+    assert policy.site_packages.count("**/*.dist-info") == 1
+    assert policy.runtime.count("**/idlelib") == 1
+
+
+def test_global_rules_trim_metadata_and_stubs(tmp_path):
+    root = tmp_path / "site-packages"
+    files = {
+        "pkg/__init__.py": b"",
+        "pkg/module.pyi": b"stub",
+        "pkg-1.0.dist-info/METADATA": b"metadata",
+        "pkg-1.0.egg-info/PKG-INFO": b"metadata",
+        "PySide6/Qt/include/QtCore/qobject.h": b"header",
+        "PySide6/Qt/examples/demo.py": b"demo",
+    }
+    for name, payload in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    policy = TrimPolicy.from_config({})
+    trim_tree(root, policy.site_packages, policy.site_packages_keep)
+
+    assert (root / "pkg" / "__init__.py").exists()
+    assert not (root / "pkg" / "module.pyi").exists()
+    assert not (root / "pkg-1.0.dist-info").exists()
+    assert not (root / "pkg-1.0.egg-info").exists()
+    assert not (root / "PySide6" / "Qt" / "include").exists()
+    assert not (root / "PySide6" / "Qt" / "examples").exists()
+
+
+def test_keep_can_restore_distribution_metadata(tmp_path):
+    root = tmp_path / "site-packages"
+    metadata = root / "pkg-1.0.dist-info" / "METADATA"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_bytes(b"metadata")
+    module = root / "pkg" / "__init__.py"
+    module.parent.mkdir(parents=True)
+    module.write_bytes(b"")
+
+    policy = TrimPolicy.from_config({
+        "site_packages_keep": ["pkg-1.0.dist-info/**"],
+    })
+    trim_tree(root, policy.site_packages, policy.site_packages_keep)
+
+    assert metadata.exists()
+    assert module.exists()
 
 
 def test_runtime_optimizer_applies_the_runtime_patterns(tmp_path, monkeypatch):
@@ -170,11 +239,13 @@ def test_site_optimizer_applies_the_site_patterns(tmp_path, monkeypatch):
     assert result["removed_dirs"] == 1
 
 
-def test_release_preset_only_adds_distribution_metadata():
+def test_release_preset_is_an_alias_because_metadata_is_global():
     policy = TrimPolicy.from_config({"preset": "release"})
+    safe = TrimPolicy.from_config({"preset": "safe"})
 
-    assert policy.site_packages == ("**/*.dist-info", "**/*.egg-info")
-    assert not policy.runtime
+    assert policy == safe
+    assert "**/*.dist-info" in policy.site_packages
+    assert "**/*.egg-info" in policy.site_packages
 
 
 def test_minimal_preset_adds_the_optional_payload_rules():
@@ -191,6 +262,7 @@ def test_minimal_preset_adds_the_optional_payload_rules():
     assert "**/*.dist-info" in policy.site_packages
     assert "**/*.egg-info" in policy.site_packages
     assert "**/tkinter" in policy.runtime
+    assert "**/tcl[0-9]*" in policy.runtime
     assert policy.has_site_rules and policy.has_runtime_rules
 
 
@@ -257,6 +329,36 @@ def test_minimal_preset_matches_every_supported_qt_layout(tmp_path):
     assert not lost, f"minimal removed payload it must keep: {lost}"
 
 
+def test_minimal_runtime_rules_match_the_versioned_tcl_and_tk_trees(tmp_path):
+    """Tcl/Tk directories are versioned, so ``**/tcl`` alone removed nothing."""
+    policy = TrimPolicy.from_config({"preset": "minimal"})
+    root = tmp_path / "runtime"
+    removed = {
+        "include/python3.13/Python.h",
+        "lib/pkgconfig/python-3.13.pc",
+        "lib/tcl8.6/init.tcl",
+        "lib/tk8.6/tk.tcl",
+        "lib/itcl4.2.4/itcl.tcl",
+        "lib/thread2.8.9/thread.tcl",
+    }
+    kept = {
+        "lib/python3.13/os.py",
+        "lib/python3.13/threading.py",
+        "lib/libpython3.13.dylib",
+    }
+    for name in removed | kept:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"payload")
+
+    trim_tree(root, policy.runtime)
+
+    missing = sorted(name for name in removed if (root / name).exists())
+    assert not missing, f"minimal left runtime development payload behind: {missing}"
+    lost = sorted(name for name in kept if not (root / name).exists())
+    assert not lost, f"minimal removed runtime payload it must keep: {lost}"
+
+
 def test_preset_patterns_are_deduplicated_against_the_configured_ones():
     policy = TrimPolicy.from_config({
         "preset": "minimal",
@@ -274,8 +376,9 @@ def test_a_command_line_preset_overrides_the_configured_one():
 
     assert "*/opengl32sw.dll" not in policy.site_packages
     assert "**/tkinter" not in policy.runtime
-    assert not policy.has_site_rules
-    assert not policy.has_runtime_rules
+    # The global rules survive the preset override; only minimal's additions go.
+    assert "**/*.dist-info" in policy.site_packages
+    assert "**/idlelib" in policy.runtime
 
 
 def test_an_unknown_preset_is_rejected():
@@ -286,15 +389,20 @@ def test_an_unknown_preset_is_rejected():
 def test_template_declares_the_trim_interface():
     from py_upper.compat import tomllib
     from py_upper.config import APP_CONFIG_EXAMPLE
+    from py_upper.trim import GLOBAL_RUNTIME, GLOBAL_SITE_PACKAGES
 
     data = tomllib.loads(APP_CONFIG_EXAMPLE.read_text(encoding="utf-8"))
     trim = data["tool"]["py_upper"]["trim"]
     assert trim["preset"] == "safe"
-    assert "**/*.pyi" in trim["site_packages"]
-    # The tracked defaults must not encode one wheel layout either.
-    assert "PySide*/**/examples" in trim["site_packages"]
-    assert "PyQt*/**/include" in trim["site_packages"]
-    assert "**/tkinter" in trim["runtime"]
+    # Universal payload lives in the code, not in every project's config.
+    assert trim["site_packages"] == []
+    assert trim["runtime"] == []
+    assert "**/*.dist-info" in GLOBAL_SITE_PACKAGES
+    assert "**/*.pyi" in GLOBAL_SITE_PACKAGES
+    assert "PySide*/**/examples" in GLOBAL_SITE_PACKAGES
+    assert "PyQt*/**/include" in GLOBAL_SITE_PACKAGES
+    assert "**/idlelib" in GLOBAL_RUNTIME
+    assert "**/tests" in GLOBAL_RUNTIME
     assert trim["site_packages_keep"] == []
     assert trim["runtime_keep"] == []
 

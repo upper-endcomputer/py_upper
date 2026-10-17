@@ -1,3 +1,15 @@
+## v0.17.18
+
+0.17.17 的产物仍然约 90 MB，其中 site-packages 占 71.9 MB、PySide2 独占 67.5 MB。上一版只按 import 闭包删除模块、库和插件，留在包里的却是一整族用不上的东西：opengl32sw.dll（约 20 MB）、全套 Qt 翻译、另外两个操作系统的平台插件、未使用的图片格式、binding 的 docs/scripts/support、导入用 .lib，以及 shiboken2 只有构建工具才会加载的几个 MSVC 运行时。配置里只有 qt = "imports"，没有任何地方能表达“我这个桌面程序只要中文、只要 ico/gif/jpeg、只要桌面平台”，翻译过滤也只有一档粗糙的前缀匹配。
+
+0.17.18 在 [tool.py_upper.optimize] 下补了四个可选开关：qt_software_opengl（bool，默认 true；关掉后删除 opengl32sw.dll）、qt_locales（"all" 或列表；精确 locale 只保留该变体，裸语言同时匹配地区变体，支持 glob）、qt_image_formats（"all" 或列表；PNG 编译在 QtGui 里，列表不含 svg 时还会顺带删掉 qsvgicon/qsvg 以及只被它们引用的 Qt5Svg/Qt6Svg）、qt_platforms（"all" 或列表，默认 windows/cocoa/xcb/wayland/offscreen；匹配前会去掉 q/lib 前缀和扩展名，所以同一份列表对 Windows、Linux、macOS 的 wheel 都成立；qwebgl 始终删除）。类型不对、空列表、含绝对路径或 .. 的取值会在删除任何文件之前报错。
+
+只要启用 Qt 裁剪，binding 包里的 docs、scripts、support 和 *.lib 就无条件删除，shiboken 包再额外删掉同名目录/.lib 以及 vcamp140.dll、concrt140.dll、vcomp140.dll——这些都是构建期或文档文件，运行时不会 import。工作副本的 app/pyproject.toml 选了 qt_software_opengl = false、qt_locales = ["zh_CN"]、qt_image_formats = ["gif", "ico", "jpeg"]；模板仍保留全部负载，并用注释说明每个开关的取舍。README 与 docs/DEVELOPMENT_GUIDE.md 同步补充了开关、跨平台名称匹配和无条件删除项，版本号改为 0.17.18。
+
+验证：python -m pytest app/tests -q 为 264 passed, 7 skipped（上一版 256 passed, 7 skipped），新增用例覆盖 docs/.lib/MSVC 删除、平台 allowlist、图片格式 allowlist 连带 SVG 引擎、locale 匹配（zh_CN / zh / de）、关闭软件 OpenGL 和非法取值；Windows x86_64 全量构建 [1/6]…[6/6] 通过，launcher 与目标 runtime 冒烟均过，日志为 Qt pruning: removed 432 file(s) and 32 director(ies), freed 299 MB，trim 再释放 66 个文件 / 2 个目录（4.9 MB）。dist/Upper 从 90.0 MB 降到 58.85 MB（-34.6%），site-packages 71.91 → 40.73 MB，PySide2 67.5 → 39.21 MB，shiboken2 4.22 → 1.34 MB，runtime 15.3 MB 未动；最终只留 Qt5Core/Gui/Widgets/Network/Qml、qwindows/qoffscreen、qico/qgif/qjpeg、qwindowsvistastyle、qtuiotouchplugin 和 qt_zh_CN.qm。另以 PY_UPPER_HEADLESS=1、QT_QPA_PLATFORM=offscreen 手动启动，退出码 0。限制：关掉软件 OpenGL 后，没有可用 GL 驱动的机器可能起不来；locale 和图片格式 allowlist 会删掉未列出的翻译/格式；runtime 仍有 15.3 MB，本轮未裁剪。
+
+同一版本的后续提交把“通用裁剪”和“默认加密”变成默认行为：dist-info / egg-info、*.pyi、Qt 的 examples/include，以及 runtime 的 idlelib/test/include/pkgconfig 由 trim.py 的全局规则删除，不再要求每个项目在配置里重复；PySide6/shiboken6 的 doc/include/lib 和版本化的 tcl/tk 目录也会在 POSIX 上被裁剪。egg 在没有 [tool.py_upper.egg] 段时也默认开启，模板写 enabled = true，--no-egg 只对本次构建关闭，enabled = false 才会长期关闭。macOS arm64 实测产物 74 MB（site-packages 44 MB、runtime 29 MB），dist-info/egg-info/.pyi/examples/include 均为 0，codesign 与 headless 启动通过。
+
 ## v0.17.17
 
 0.17.16 把加密归档直接放在可执行文件旁、命名 `app.egg`：名字既暴露了“这是 egg/zip”，又让包根目录多出一个和 runtime / site-packages 同级的大文件。0.17.17 新增 `EGG_DIR = "bundle"`，归档固定为 `bundle/py_upper.dat`——Windows/Linux 在可执行文件旁的 `bundle/`，macOS 在 `Contents/Resources/bundle/`；stage 也按同一布局落盘，launcher 的 `kEggDir` / `kEggFile` 负责解析。改目录或文件名只需要改这一处常量并重新构建。

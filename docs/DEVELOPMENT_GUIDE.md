@@ -215,6 +215,10 @@ strip_native = false              # strip 原生二进制（macOS 会重新 ad-h
 remove_runtime_pip = true         # 从打包副本里删 pip/ensurepip
 rewrite_rpath = false             # Linux：把 RPATH 改写成 $ORIGIN（需要 patchelf）
 qt = "imports"                    # all | imports | ["QtWidgets", ...]
+# qt_software_opengl = false      # 删除约 20 MB 的 opengl32sw.dll
+# qt_locales = ["zh_CN"]         # Qt 翻译白名单；"all" 保留整套
+# qt_image_formats = ["gif", "ico", "jpeg"]  # 图片/图标插件白名单
+# qt_platforms = ["windows", "cocoa", "xcb", "wayland", "offscreen"]
 
 [tool.py_upper.windows]
 architectures = ["x86", "x86_64", "arm64"]
@@ -420,30 +424,61 @@ qt = "imports"
 
 限制：动态加载（`importlib`、QML 内 import）静态看不到，这类应用请显式写模块列表；交叉目标无法执行目标解释器，会保留完整 Qt。
 
+#### Qt 可选负载开关
+
+`qt = "imports"` 只决定“保留哪些 Qt 模块”。wheel 里仍有几类按名字动态加载、
+import 永远看不到的负载，可以用下列开关继续裁剪；不写时保持旧行为，
+`qt = "all"` 时这些开关全部不生效：
+
+```toml
+[tool.py_upper.optimize]
+qt_software_opengl = false                  # 删除 opengl32sw.dll（约 20 MB）
+qt_locales = ["zh_CN"]                     # 翻译白名单；"all" 为全部
+qt_image_formats = ["gif", "ico", "jpeg"]  # 图片/图标插件白名单
+qt_platforms = ["windows", "cocoa", "xcb", "wayland", "offscreen"]
+```
+
+- `qt_locales` 写精确 locale（`zh_CN`）只保留该变体；写语言（`zh`）还会保留
+  `zh_TW` 等地区变体；glob 也可以。
+- `qt_image_formats` 对应 Qt 的 imageformats 插件。PNG 编译在 QtGui 内，不需要
+  插件；列表里没有 `svg` 时，`qsvgicon`、`qsvg` 以及只被它们引用的
+  `Qt5Svg`/`Qt6Svg` 一起删除。
+- `qt_platforms` 按去掉 `q`/`lib` 前缀和扩展名后的名字匹配，因此
+  `qwindows.dll`、`libqcocoa.dylib`、`libqxcb.so`、`libqwayland-*.so` 和
+  `qoffscreen.dll` 共用一份配置。`qwebgl` 始终删除，`qoffscreen` 供无头 smoke
+  测试使用。
+- 与开关无关，Qt 裁剪还会删除绑定包里的 `docs`、`scripts`、`support`、
+  `*.lib`，以及 shiboken 里只服务 C++ 工具链的 `vcamp140.dll`、
+  `concrt140.dll`、`vcomp140.dll`。
+
 ### 9.4 通用裁剪接口（`[tool.py_upper.trim]`）
 
-按 import 裁剪只能处理 Qt 能通过 import 证明的负载。C++ 头文件、示例树、类型存根
-（`.pyi`）和 runtime 里的开发模块（`tkinter`、`idlelib`、CPython 自带 tests）没有
-import 可以描述，旧版本只能整包装进去。`[tool.py_upper.trim]` 把它们变成配置：
+按 import 裁剪只能处理 Qt 能通过 import 证明的负载。另外一类负载任何应用都不需要，
+由代码内置的全局规则直接删除，不写进配置：
+
+- `site-packages`：`**/*.dist-info`、`**/*.egg-info`（pip /
+  `importlib.metadata` 的安装元数据）、`**/*.pyi`（类型存根），以及
+  `PySide*/`、`PyQt*/` 下的 `examples` 和 `include`；
+- `runtime`：`**/idlelib`、`**/test`、`**/tests`、`**/include`、
+  `**/pkgconfig`（CPython 的开发工具、测试和 C 头文件）。
+
+全局规则先于 preset 和项目配置生效，Windows / macOS / Linux 行为一致。`keep`
+仍然优先；确实要保留 `importlib.metadata` 数据、某个包自带的 tests 或 Tk 时，
+用 `site_packages_keep` / `runtime_keep` 把路径保护起来。
+
+Tk/Tcl 是否保留取决于应用，所以留在配置里按项目选择：
 
 ```toml
 [tool.py_upper.trim]
 preset = "safe"
-site_packages = [
-  "**/*.pyi",
-  "PySide*/**/examples",
-  "PySide*/**/include",
-  "PyQt*/**/examples",
-  "PyQt*/**/include",
-]
+site_packages = []
 site_packages_keep = []
-
 runtime = [
-  "**/idlelib",
   "**/tkinter",
-  "**/tcl",
-  "**/tests",
-  "**/test",
+  "**/tcl[0-9]*",
+  "**/tk[0-9]*",
+  "**/itcl[0-9]*",
+  "**/thread[0-9]*",
 ]
 runtime_keep = []
 ```
@@ -459,13 +494,12 @@ runtime_keep = []
   避免配置错误删到裁剪根之外；
 - 裁剪只作用于 staging 的构建副本，不改 `runtimes/`、wheel 缓存或 `app/src`。
 
-`preset` 有三档：`safe`（默认）只使用显式列出的规则；`release` 在 safe 之上
-删除 `**/*.dist-info` 与 `**/*.egg-info`（安装元数据，冻结应用通常不需要，
-但 `importlib.metadata` / `pkg_resources` 查询会失效）；`minimal` 再展开
+`preset` 仍有三档：`safe`（默认）只使用全局规则加显式规则；`release` 是兼容
+别名（安装元数据已经是全局规则，所以与 safe 相同）；`minimal` 再展开
 `opengl32sw.dll`、`qdirect2d`/`qminimal` 平台插件、`translations/*.qm`、
-`qwebp`/`qtiff` 图片插件和 runtime 开发目录，同时包含 release 的元数据规则。
-预设模式与显式模式合并后去重，`keep` 仍然优先；未知预设名在构建开始前报错。
-也可以只在本次构建使用 `--trim-preset release` 或 `minimal`，不写回配置文件。
+`qwebp`/`qtiff` 图片插件和 Tk/Tcl runtime 目录。预设模式与显式模式合并后去重，
+`keep` 仍然优先；未知预设名在构建开始前报错。也可以只在本次构建使用
+`--trim-preset minimal`，不写回配置文件。
 
 minimal 的模式不能按某一种 wheel 布局写死。Qt 的 wheel 至少有三类布局：
 Windows 的 PySide 把 DLL 和 `plugins` 平铺在 binding 目录下；macOS/Linux 的
@@ -483,7 +517,15 @@ Windows 平铺、`PySide6/Qt`、`PyQt5/Qt5`、`PyQt6/Qt6` 四种布局由单元�
 WebP/TIFF 解码；默认保持 `safe`。完整构建只在 Windows x86_64 上跑过，
 macOS/Linux 需要在对应宿主执行一次全量构建确认。
 
-单次构建可以追加规则，四个参数都可重复，并叠加在配置之上：
+删除 `dist-info` / `egg-info` 后，运行时调用 `importlib.metadata.version(...)` 或
+`pkg_resources.require(...)` 会失去数据。需要这些元数据的项目用
+`site_packages_keep` 保住对应分发，例如：
+
+```toml
+site_packages_keep = ["pkg-1.0.dist-info/**"]
+```
+
+单次构建可以追加规则，四个参数都可重复，并叠加在全局规则和配置之上：
 
 ```bash
 python tools/build.py \
@@ -502,12 +544,15 @@ Qt 自动裁剪本身也覆盖了这些固定负载：`PySide*/` 与 `PyQt*/` �
 `examples`、`include`，未使用 `QtWebEngineCore` 时的 `resources`，以及
 `qwebgl` 平台插件（它会牵连 QtQuick/QtQml；`qoffscreen` 保留给 headless 冒烟）。
 
-### 9.6 加密 egg（可选）
+### 9.6 加密 egg（默认开启）
 
 `[tool.py_upper.egg]` 把应用自己的 Python 模块与本次构建产出的扩展收进一个
 `bundle/py_upper.dat`，不再以散文件留在 `site-packages`。格式是
 `MAGIC (8 字节) + XOR(zip, SHAKE-256 key stream)`，launcher 在导入入口前安装
 loader。
+
+加密默认开启：配置里没有 `[tool.py_upper.egg]` 段时也按 `enabled = true`
+处理；`--no-egg` 只对本次构建关闭，配置里写 `enabled = false` 才会长期关闭。
 
 ```toml
 [tool.py_upper.egg]

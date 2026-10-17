@@ -267,12 +267,20 @@ def test_egg_config_reads_the_section_and_applies_overrides(monkeypatch):
     assert egg_config(True, backend="memory").backend == "memory"
 
 
-def test_egg_config_defaults_to_disabled_without_a_section(monkeypatch):
+def test_egg_config_defaults_to_enabled_without_a_section(monkeypatch):
     monkeypatch.setattr(egg_module, "py_upper_config", lambda: {})
     config = egg_config()
-    assert config.enabled is False
+    assert config.enabled is True
     assert config.key_hex == KEY
     assert config.backend == "auto"
+
+
+def test_egg_config_honours_an_explicit_false(monkeypatch):
+    monkeypatch.setattr(egg_module, "py_upper_config", lambda: {
+        "egg": {"enabled": False},
+    })
+    assert egg_config().enabled is False
+    assert egg_config(True).enabled is True
 
 
 @pytest.mark.parametrize("value", [

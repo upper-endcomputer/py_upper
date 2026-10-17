@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.17**。
+当前稳定开发线：**0.17.18**。
 
 ## 构建模型
 
@@ -245,33 +245,61 @@ qt = "imports"          # 默认 "all"，即完整 Qt
 # qt = ["QtWidgets", "QtCore", "QtGui"]   # 也可以显式指定，会按同样规则展开闭包
 ```
 
+可选的 Qt 负载开关（不设置时保持旧行为；`qt = "all"` 时全部不生效）：
+
+```toml
+[tool.py_upper.optimize]
+qt_software_opengl = false                  # 不打包 opengl32sw.dll（约 20 MB）
+qt_locales = ["zh_CN"]                     # 只保留指定语言；"all" 保留整套
+qt_image_formats = ["gif", "ico", "jpeg"]  # 不写 "svg" 会同时删除 SVG 图标引擎和 Qt5Svg/Qt6Svg
+qt_platforms = ["windows", "cocoa", "xcb", "wayland", "offscreen"]  # 同一份配置覆盖三平台
+```
+
+Qt 裁剪还会删除 wheel 里的 `docs`、`scripts`、`support` 和 `*.lib`，以及
+shiboken 中只被 C++ 工具链使用的 `vcamp140.dll` / `concrt140.dll` /
+`vcomp140.dll`。平台插件按规范化后的名字匹配（`qwindows.dll`、
+`libqcocoa.dylib`、`libqxcb.so`、`libqwayland-*.so` 都适用），所以 Windows /
+Linux / macOS 不需要各写一套规则。
+
+
 实测：PySide6 6.11.0 的 macOS arm64 应用从 **1.2 GB 降到 153 MB**（PySide6 本体 1.1 GB → 104 MB），窗口照常打开、`--verify` 通过、`codesign --verify --deep --strict` 通过；再开 `strip_native = true` 可到 141 MB。
 
 限制：动态加载的模块（`importlib`、QML 文件里 import）静态看不到，这类应用请显式列模块；交叉目标无法执行目标解释器，会保留完整 Qt。
 
 ## 裁剪接口（`[tool.py_upper.trim]`）
 
-Qt 裁剪只删除 import 能证明的负载：C++ 头文件、示例、`.pyi` 存根，以及 runtime 里的
-`tkinter` / `idlelib` / CPython tests，都没有 import 可以描述。用 `[tool.py_upper.trim]`
-显式声明，构建时分别作用于 staging 的 `site-packages` 和复制后的 `runtime`：
+Qt 裁剪只删除 import 能证明的负载。还有一类任何应用都不需要的负载由代码内置的
+全局规则直接删除，不用写进配置文件：
+
+- `site-packages`：`**/*.dist-info`、`**/*.egg-info`（pip /
+  `importlib.metadata` 的安装元数据）、`**/*.pyi`（类型存根），以及
+  `PySide*/`、`PyQt*/` 下的 `examples` 和 `include`；
+- `runtime`：`**/idlelib`、`**/test`、`**/tests`、`**/include`、
+  `**/pkgconfig`（CPython 的开发工具、测试和 C 头文件）。
+
+这些规则对 Windows / macOS / Linux 一致，先于 preset 和项目配置生效。`keep`
+仍然优先：确实要保留 `importlib.metadata` 数据、某个包自带的 tests 或 Tk 时，
+用 `site_packages_keep` / `runtime_keep` 把路径保护起来。Tk/Tcl 是否保留取决于
+应用，所以不放进全局规则，Qt 应用可以在配置里显式删除：
 
 ```toml
 [tool.py_upper.trim]
-preset = "safe"   # "safe" 只跑显式规则；"release" 加 dist-info；"minimal" 见下文
-site_packages = ["**/*.pyi", "PySide*/**/examples", "PySide*/**/include",
-                 "PyQt*/**/examples", "PyQt*/**/include"]
+preset = "safe"
+site_packages = []
 site_packages_keep = []
-runtime = ["**/idlelib", "**/tkinter", "**/tcl", "**/tests", "**/test"]
+runtime = ["**/tkinter", "**/tcl[0-9]*", "**/tk[0-9]*",
+           "**/itcl[0-9]*", "**/thread[0-9]*"]
 runtime_keep = []
 ```
 
 模式是相对各自根目录的 glob：`*` 不跨目录，`**` 跨目录；命中目录删除整棵子树；
 `keep` 优先并保护整个子树。单次构建可用 `--trim-site`、`--trim-site-keep`、
 `--trim-runtime`、`--trim-runtime-keep` 重复追加，不修改配置文件。日志会打印
-两棵树各自释放的体积。模板默认已带上“.pyi + Qt 示例/头文件 + runtime 开发模块”
-这组安全规则；示例/头文件的模式同样用 `**/` 覆盖四种 Qt wheel 布局；`opengl32sw.dll`、`qoffscreen` 等运行时兜底仍由 Qt 裁剪单独保留。
+两棵树各自释放的体积。模板默认只保留全局规则，项目自己的删除项写在
+`app/pyproject.toml`；`opengl32sw.dll`、`qoffscreen` 等运行时兜底仍由 Qt 裁剪
+单独保留。
 
-`preset = "minimal"`（或单次 `--trim-preset minimal`）在 safe 之外再删除
+`preset = "minimal"`（或单次 `--trim-preset minimal`）在全局规则和 safe 之外再删除
 `opengl32sw.dll`（约 20 MB）、`qdirect2d` / `qminimal` 平台插件、Qt 的
 `translations/*.qm`，以及 `qwebp` / `qtiff` 图片插件。规则不绑定宿主布局：
 `PySide*/**/...` 与 `PyQt*/**/...` 同时命中 Windows 平铺的
@@ -285,19 +313,21 @@ runtime_keep = []
 单元测试覆盖；完整构建只在 Windows x86_64 上实测，macOS/Linux 需在对应宿主
 执行一次 `[1/6]`…`[6/6]`。
 
-`preset = "release"` 只比 safe 多删 `**/*.dist-info` 和 `**/*.egg-info`：这些是
-pip / `importlib.metadata` 用来描述“已安装分发”的元数据，冻结应用通常不需要。
-它不会动 Qt 负载，所以适合“想再小一点，但不想承担 minimal 的 OpenGL/翻译/
-图片插件风险”的发布构建；`minimal` 也包含这两条规则。代价是运行时调用
-`importlib.metadata.version("...")` 或 `pkg_resources.require("...")` 的代码会
-失去数据，确认应用不依赖它们后再开。
+`preset = "release"` 仍可识别，但只是兼容别名：`dist-info` / `egg-info` 已经是
+全局规则，所以它和 `safe` 没有区别。删除安装元数据后，运行时调用
+`importlib.metadata.version("...")` 或 `pkg_resources.require("...")` 会失去数据；
+确认应用不依赖它们，或者用 `site_packages_keep` 保住对应分发。
 
-## 加密 egg（可选）
+## 加密 egg（默认开启）
 
 `[tool.py_upper.egg]` 把应用自己的 Python 模块和本次构建产出的扩展收进一个
 `bundle/py_upper.dat`，不再以散文件留在 `site-packages`。归档格式是
 `MAGIC (8 字节) + XOR(zip, SHAKE-256 key stream)`；launcher 在导入应用入口前
 安装内存导入器，所以产物里不会再有 `main.py` / `main.pyd`。
+
+加密默认开启：即使项目没有写 `[tool.py_upper.egg]` 段，普通构建也会生成
+`py_upper.dat`。要临时发一个散文件版本，用 `--no-egg`；要长期关闭，在配置里
+写 `enabled = false`。
 
 ```toml
 [tool.py_upper.egg]

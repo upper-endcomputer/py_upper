@@ -140,7 +140,33 @@ TOOLING_TRANSLATION_PREFIXES = ("assistant_", "designer_", "linguist_", "qt_help
 # can never see them, so the reachability rule would delete them: the software
 # OpenGL fallback is the one that matters, because a machine without a usable
 # GL driver still has to be able to start the application.
-PAYLOAD_KEEP_NAMES = frozenset({"opengl32sw.dll"})
+# The software OpenGL fallback is loaded by name at runtime, never through an
+# import table, so the reachability rule can never see it. A machine without a
+# usable GL driver needs it to start the GUI; an application that does not want
+# to carry the ~20 MB DLL can opt out with ``qt_software_opengl = false``.
+SOFTWARE_OPENGL_DLL = "opengl32sw.dll"
+PAYLOAD_KEEP_NAMES = frozenset({SOFTWARE_OPENGL_DLL})
+
+# Platform plugins a desktop application may need, named by Qt's plugin base
+# name (the leading ``q``/``lib`` and the extension are ignored when matching).
+# One list covers every supported host: a wheel only ships the plugins for its
+# own platform, so this keeps Windows, Linux and macOS payloads correct without
+# host-specific rules. ``offscreen`` is the plugin the headless smoke test uses.
+DEFAULT_PLATFORM_PLUGINS = ("windows", "cocoa", "xcb", "wayland", "offscreen")
+
+# MSVC runtime DLLs shipped by the shiboken wheel for its C++ tooling. No Python
+# extension in the bundle links them (they only reference each other), and the
+# reference deployment omits them.
+REDUNDANT_MSVC_RUNTIME = frozenset({"vcamp140.dll", "concrt140.dll", "vcomp140.dll"})
+
+# Directories inside a binding package that belong to its development tooling,
+# not to the runtime payload. PySide2 spells the documentation directory
+# ``docs``; the PySide6 wheels ship ``doc`` on every platform. Headers and the
+# CMake package files are build inputs too: no import, plugin or translation
+# can load them at runtime.
+BINDING_TOOLING_DIRECTORIES = ("docs", "doc", "scripts", "support")
+BINDING_BUILD_DIRECTORIES = ("include", "lib")
+SHIBOKEN_PACKAGES = {"PySide2": "shiboken2", "PySide6": "shiboken6"}
 
 
 @dataclass(frozen=True)
@@ -247,6 +273,137 @@ def _qt_layout(pyside: Path, binding: str) -> _QtLayout:
         helpers=(pyside / "QtWebEngineProcess.exe",),
         qml_helpers=("pyside6qml.abi3.dll", "pyside6qml.abi3.lib") if binding == "PySide6" else qml_helpers,
     )
+
+
+@dataclass(frozen=True)
+class _QtPayloadOptions:
+    """Optional Qt payload cuts, all opt-in through ``[tool.py_upper.optimize]``.
+
+    ``None`` in an allowlist means "keep everything", which keeps every default
+    build byte-for-byte compatible with the previous policy. ``qt = "all"``
+    still disables pruning entirely; these options refine what a pruned payload
+    keeps.
+    """
+
+    software_opengl: bool = True
+    locales: frozenset[str] | None = None
+    image_formats: frozenset[str] | None = None
+    platforms: frozenset[str] | None = frozenset(DEFAULT_PLATFORM_PLUGINS)
+
+    @property
+    def keep_names(self) -> frozenset[str]:
+        return PAYLOAD_KEEP_NAMES if self.software_opengl else frozenset()
+
+
+def _qt_option_list(value, name: str, default: tuple[str, ...] | None) -> frozenset[str] | None:
+    """Parse ``"all"`` or an allowlist of names; ``None`` keeps everything."""
+    if value is None:
+        return frozenset(default) if default is not None else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in {"all", "*"}:
+            return None
+        if not text:
+            raise RuntimeError(f"[tool.py_upper.optimize].{name} must not be empty")
+        return frozenset({text})
+    if isinstance(value, (list, tuple)):
+        if not value or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise RuntimeError(
+                f"[tool.py_upper.optimize].{name} must be a non-empty array of strings"
+            )
+        return frozenset(item.strip() for item in value)
+    raise RuntimeError(
+        f"[tool.py_upper.optimize].{name} must be 'all' or an array of strings"
+    )
+
+
+def _qt_option_bool(value, name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise RuntimeError(f"[tool.py_upper.optimize].{name} must be true or false")
+
+
+def _payload_options() -> _QtPayloadOptions:
+    """The configured optional Qt cuts, validated before a single file goes."""
+    cfg = optimize_config()
+    return _QtPayloadOptions(
+        software_opengl=_qt_option_bool(cfg.get("qt_software_opengl"), "qt_software_opengl", True),
+        locales=_qt_option_list(cfg.get("qt_locales"), "qt_locales", None),
+        image_formats=_qt_option_list(cfg.get("qt_image_formats"), "qt_image_formats", None),
+        platforms=_qt_option_list(cfg.get("qt_platforms"), "qt_platforms", DEFAULT_PLATFORM_PLUGINS),
+    )
+
+
+def _plugin_name(name: str) -> str:
+    """A Qt plugin name without its path, extension, ``lib`` prefix or ``q``.
+
+    Qt spells the same plugin ``qwindows.dll`` on Windows, ``libqcocoa.dylib``
+    on macOS and ``libqxcb.so`` on Linux. Normalizing all three shapes lets one
+    allowlist drive every platform.
+    """
+    stem = Path(name).name
+    lowered = stem.lower()
+    for suffix in (".dll", ".dylib", ".so", ".pyd"):
+        if lowered.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    lowered = stem.lower()
+    if lowered.startswith("lib"):
+        stem = stem[3:]
+        lowered = lowered[3:]
+    if lowered.startswith("q"):
+        stem = stem[1:]
+    return stem.lower()
+
+
+def _allowed_plugin(name: str, allowed: frozenset[str] | None) -> bool:
+    """Whether ``name`` matches an allowlist entry, with prefix matching.
+
+    Prefix matching is what lets ``wayland`` cover ``qwayland-egl`` and
+    ``qwayland-generic`` while still keeping the list readable. A glob entry is
+    accepted as-is, so ``qt_image_formats = ["jp*"]`` also works.
+    """
+    if allowed is None:
+        return True
+    key = _plugin_name(name)
+    for pattern in allowed:
+        token = _plugin_name(pattern)
+        if token and (fnmatch(key, token) or fnmatch(key, token + "*")):
+            return True
+    return False
+
+
+def _translation_locale(name: str) -> str | None:
+    """The locale part of ``qtbase_zh_CN.qm`` / ``qt_zh_CN.qm``."""
+    stem = Path(name).stem
+    for prefix in ("qtbase_", "qt_"):
+        if stem.startswith(prefix):
+            return stem[len(prefix):]
+    return None
+
+
+def _allowed_locale(name: str, allowed: frozenset[str] | None) -> bool:
+    """Whether a translation file serves one of the configured locales.
+
+    An exact locale (``zh_CN``) keeps only that variant; a bare language
+    (``zh``) also keeps ``zh_TW`` and the other regional variants. A glob entry
+    is matched against the locale itself.
+    """
+    if allowed is None:
+        return True
+    locale = _translation_locale(name)
+    if not locale:
+        return False
+    for pattern in allowed:
+        token = pattern.strip()
+        if any(char in token for char in "*?["):
+            if fnmatch(locale, token):
+                return True
+        elif locale == token or locale.startswith(token + "_"):
+            return True
+    return False
 
 
 def used_qt_modules(source_root: Path | None = None) -> set[str]:
@@ -441,6 +598,7 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     counters = {"files": 0, "dirs": 0, "bytes": 0}
     layout = _qt_layout(pyside, binding)
     qt_root = layout.root
+    options = _payload_options()
 
     def size_of(path: Path) -> int:
         if path.is_file() or path.is_symlink():
@@ -479,6 +637,27 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     for helper in layout.helpers:
         drop(helper)
 
+    # Build-time material that ships beside the runtime payload: C++
+    # documentation, the genpyi/tool wrappers and the import libraries. None of
+    # it is imported, dlopen'd or read by a running application.
+    for name in BINDING_TOOLING_DIRECTORIES + BINDING_BUILD_DIRECTORIES:
+        drop(pyside / name)
+    for entry in sorted(pyside.glob("*.lib")):
+        drop(entry)
+    shiboken_name = SHIBOKEN_PACKAGES.get(binding)
+    if shiboken_name:
+        shiboken = site / shiboken_name
+        if shiboken.is_dir():
+            for name in BINDING_TOOLING_DIRECTORIES + BINDING_BUILD_DIRECTORIES:
+                drop(shiboken / name)
+            for entry in sorted(shiboken.glob("*.lib")):
+                drop(entry)
+            # Only the MSVC runtime the extension modules actually link stays;
+            # the OpenMP/AMP/Concurrency runtimes are tooling leftovers.
+            for entry in sorted(shiboken.iterdir()):
+                if entry.is_file() and entry.name.lower() in REDUNDANT_MSVC_RUNTIME:
+                    drop(entry)
+
     # C++ headers and the example tree are build/documentation payload: no
     # import, plugin or translation can load them at runtime. The WebEngine
     # resources (ICU data and .pak files, ~15 MB on Windows) belong to
@@ -494,6 +673,8 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     for name, path in wrappers.items():
         if name not in modules:
             drop(path)
+            # The type stub describes a wrapper that is no longer shipped.
+            drop(pyside / f"{name}.pyi")
 
     keep_categories = set(BASE_PLUGIN_CATEGORIES)
     for name in modules:
@@ -512,14 +693,25 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     if plugins.is_dir():
         for plugin in sorted(path for path in plugins.rglob("*") if path.is_file()):
             needed = {name for dep in dependency_names(plugin) if (name := _qt_module_of(dep))}
+            category = plugin.parent.name
+            # Image formats and the SVG icon engine are chosen explicitly: Qt
+            # loads them by MIME type, so an import never names them. Keeping
+            # only the formats the application can display is the difference
+            # between the full ~1.6 MB set and a few hundred kilobytes.
+            if category in {"imageformats", "iconengines"} and not _allowed_plugin(
+                plugin.name, options.image_formats
+            ):
+                drop(plugin)
             # Platform plugins decide whether the application starts at all, so
-            # the whole category is kept regardless of its extra dependencies.
-            # qwebgl is the exception: it is Qt's WebGL streaming platform, not
-            # a desktop one, and it drags QtQuick/QtQml (and their DLLs) into
-            # the payload. qoffscreen stays because the headless smoke test
-            # needs it.
-            if "platforms" in plugin.parts:
-                if "qwebgl" in plugin.name.lower():
+            # their category is kept regardless of extra dependencies. The
+            # allowlist drops the non-desktop and streaming platforms:
+            # ``qdirect2d``/``qminimal`` are fallbacks nothing selects, and
+            # qwebgl drags QtQuick/QtQml (and their DLLs) into the payload.
+            # ``qoffscreen`` stays because the headless smoke test needs it.
+            elif "platforms" in plugin.parts:
+                if "qwebgl" in plugin.name.lower() or not _allowed_plugin(
+                    plugin.name, options.platforms
+                ):
                     drop(plugin)
                 else:
                     keep_plugins.append(plugin)
@@ -541,7 +733,7 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
                 continue
             if layout.library_names and not fnmatch(entry.name, layout.library_names):
                 continue
-            if entry.name.lower() in PAYLOAD_KEEP_NAMES:
+            if entry.name.lower() in options.keep_names:
                 continue
             if entry not in reachable:
                 drop(entry)
@@ -559,8 +751,16 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
     if translations.is_dir():
         for entry in sorted(translations.iterdir()):
             name = entry.name
-            keep = name.startswith("qtbase_") or (name.startswith("qt_") and not name.startswith("qt_help_"))
-            if not keep or name.startswith(TOOLING_TRANSLATION_PREFIXES):
+            # Only Qt's own widget strings are useful to a running application.
+            # Tooling translations are always dead weight; a locale allowlist
+            # then keeps just the languages the application ships with, turning
+            # the ~4.7 MB wheel translation set into one or two files.
+            keep = (
+                (name.startswith("qtbase_") or name.startswith("qt_"))
+                and not name.startswith(TOOLING_TRANSLATION_PREFIXES)
+                and _allowed_locale(name, options.locales)
+            )
+            if not keep:
                 drop(entry)
 
     return counters

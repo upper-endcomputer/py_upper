@@ -1,3 +1,35 @@
+## 0.17.18
+
+### Problem
+- 0.17.17 still produced a ~90 MB `dist/Upper`: 71.9 MB of it was `site-packages` and 67.5 MB of that was PySide2. The Qt payload carried files a desktop build can never use -- `opengl32sw.dll` (~20 MB), every Qt translation, platform plugins for the other two operating systems, unused image formats, `docs`/`scripts`/`support`, import `.lib` files and the extra MSVC runtimes shiboken2 needs only for its tooling.
+- `[tool.py_upper.optimize]` exposed only `qt = "imports"`. There was no way to say which locales, image formats or platform plugins the application needs, and the translation filter matched a single coarse prefix.
+
+### Root cause
+- The Qt prune pass had no per-payload switches. It removed whole modules, libraries and plugins that the import closure proved unused, but kept everything inside a retained plugin directory or translation family, because wheel layout differs per platform and a wrong guess would break startup.
+- Static artifacts (`docs`, `scripts`, `support`, `*.lib`) and the MSVC runtimes that only shiboken2's build tooling loads are never imported at runtime, yet no rule named them.
+
+### Changes
+- `tools/py_upper/qt_prune.py` gains four optional `[tool.py_upper.optimize]` keys:
+  - `qt_software_opengl` (bool, default `true`): `false` deletes `opengl32sw.dll`.
+  - `qt_locales` (`"all"` or a list, default all): keeps translation families by locale. An exact locale keeps only that variant; a bare language also matches its regional variants; glob patterns are accepted.
+  - `qt_image_formats` (`"all"` or a list, default all): keeps only the listed `imageformats` plugins. PNG is built into QtGui, and a list without `svg` also drops `qsvgicon`/`qsvg` plus `Qt5Svg`/`Qt6Svg` when nothing else references them.
+  - `qt_platforms` (`"all"` or a list, default `windows`, `cocoa`, `xcb`, `wayland`, `offscreen`): matches platform plugin names after stripping the `q`/`lib` prefix and the extension, so one list covers Windows, Linux and macOS wheels. `qwebgl` is always dropped.
+- When Qt pruning is enabled, binding packages now always lose `docs`, `scripts`, `support` and `*.lib`; shiboken packages also lose those directories/`.lib` files and `vcamp140.dll`, `concrt140.dll`, `vcomp140.dll`. Invalid values (wrong type, empty list, unsafe path segments) fail before anything is deleted.
+- The working `app/pyproject.toml` selects `qt_software_opengl = false`, `qt_locales = ["zh_CN"]` and `qt_image_formats = ["gif", "ico", "jpeg"]`; the tracked template keeps every payload and documents all four switches. `README.md` and `docs/DEVELOPMENT_GUIDE.md` describe the switches, the multi-platform name matching and the unconditional cuts. Version moves to 0.17.18.
+
+- `tools/py_upper/trim.py` now applies global rules before presets and project configuration: `**/*.dist-info`, `**/*.egg-info`, `**/*.pyi`, Qt `examples`/`include`, and runtime `idlelib`/`test`/`tests`/`include`/`pkgconfig`. The tracked template only lists project-specific cuts; Tk/Tcl stays opt-in because an application may use it. `release` is kept as a compatibility alias, and `site_packages_keep` / `runtime_keep` still win over every global rule.
+
+- `[tool.py_upper.egg]` now defaults to enabled: a project without the section still packs `bundle/py_upper.dat`, and the tracked template sets `enabled = true`. `--no-egg` remains the per-build escape hatch; `enabled = false` turns encryption off persistently. `README.md` and `docs/DEVELOPMENT_GUIDE.md` now describe encryption as the default instead of an opt-in.
+
+### Verification
+1. `python -m pytest app/tests -q`: 272 passed, 5 skipped (0.17.17: 256 passed, 7 skipped). New cases cover docs/`.lib`/MSVC removal, platform allowlists, image-format allowlists together with the SVG engine, locale matching (`zh_CN`, `zh`, `de`), disabling software OpenGL, rejected values, the global trim rules (metadata/stubs/examples/include, keep override, release alias), and the egg default/`--no-egg` override.
+2. Full Windows x86_64 build (`python tools/build.py --target windows-x86_64 --egg`, PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]`; launcher and target-runtime smoke both pass. The log reports `Qt pruning: removed 432 file(s) and 32 director(ies), freed 299 MB`, then the trim pass removes another 66 files / 2 directories (4.9 MB).
+3. `dist/Upper` drops from 90.0 MB to 58.85 MB (-34.6%). `site-packages` 71.91 -> 40.73 MB, PySide2 67.5 -> 39.21 MB, shiboken2 4.22 -> 1.34 MB; `runtime` (15.3 MB) is unchanged. The bundle keeps only `Qt5Core/Gui/Widgets/Network/Qml`, `qwindows`/`qoffscreen`, `qico`/`qgif`/`qjpeg`, `qwindowsvistastyle`, `qtuiotouchplugin` and `qt_zh_CN.qm`.
+4. Manual launch with `PY_UPPER_HEADLESS=1` and `QT_QPA_PLATFORM=offscreen` exits 0.
+5. macOS arm64 rebuild with the current defaults: `codesign --verify --deep --strict dist/Upper.app` exits 0; the headless launcher prints `GUI OK offscreen` and exits 0. `dist/Upper.app` is 74 MB (`site-packages` 44 MB, `runtime` 29 MB); `dist-info`/`egg-info`/`.pyi`/Qt `examples`/`include` counts are all 0.
+6. Windows x86_64 cross-build with the current defaults (PySide6 6.11.0, CPython 3.13.5, Zig): `[1/6]`...`[6/6]` PASS, 24 application files packed into `bundle/py_upper.dat`, and `dist/Upper` has 0 application `.py`, 0 `*.dist-info`, 0 `*.egg-info`, 0 `*.pyi`. Qt pruning is skipped on a macOS host because it cannot run the Windows Qt tooling, so the cross-build keeps the full Qt payload (656 MB); build on Windows to apply import-based Qt pruning. `_memimporter` cannot compile against CPython 3.13 (removed private C-API symbols), so the default `auto` backend falls back to `extract`; the egg is still encrypted at rest.
+7. Limits: `qt_software_opengl = false` removes the software OpenGL fallback, so a machine without a usable GL driver may fail to start; the locale and image-format allowlists drop every translation/format not listed. `runtime` is still 15.3 MB and is not trimmed here.
+
 ## 0.17.17
 
 ### Problem

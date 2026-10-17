@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.17"
+version = "0.17.18"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -98,7 +98,8 @@ exclude = [
 # produced into one encrypted bundle/py_upper.dat. This raises the cost of reading the
 # shipped code; it is obfuscation, not strong cryptography, and it barely
 # changes the bundle size. Use [tool.py_upper.trim] and Qt pruning for size.
-enabled = false
+# Encryption is the default; pass --no-egg for a loose-file build.
+enabled = true
 # SHAKE-256 key stream key: at least 16 bytes of hexadecimal. It is compiled
 # into the launcher, so it is obfuscation material, not a secret. Changing it
 # requires rebuilding everything that reads the archive.
@@ -126,51 +127,59 @@ profile = "safe"
 # Keep only the Qt modules app/src imports (plus their transitive closure).
 # "all" ships every Qt module, including the ~450 MB QtWebEngine.
 qt = "imports"
+# Optional Qt payload cuts. They are commented out so the template keeps the
+# conservative default; each one is safe for an application that does not use
+# the payload it removes:
+#   qt_software_opengl = false
+#       drop opengl32sw.dll (~20 MB). Keep true if the app must start on a
+#       machine without a usable OpenGL driver.
+#   qt_locales = ["zh_CN"]
+#       keep only these Qt translations (an exact locale, or a bare language
+#       that also matches its regional variants). "all" keeps every wheel file.
+#   qt_image_formats = ["gif", "ico", "jpeg", "svg"]
+#       keep only these image/icon plugins. PNG is built into QtGui. A list
+#       without "svg" also drops the SVG icon engine and Qt5Svg/Qt6Svg.
+#   qt_platforms = ["windows", "cocoa", "xcb", "wayland", "offscreen"]
+#       keep only these platform plugins; one list covers Windows, Linux and
+#       macOS wheels. "all" keeps every platform Qt ships.
+qt_software_opengl = true
+qt_locales = "all"
+qt_image_formats = "all"
+qt_platforms = ["windows", "cocoa", "xcb", "wayland", "offscreen"]
 remove_python_caches = true
 remove_tests = false
 remove_docs = false
 strip_native = false
 
 [tool.py_upper.trim]
-# 预设："safe"（默认）只使用下面的规则；"minimal" 再移除 opengl32sw.dll、
-# qdirect2d/qminimal 平台插件、Qt 翻译和 WebP/TIFF 图片插件。预设用 `**/`
-# 同时覆盖 Windows 平铺、PySide6/Qt、PyQt5/Qt5 和 PyQt6/Qt6 布局；minimal
-# 需要目标机器有可用的 OpenGL 驱动，且应用不依赖这些可选插件/翻译。
+# 全局规则由代码内置，任何 preset 和配置都会生效：
+#   site-packages: **/*.dist-info、**/*.egg-info、**/*.pyi、
+#                  PySide*/PyQt* 的 examples/include；
+#   runtime:       **/idlelib、**/test、**/tests、**/include、**/pkgconfig。
+# 这里只写这个项目额外要删的路径。`*_keep` 优先于全局规则，确实要保留
+# importlib.metadata 数据或 Tk 时，用 keep 把对应路径保护起来。
+# 预设："safe"（默认）只使用全局规则和下面的规则；"release" 是兼容别名
+# （安装元数据已经是全局规则）；"minimal" 再移除 opengl32sw.dll、
+# qdirect2d/qminimal 平台插件、Qt 翻译和 WebP/TIFF 图片插件。minimal 用
+# `**/` 同时覆盖 Windows 平铺、PySide6/Qt、PyQt5/Qt5 和 PyQt6/Qt6 布局；
+# 它需要目标机器有可用的 OpenGL 驱动，且应用不依赖这些可选插件/翻译。
 # 也可以在单次构建时选择：python tools/build.py --trim-preset minimal
-# "safe": only the explicit rules below. "release": safe + *.dist-info /
-#         *.egg-info (smaller, but importlib.metadata/pkg_resources stop
-#         seeing installed distributions). "minimal": release + optional
-#         Qt payload (OpenGL fallback, translations, WebP/TIFF, dev stdlib).
 preset = "safe"
 # 打包后从 site-packages / runtime 里删除的路径。glob 相对各自的根目录：
 # `*`、`?`、`[]` 不跨目录，`**` 可以跨目录；匹配到目录时整棵子树都会删除。
-# `*_keep` 里的模式优先于删除，适合在删除某个目录时保住其中少数文件。
 # 单次构建也可以临时追加，例如：
 #   python tools/build.py --trim-site "PySide2/translations/*.qm"
-site_packages = [
-  # 类型存根、Qt 的 C++ 头文件和示例都只在开发期有用。`**/` 同时覆盖
-  # Windows 平铺、PySide6/Qt、PyQt5/Qt5 和 PyQt6/Qt6 布局。
-  "**/*.pyi",
-  "PySide*/**/examples",
-  "PySide*/**/include",
-  "PyQt*/**/examples",
-  "PyQt*/**/include",
-  # 软件 OpenGL 回退约 20 MB；没有可用 GL 驱动的机器会因此起不来，
-  # 确认目标机器都有驱动后再打开：
-  # "PySide*/**/opengl32sw.dll",
-  # "PyQt*/**/opengl32sw.dll",
-]
+site_packages = []
 site_packages_keep = []
 
-# 打包副本里的 Python runtime。默认去掉与 Qt 桌面应用无关的开发负载；
-# 如果应用确实使用 Tk，或依赖某个包自带的 tests 目录，把对应模式移到
-# runtime_keep。
+# Tk/Tcl 只在应用真的使用 Tk 时才需要，所以不放进全局规则。Qt 应用可以
+# 取消注释；应用依赖某个包自带的 tests 目录时，用 runtime_keep 保回来。
 runtime = [
-  "**/idlelib",
-  "**/tkinter",
-  "**/tcl",
-  "**/tests",
-  "**/test",
+  # "**/tkinter",
+  # "**/tcl[0-9]*",
+  # "**/tk[0-9]*",
+  # "**/itcl[0-9]*",
+  # "**/thread[0-9]*",
 ]
 runtime_keep = []
 

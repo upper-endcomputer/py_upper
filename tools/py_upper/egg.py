@@ -60,7 +60,7 @@ _KEY_PATTERN = re.compile(r"^[0-9a-fA-F]+$")
 class EggConfig:
     """``[tool.py_upper.egg]`` plus per-build CLI overrides."""
 
-    enabled: bool = False
+    enabled: bool = True
     key_hex: str = DEFAULT_KEY_HEX
     backend: str = "auto"
     compression: str = "deflated"
@@ -90,14 +90,15 @@ def egg_config(enabled=None, key_hex=None, backend=None, compression=None) -> Eg
     """Read the project configuration, applying per-build overrides.
 
     ``enabled`` is tri-state: True/False come from ``--egg`` / ``--no-egg`` and
-    None keeps whatever the project declares. A project without the section
-    keeps the historical loose-file layout.
+    None keeps whatever the project declares. Encryption is the default: a
+    project without the section still packs the egg, and ``--no-egg`` opts out
+    for one build.
     """
     value = py_upper_config().get("egg", {})
     if not isinstance(value, dict):
         raise RuntimeError("[tool.py_upper.egg] must be a table")
     resolved = EggConfig(
-        enabled=bool(value.get("enabled", False)),
+        enabled=bool(value.get("enabled", True)),
         key_hex=str(value.get("key_hex") or DEFAULT_KEY_HEX),
         backend=str(value.get("backend") or "auto"),
         compression=str(value.get("compression") or "deflated"),

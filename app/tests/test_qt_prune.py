@@ -11,6 +11,19 @@ from py_upper.config import TARGETS
 from py_upper.qt_prune import QT_COMPAT_MODULE, _qt_module_of, prune, used_qt_modules
 
 
+@pytest.fixture(autouse=True)
+def _isolate_payload_options(monkeypatch):
+    """Prune tests exercise the documented defaults, not the local app config.
+
+    ``prune()`` reads ``[tool.py_upper.optimize]`` for the optional payload
+    cuts. The working copy deliberately enables those cuts, so without this
+    isolation the expected files would depend on the machine's pyproject.toml.
+    """
+    from py_upper import qt_prune
+
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {})
+
+
 def _touch(path: Path, payload: bytes = b"\xcf\xfa\xed\xfe") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
@@ -308,15 +321,15 @@ def test_windows_pruning_never_touches_the_package_itself(tmp_path, monkeypatch)
     pyside = _fake_windows_pyside(site)
     (pyside / "__init__.py").write_text("", encoding="utf-8")
     (pyside / "QtCore.pyi").write_text("", encoding="utf-8")
-    (pyside / "support").mkdir()
-    (pyside / "support" / "__init__.py").write_text("", encoding="utf-8")
+    (pyside / "helper").mkdir()
+    (pyside / "helper" / "__init__.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
 
     prune(site, TARGETS["windows-x86_64"], {"QtWidgets", "QtGui", "QtCore"})
 
     assert (pyside / "__init__.py").exists()
     assert (pyside / "QtCore.pyi").exists()
-    assert (pyside / "support" / "__init__.py").exists()
+    assert (pyside / "helper" / "__init__.py").exists()
 
 
 def test_windows_pruning_drops_the_binding_prefixed_tool_copy(tmp_path, monkeypatch):
@@ -602,3 +615,209 @@ def test_prune_reads_the_pyqt_payload_directory(tmp_path, monkeypatch):
     assert not (package / "Qt6" / "translations" / "qtmultimedia_zh_CN.qm").exists()
     assert not (package / "Qt6" / "examples").exists()
     assert not (package / "Qt6" / "include").exists()
+
+def test_prune_drops_binding_tooling_docs_and_link_libraries(tmp_path, monkeypatch):
+    """Wheel docs, .lib import libraries and unused MSVC runtimes are dead weight.
+
+    The reference PySide2 deployment keeps only the runtime DLLs and the
+    shiboken signature directory. ``docs`` alone is ~1.9 MB, and ``.lib`` files
+    are link-time inputs no frozen application can use.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    _touch(pyside / "docs" / "index.html")
+    _touch(pyside / "pyside6.abi3.lib")
+    shiboken = site / "shiboken6"
+    _touch(shiboken / "docs" / "index.html")
+    _touch(shiboken / "shiboken6.abi3.lib")
+    _touch(shiboken / "msvcp140.dll")
+    _touch(shiboken / "vcruntime140.dll")
+    _touch(shiboken / "vcamp140.dll")
+    _touch(shiboken / "concrt140.dll")
+    _touch(shiboken / "vcomp140.dll")
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert not (pyside / "docs").exists()
+    assert not (pyside / "pyside6.abi3.lib").exists()
+    assert not (shiboken / "docs").exists()
+    assert not (shiboken / "shiboken6.abi3.lib").exists()
+    # The runtimes the extension modules link stay; tooling-only ones go.
+    assert (shiboken / "msvcp140.dll").exists()
+    assert (shiboken / "vcruntime140.dll").exists()
+    assert not (shiboken / "vcamp140.dll").exists()
+    assert not (shiboken / "concrt140.dll").exists()
+    assert not (shiboken / "vcomp140.dll").exists()
+
+
+def test_prune_drops_posix_docs_headers_cmake_and_stale_stubs(tmp_path, monkeypatch):
+    """The POSIX wheel uses ``doc``/``include``/``lib``, not only ``docs``/``.lib``.
+
+    PySide6 ships the documentation as ``doc`` on every platform, and the
+    headers plus CMake package files sit beside the binding on POSIX too. The
+    type stubs of pruned wrappers describe modules that are no longer shipped.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_pyside(site)
+    _touch(pyside / "doc" / "qtcore.rst")
+    _touch(pyside / "include" / "QtCore" / "qobject.h")
+    _touch(pyside / "lib" / "cmake" / "PySide6" / "PySide6Config.cmake")
+    _touch(pyside / "QtWebEngineCore.pyi")
+    _touch(pyside / "QtCore.pyi")
+    shiboken = site / "shiboken6"
+    _touch(shiboken / "doc" / "index.rst")
+    _touch(shiboken / "include" / "basewrapper.h")
+    _touch(shiboken / "lib" / "cmake" / "Shiboken6" / "Shiboken6Config.cmake")
+    monkeypatch.setattr(qt_prune, "dependency_names", lambda path: [])
+
+    prune(site, TARGETS["macos-arm64"], {"QtCore"})
+
+    assert not (pyside / "doc").exists()
+    assert not (pyside / "include").exists()
+    assert not (pyside / "lib").exists()
+    assert not (shiboken / "doc").exists()
+    assert not (shiboken / "include").exists()
+    assert not (shiboken / "lib").exists()
+    assert not (pyside / "QtWebEngineCore.pyi").exists()
+    assert (pyside / "QtCore.pyi").exists()
+
+
+def test_prune_platform_allowlist_spans_every_desktop_layout(tmp_path, monkeypatch):
+    """One policy keeps the desktop plugin for each host and drops fallbacks.
+
+    Qt names the plugin ``qwindows.dll`` on Windows, ``libqcocoa.dylib`` on
+    macOS and ``libqxcb.so``/``libqwayland-*.so`` on Linux. The allowlist is
+    matched after normalizing those spellings, so a Windows build does not need
+    a different configuration from a Linux or macOS build.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    platforms = pyside / "plugins" / "platforms"
+    _touch(platforms / "qoffscreen.dll")
+    for name in (
+        "libqcocoa.dylib",
+        "libqxcb.so",
+        "libqwayland-egl.so",
+        "libqwayland-generic.so",
+        "qminimal.dll",
+        "qdirect2d.dll",
+        "qwebgl.dll",
+    ):
+        _touch(platforms / name)
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert (platforms / "qwindows.dll").exists()
+    assert (platforms / "qoffscreen.dll").exists()
+    assert (platforms / "libqcocoa.dylib").exists()
+    assert (platforms / "libqxcb.so").exists()
+    assert (platforms / "libqwayland-egl.so").exists()
+    assert (platforms / "libqwayland-generic.so").exists()
+    assert not (platforms / "qminimal.dll").exists()
+    assert not (platforms / "qdirect2d.dll").exists()
+    assert not (platforms / "qwebgl.dll").exists()
+
+
+def test_prune_image_format_allowlist_drops_svg_and_unused_formats(tmp_path, monkeypatch):
+    """Image plugins are loaded by MIME type, so an allowlist has to name them.
+
+    Dropping the SVG image plugin also drops the SVG icon engine and Qt5Svg:
+    nothing else in a widgets-only application reaches that library.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    formats = pyside / "plugins" / "imageformats"
+    icons = pyside / "plugins" / "iconengines"
+    for name in ("qgif.dll", "qico.dll", "qjpeg.dll", "qsvg.dll", "qwebp.dll", "qtiff.dll", "qwbmp.dll"):
+        _touch(formats / name)
+    _touch(icons / "qsvgicon.dll")
+    _touch(pyside / "Qt5Svg.dll")
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt_image_formats": ["gif", "ico", "jpeg"]})
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore", "QtGui"})
+
+    assert (formats / "qgif.dll").exists()
+    assert (formats / "qico.dll").exists()
+    assert (formats / "qjpeg.dll").exists()
+    assert not (formats / "qsvg.dll").exists()
+    assert not (formats / "qwebp.dll").exists()
+    assert not (formats / "qtiff.dll").exists()
+    assert not (formats / "qwbmp.dll").exists()
+    assert not (icons / "qsvgicon.dll").exists()
+    # Qt5Svg was only reachable through the plugins that just went away.
+    assert not (pyside / "Qt5Svg.dll").exists()
+
+
+@pytest.mark.parametrize(
+    ("locales", "kept", "dropped"),
+    [
+        (["zh_CN"], {"qtbase_zh_CN.qm", "qt_zh_CN.qm"}, {"qtbase_zh_TW.qm", "qtbase_de.qm"}),
+        (["zh"], {"qtbase_zh_CN.qm", "qt_zh_CN.qm", "qtbase_zh_TW.qm"}, {"qtbase_de.qm"}),
+        (["de"], {"qtbase_de.qm"}, {"qtbase_zh_CN.qm", "qt_zh_CN.qm", "qtbase_zh_TW.qm"}),
+    ],
+)
+def test_prune_locale_allowlist_keeps_the_requested_translations(
+    tmp_path, monkeypatch, locales, kept, dropped
+):
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    for name in ("qtbase_zh_TW.qm", "qtbase_de.qm"):
+        (pyside / "translations" / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt_locales": locales})
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    translations = pyside / "translations"
+    for name in kept:
+        assert (translations / name).exists(), name
+    for name in dropped:
+        assert not (translations / name).exists(), name
+    # Tooling translations stay out regardless of the locale list.
+    assert not (translations / "qt_help_zh_CN.qm").exists()
+    assert not (translations / "assistant_zh_CN.qm").exists()
+
+
+def test_prune_can_drop_the_software_opengl_fallback(tmp_path, monkeypatch):
+    """``qt_software_opengl = false`` removes the ~20 MB DLL."""
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt_software_opengl": False})
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert not (pyside / "opengl32sw.dll").exists()
+
+
+def test_prune_rejects_malformed_payload_options(tmp_path, monkeypatch):
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    _fake_windows_pyside(site)
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    for config, name in (
+        ({"qt_image_formats": []}, "qt_image_formats"),
+        ({"qt_locales": ["zh_CN", ""]}, "qt_locales"),
+        ({"qt_platforms": 3}, "qt_platforms"),
+        ({"qt_software_opengl": "no"}, "qt_software_opengl"),
+    ):
+        monkeypatch.setattr(qt_prune, "optimize_config", lambda cfg=config: cfg)
+        with pytest.raises(RuntimeError, match=name):
+            prune(site, TARGETS["windows-x86_64"], {"QtCore"})

@@ -27,39 +27,53 @@ SITE_SCOPE = "site-packages"
 RUNTIME_SCOPE = "runtime"
 
 
-# Named rule bundles. ``safe`` is deliberately empty: the tracked configuration
-# already lists the removals that never change runtime behaviour, and a project
-# that emptied those lists asked for that. ``minimal`` adds payload that is
-# optional at runtime and can break a machine or an application that actually
-# uses it, so it is never enabled by default.
+# Rules that apply to every build, before any preset or project configuration.
+# They remove payload a running application never imports and that is not
+# specific to a project or a Qt layout:
+#
+# * distribution metadata (pip / importlib.metadata bookkeeping);
+# * type stubs (the interpreter never loads them);
+# * Qt binding examples and C++ headers (development-only in every layout).
+#
+# A project that really queries importlib.metadata/pkg_resources can protect a
+# distribution with ``site_packages_keep``; keep wins over these rules.
+GLOBAL_SITE_PACKAGES = (
+    "**/*.dist-info",
+    "**/*.egg-info",
+    "**/*.pyi",
+    "PySide*/**/examples",
+    "PySide*/**/include",
+    "PyQt*/**/examples",
+    "PyQt*/**/include",
+)
+
+# Runtime payload no frozen desktop application needs: CPython's development
+# tools/tests and C headers. Tk/Tcl stays project-configurable because an
+# application may actually use it.
+GLOBAL_RUNTIME = (
+    "**/idlelib",
+    "**/test",
+    "**/tests",
+    "**/include",
+    "**/pkgconfig",
+)
+
+# Named rule bundles add to the global rules above. ``safe`` adds nothing.
+# ``release`` is kept as an alias for existing configurations: distribution
+# metadata became a global rule, so it no longer has anything of its own.
+# ``minimal`` adds payload that is optional at runtime and can break a machine
+# or an application that actually uses it, so it is never enabled by default.
 PRESETS = {
     "safe": {"site_packages": (), "runtime": ()},
-    # Distribution metadata is not imported by an application; it is what
-    # pip/importlib.metadata read to describe an installed distribution. A
-    # frozen bundle usually does not need it, but code that calls
-    # importlib.metadata.version() or pkg_resources.require() does. "release"
-    # keeps the safe payload rules and only adds this opt-in removal, so it
-    # does not drag in the OpenGL/translation cuts of "minimal".
-    "release": {
-        "site_packages": (
-            "**/*.dist-info",
-            "**/*.egg-info",
-        ),
-        "runtime": (),
-    },
+    "release": {"site_packages": (), "runtime": ()},
     "minimal": {
         "site_packages": (
-            "**/*.pyi",
             # Qt wheels disagree about where the payload lives: PySide on
             # Windows keeps it beside the package, PySide on POSIX nests it
             # under ``Qt``, and PyQt nests it under ``Qt5``/``Qt6`` everywhere.
             # ``**/`` between the binding directory and the payload name
             # matches every one of those layouts, so the preset is not tied to
             # the host that produced it.
-            "PySide*/**/examples",
-            "PySide*/**/include",
-            "PyQt*/**/examples",
-            "PyQt*/**/include",
             "PySide*/**/opengl32sw.dll",
             "PyQt*/**/opengl32sw.dll",
             "PySide*/**/plugins/platforms/*qdirect2d*",
@@ -72,18 +86,16 @@ PRESETS = {
             "PyQt*/**/plugins/imageformats/*qwebp*",
             "PySide*/**/plugins/imageformats/*qtiff*",
             "PyQt*/**/plugins/imageformats/*qtiff*",
-            # "minimal" is the smallest documented bundle, so it also drops
-            # install metadata. Keep the patterns here rather than in "safe":
-            # importlib.metadata and pkg_resources stop working without them.
-            "**/*.dist-info",
-            "**/*.egg-info",
         ),
         "runtime": (
-            "**/idlelib",
+            # Tk/Tcl is app-dependent, so it is not global. The versioned
+            # directories are what actually exist (tcl8.6, tk8.6); a pattern of
+            # exactly ``tcl`` matches none of them.
             "**/tkinter",
-            "**/tcl",
-            "**/tests",
-            "**/test",
+            "**/tcl[0-9]*",
+            "**/tk[0-9]*",
+            "**/itcl[0-9]*",
+            "**/thread[0-9]*",
         ),
     },
 }
@@ -246,10 +258,12 @@ class TrimPolicy:
         runtime_keep = _pattern_tuple(cfg.get("runtime_keep", ()), "[tool.py_upper.trim].runtime_keep")
         preset_site = _pattern_tuple(bundle["site_packages"], "[tool.py_upper.trim].preset")
         preset_runtime = _pattern_tuple(bundle["runtime"], "[tool.py_upper.trim].preset")
+        global_site = _pattern_tuple(GLOBAL_SITE_PACKAGES, "[tool.py_upper.trim].global")
+        global_runtime = _pattern_tuple(GLOBAL_RUNTIME, "[tool.py_upper.trim].global")
         return cls(
-            site_packages=_dedupe(site + preset_site),
+            site_packages=_dedupe(global_site + site + preset_site),
             site_packages_keep=site_keep,
-            runtime=_dedupe(runtime + preset_runtime),
+            runtime=_dedupe(global_runtime + runtime + preset_runtime),
             runtime_keep=runtime_keep,
         )
 
