@@ -1,3 +1,13 @@
+## v0.17.19
+
+0.17.18 之后，Windows 和 macOS 的产物里仍能看到第三方包的源码。真正能删的是 binding 自带的部署工具：PySide6 的 scripts/support/doc/docs/lib，shiboken6 的同名目录加 include。这些目录里大量是 `.py`，但运行时不会 import，import 闭包也看不见，所以按引用删模块/库/插件的逻辑对它们无效。serial 这类纯 Python 包保持 wheel 原样，不属于裁剪范围。
+
+根因是 `tools/py_upper/trim.py` 的全局规则只点名了 Qt 的 examples/include。规则也不能写成 `**/lib`：`PySide6/lib` 是 CMake 元数据，而 `PySide6/Qt/lib` 是运行时库目录，递归匹配会把 Qt 本体删掉。这一版把规则锚定在 binding 根目录，新增 `PySide*/scripts|support|doc|docs|lib` 与 `shiboken*/scripts|support|doc|docs|lib|include`；`PySide6/Qt/lib` 和 `shiboken6/libshiboken6.abi3.so` 都保留。`app/tests/test_trim.py` 在现有用例里补了这些断言，模板的全局规则说明同步更新，版本号改为 0.17.19。
+
+验证：`python -m pytest app/tests -q` 为 272 passed, 5 skipped（与 0.17.18 相同，新增的是既有用例里的断言）。macOS arm64 用当前默认值重建 `[1/6]`…`[6/6]` 通过，codesign 与 launcher 冒烟均过；`dist/Upper.app` 74 MB，PySide6 保留 7 个运行时 `.py` + 59 个 `.pyd`，shiboken6 3 个 `.py` + 1 个 `.pyd`，dist-info 为 0。Windows x86_64 Zig 交叉构建 `[1/6]`…`[6/6]` 通过，包体计数相同，dist-info 为 0。
+
+第三方包原地 Cython 编译的方案实现并实测后删除了，工具不再提供 `packages`/`package_exclude`。pyserial 编译后从约 300 KB 涨到 7.9 MB（28 个 `.pyd`），PySide6/shiboken6 的原生模块本来就是编译好的，剩余 `.py` 只是运行时 shim；编译还会破坏 introspection、`python -m package`、monkeypatch 和 traceback 行号。限制是 PySide6 仍有 7 个运行时 shim、shiboken6 仍有 3 个，删掉会导致 import 失败；Windows 交叉构建只证明布局与打包流程，最终仍要在 Windows 宿主上验证。
+
 ## v0.17.18
 
 0.17.17 的产物仍然约 90 MB，其中 site-packages 占 71.9 MB、PySide2 独占 67.5 MB。上一版只按 import 闭包删除模块、库和插件，留在包里的却是一整族用不上的东西：opengl32sw.dll（约 20 MB）、全套 Qt 翻译、另外两个操作系统的平台插件、未使用的图片格式、binding 的 docs/scripts/support、导入用 .lib，以及 shiboken2 只有构建工具才会加载的几个 MSVC 运行时。配置里只有 qt = "imports"，没有任何地方能表达“我这个桌面程序只要中文、只要 ico/gif/jpeg、只要桌面平台”，翻译过滤也只有一档粗糙的前缀匹配。

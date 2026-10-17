@@ -1,3 +1,25 @@
+## 0.17.19
+
+### Problem
+- Both shipped bundles still carried readable Python source for third-party packages. On Windows, `PySide6` kept `scripts/`, `support/`, `doc/`, `docs/` and `lib/`; `shiboken6` kept the same trees plus `include/`. These are deployment tooling shipped inside the importable package, not runtime code.
+- The global trim rules only named Qt `examples/` and `include/`, so every preset kept the tooling directories.
+
+### Root cause
+- `tools/py_upper/trim.py` matched whole Qt payload families but never named the binding tooling trees. A recursive `**/lib` rule would also delete `PySide6/Qt/lib`, which holds the runtime libraries, so the rule has to be anchored at the binding root.
+
+### Changes
+- Global rules now remove `PySide*/scripts|support|doc|docs|lib` and `shiboken*/scripts|support|doc|docs|lib|include`. `PySide6/Qt/lib` is deliberately not matched.
+- `app/tests/test_trim.py` covers the new rules and asserts `PySide6/Qt/lib` and `shiboken6/libshiboken6.abi3.so` survive.
+- `app/pyproject.toml.example` documents the additional global rules; the version moves to 0.17.19.
+
+### Verification
+1. `python -m pytest app/tests -q`: 272 passed, 5 skipped (same count as 0.17.18; the new assertions extend existing cases).
+2. macOS arm64 rebuild with the current defaults: `[1/6]`...`[6/6]` PASS, `codesign --verify --deep --strict` and the launcher smoke test pass. `dist/Upper.app` is 74 MB; `PySide6` keeps 7 runtime `.py` files and 59 `.pyd`, `shiboken6` 3 `.py` and 1 `.pyd`, `dist-info` is 0.
+3. Windows x86_64 Zig cross-build: `[1/6]`...`[6/6]` PASS; `dist/Upper` reports the same package counts and 0 `dist-info` directories.
+
+### Not included: in-place Cython compilation of third-party packages
+- A `packages`/`package_exclude` implementation was built and measured, then removed before release. pyserial grew from about 300 KB of source to 7.9 MB of extensions (28 `.pyd` files); PySide6/shiboken6 gained no speed because their Qt modules are already native and the remaining `.py` files are runtime shims. Cython also breaks `inspect.getsource`, `importlib.resources`, `pkgutil.get_data`, `python -m package`, monkeypatching and traceback source lines. The tool does not expose this switch; the trim rules remove what can be removed safely.
+
 ## 0.17.18
 
 ### Problem

@@ -127,6 +127,12 @@ def test_missing_trim_section_still_applies_the_global_rules():
     assert "PySide*/**/include" in policy.site_packages
     assert "PyQt*/**/examples" in policy.site_packages
     assert "PyQt*/**/include" in policy.site_packages
+    assert "PySide*/scripts" in policy.site_packages
+    assert "PySide*/support" in policy.site_packages
+    assert "PySide*/doc" in policy.site_packages
+    assert "PySide*/lib" in policy.site_packages
+    assert "shiboken*/lib" in policy.site_packages
+    assert "shiboken*/include" in policy.site_packages
     assert "**/idlelib" in policy.runtime
     assert "**/test" in policy.runtime
     assert "**/tests" in policy.runtime
@@ -156,6 +162,14 @@ def test_global_rules_trim_metadata_and_stubs(tmp_path):
         "pkg-1.0.egg-info/PKG-INFO": b"metadata",
         "PySide6/Qt/include/QtCore/qobject.h": b"header",
         "PySide6/Qt/examples/demo.py": b"demo",
+        "PySide6/scripts/deploy.py": b"tool",
+        "PySide6/support/deprecated.py": b"tool",
+        "PySide6/doc/index.rst": b"doc",
+        "PySide6/lib/cmake/PySide6/PySide6Config.cmake": b"cmake",
+        "PySide6/Qt/lib/libQt6Core.so": b"runtime",
+        "shiboken6/include/shiboken.h": b"header",
+        "shiboken6/lib/cmake/Shiboken6/Shiboken6Config.cmake": b"cmake",
+        "shiboken6/libshiboken6.abi3.so": b"runtime",
     }
     for name, payload in files.items():
         path = root / name
@@ -171,6 +185,14 @@ def test_global_rules_trim_metadata_and_stubs(tmp_path):
     assert not (root / "pkg-1.0.egg-info").exists()
     assert not (root / "PySide6" / "Qt" / "include").exists()
     assert not (root / "PySide6" / "Qt" / "examples").exists()
+    assert not (root / "PySide6" / "scripts").exists()
+    assert not (root / "PySide6" / "support").exists()
+    assert not (root / "PySide6" / "doc").exists()
+    assert not (root / "PySide6" / "lib").exists()
+    assert (root / "PySide6" / "Qt" / "lib" / "libQt6Core.so").exists()
+    assert not (root / "shiboken6" / "include").exists()
+    assert not (root / "shiboken6" / "lib").exists()
+    assert (root / "shiboken6" / "libshiboken6.abi3.so").exists()
 
 
 def test_keep_can_restore_distribution_metadata(tmp_path):
@@ -401,6 +423,9 @@ def test_template_declares_the_trim_interface():
     assert "**/*.pyi" in GLOBAL_SITE_PACKAGES
     assert "PySide*/**/examples" in GLOBAL_SITE_PACKAGES
     assert "PyQt*/**/include" in GLOBAL_SITE_PACKAGES
+    assert "PySide*/scripts" in GLOBAL_SITE_PACKAGES
+    assert "PySide*/lib" in GLOBAL_SITE_PACKAGES
+    assert "shiboken*/lib" in GLOBAL_SITE_PACKAGES
     assert "**/idlelib" in GLOBAL_RUNTIME
     assert "**/tests" in GLOBAL_RUNTIME
     assert trim["site_packages_keep"] == []

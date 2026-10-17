@@ -45,6 +45,23 @@ GLOBAL_SITE_PACKAGES = (
     "PySide*/**/include",
     "PyQt*/**/examples",
     "PyQt*/**/include",
+    # Qt bindings ship their build/deployment tooling next to the runtime
+    # package. A frozen application never imports these trees, and on Windows
+    # they are the bulk of the remaining ``.py`` files inside PySide6.
+    # The patterns are anchored at the binding root on purpose: ``PySide6/lib``
+    # is CMake metadata, while ``PySide6/Qt/lib`` is the runtime library
+    # directory and must stay.
+    "PySide*/scripts",
+    "PySide*/support",
+    "PySide*/doc",
+    "PySide*/docs",
+    "PySide*/lib",
+    "shiboken*/scripts",
+    "shiboken*/support",
+    "shiboken*/doc",
+    "shiboken*/docs",
+    "shiboken*/lib",
+    "shiboken*/include",
 )
 
 # Runtime payload no frozen desktop application needs: CPython's development

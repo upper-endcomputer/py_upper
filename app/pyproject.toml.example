@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.18"
+version = "0.17.19"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -154,7 +154,9 @@ strip_native = false
 [tool.py_upper.trim]
 # 全局规则由代码内置，任何 preset 和配置都会生效：
 #   site-packages: **/*.dist-info、**/*.egg-info、**/*.pyi、
-#                  PySide*/PyQt* 的 examples/include；
+#                  PySide*/PyQt* 的 examples/include，
+#                  以及 PySide*/shiboken* 顶层的 scripts/support/doc/docs/lib
+#                  （PySide6/Qt/lib 是运行时库目录，不会被删除）；
 #   runtime:       **/idlelib、**/test、**/tests、**/include、**/pkgconfig。
 # 这里只写这个项目额外要删的路径。`*_keep` 优先于全局规则，确实要保留
 # importlib.metadata 数据或 Tk 时，用 keep 把对应路径保护起来。
