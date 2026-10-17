@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.15"
+version = "0.17.16"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -92,6 +92,24 @@ exclude = [
     "shiboken6/ucrtbase.dll",
     "shiboken6/vccorlib140.dll",
 ]
+
+[tool.py_upper.egg]
+# Pack the application's own Python modules and the extensions this build
+# produced into one encrypted app.egg. This raises the cost of reading the
+# shipped code; it is obfuscation, not strong cryptography, and it barely
+# changes the bundle size. Use [tool.py_upper.trim] and Qt pruning for size.
+enabled = false
+# SHAKE-256 key stream key: at least 16 bytes of hexadecimal. It is compiled
+# into the launcher, so it is obfuscation material, not a secret. Changing it
+# requires rebuilding everything that reads the archive.
+key_hex = "047636cf3ddbaae2346f597256416e858ee0b7c8b7448221e5babfbb4f74c20d"
+# auto: map extensions from memory on Windows when _memimporter is available,
+#       otherwise decrypt into a private temporary directory.
+# memory: force the Windows in-memory path (needs the Zig toolchain).
+# extract: decrypt into a temporary directory and add it to sys.path.
+backend = "auto"
+# deflated | stored | lzma
+compression = "deflated"
 
 [tool.py_upper.cython]
 include = ["*"]

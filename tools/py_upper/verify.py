@@ -12,6 +12,10 @@ from .config import (
     optimize_config, runtime_executable, runtime_spec, staging_dir,
     target_extension_suffix, target_runtime_dir,
 )
+from .egg import (
+    EGG_NAME, egg_config, egg_loader_source, read_egg_members, read_egg_meta,
+)
+from .egg_loader import MAGIC
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import (
     PE_SUBSYSTEM, PE_SUBSYSTEM_CONSOLE, PE_SUBSYSTEM_GUI, inspect,
@@ -27,6 +31,22 @@ def _expected_extension(site: Path, source: Path, target: Target) -> Path:
     suffix = target_extension_suffix(target, spec.major_minor, spec.abi_tag)
     rel = source.relative_to(APP / "src").with_suffix("")
     return site.joinpath(*rel.parts[:-1], rel.name + suffix)
+
+
+def _stage_egg_config(stage) -> "EggConfig":
+    """The egg configuration a stage was actually built with.
+
+    The stage record wins because --egg-key and --egg-backend need not match
+    the project file. Without a record, a stage that carries an archive is
+    still read with the project defaults, while a stage without one is a
+    --no-egg build even when the project enables the egg: an absent archive is
+    the evidence, and requiring one there would make verify reject a valid
+    loose build.
+    """
+    egg = read_egg_meta(stage)
+    if egg is not None:
+        return egg
+    return egg_config(enabled=(stage / EGG_NAME).is_file())
 
 
 def _checks_for_stage(target: Target) -> list[tuple[bool, str]]:
@@ -46,17 +66,39 @@ def _checks_for_stage(target: Target) -> list[tuple[bool, str]]:
     sources = selected_sources()
     selected_modules = {module_name(source) for source in sources}
     checks.append((entry_module() in selected_modules, f"entry module Cythonized: {entry_module()}"))
+
+    egg = _stage_egg_config(stage)
+    egg_members = None
+    if egg.enabled:
+        egg_path = stage / EGG_NAME
+        checks.append((egg_path.is_file(), f"encrypted egg {EGG_NAME}"))
+        if egg_path.is_file():
+            try:
+                checks.append((egg_path.read_bytes()[:len(MAGIC)] == MAGIC, "encrypted egg magic"))
+                egg_members = set(read_egg_members(egg_path, egg.key_hex))
+                checks.append((bool(egg_members), f"encrypted egg members={len(egg_members)}"))
+            except Exception as exc:
+                checks.append((False, f"encrypted egg members: {exc}"))
+        if target.os == "windows" and egg.backend == "memory":
+            checks.append(((site / "_memimporter.pyd").is_file(),
+                           "egg memory backend helper _memimporter"))
+
     for source in sources:
         expected = _expected_extension(site, source, target)
         name = module_name(source)
-        checks.append((expected.is_file(), f"extension {name}"))
+        if egg_members is None:
+            checks.append((expected.is_file(), f"extension {name}"))
+            if expected.is_file():
+                try:
+                    verify_arch(expected, target)
+                    checks.append((True, f"arch {name}={target.arch}"))
+                except Exception as exc:
+                    checks.append((False, f"arch {name}: {exc}"))
+        else:
+            member = expected.relative_to(site).as_posix()
+            checks.append((member in egg_members, f"egg extension {name}"))
+            checks.append((not expected.is_file(), f"extension not loose {name}"))
         checks.append((not (site / source.relative_to(APP / "src")).exists(), f"source removed {name}"))
-        if expected.is_file():
-            try:
-                verify_arch(expected, target)
-                checks.append((True, f"arch {name}={target.arch}"))
-            except Exception as exc:
-                checks.append((False, f"arch {name}: {exc}"))
 
     leftovers = [path for path in site.rglob("*") if path.is_file() and path.suffix.lower() in {".c", ".cpp", ".pyc", ".pyo"}]
     checks.append((not leftovers, "no generated source/cache files in site-packages"))
@@ -134,6 +176,26 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
         # two sides could disagree.
         embedded = entry_source().encode("utf-8")
         checks.append((embedded in executable.read_bytes(), f"embedded entry {entry_module()}"))
+
+    # The package is the contract: an egg that is present must be readable with
+    # the key of the build that produced it. Stage verification is what proves
+    # an enabled project actually produced one, and package() copies it
+    # unconditionally, so an absent archive here means a loose build.
+    egg_path = entry_dir / EGG_NAME
+    egg_members = None
+    if egg_path.is_file():
+        egg = read_egg_meta(staging_dir(target)) or egg_config()
+        try:
+            checks.append((egg_path.read_bytes()[:len(MAGIC)] == MAGIC, "packaged egg magic"))
+            egg_members = set(read_egg_members(egg_path, egg.key_hex))
+            checks.append((bool(egg_members), f"packaged egg members={len(egg_members)}"))
+        except Exception as exc:
+            checks.append((False, f"packaged egg members: {exc}"))
+        if executable.is_file():
+            # The archive is useless without the loader, and the loader is only
+            # reachable when it was compiled into this launcher.
+            loader = egg_loader_source().encode("utf-8")
+            checks.append((loader in executable.read_bytes(), "embedded egg loader"))
     runtime_root = resources / "runtime" if target.os == "macos" else root / "runtime"
     if bool(optimize_config().get("remove_runtime_pip", True)):
         checks.append((not runtime_pip_payloads(runtime_root), "runtime pip/ensurepip removed"))
@@ -155,7 +217,12 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     for source in selected_sources():
         expected = _expected_extension(site, source, target)
         name_ = module_name(source)
-        checks.append((expected.is_file(), f"packaged extension {name_}"))
+        if egg_members is None:
+            checks.append((expected.is_file(), f"packaged extension {name_}"))
+        else:
+            member = expected.relative_to(site).as_posix()
+            checks.append((member in egg_members, f"packaged egg extension {name_}"))
+            checks.append((not expected.is_file(), f"packaged extension not loose {name_}"))
         checks.append((not (site / source.relative_to(APP / "src")).exists(), f"packaged source removed {name_}"))
 
     # Only binaries the target OS can actually load are part of the native ABI
@@ -224,8 +291,22 @@ def smoke_modules(target: Target) -> list[str]:
 def write_smoke_script(target: Target, destination: Path) -> Path:
     modules = smoke_modules(target)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # The target interpreter is started with the stage on PYTHONPATH, not
+    # through the launcher, so it has to install the egg itself before the
+    # imports below. The loader is plain ASCII and safe to inline.
+    egg_path = staging_dir(target) / EGG_NAME
+    prelude = ""
+    if egg_path.is_file():
+        egg = read_egg_meta(staging_dir(target)) or egg_config(enabled=True)
+        prelude = (
+            egg_loader_source() + "\n\n"
+            "install(" + repr(str(egg_path))
+            + ", key_hex=" + repr(egg.key_hex)
+            + ", backend=" + repr(egg.backend) + ")\n"
+        )
     destination.write_text(
-        "import importlib\n"
+        prelude
+        + "import importlib\n"
         f"modules = {modules!r}\n"
         "for name in modules:\n"
         "    importlib.import_module(name)\n"

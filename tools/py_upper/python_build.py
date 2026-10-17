@@ -538,7 +538,7 @@ def copy_native_outputs(outputs: list[Path], site: Path, target: Target) -> None
         copy_file_contents(artifact, site / artifact.relative_to(root))
 
 
-def build_python_package(target: Target, trim=None) -> Path:
+def build_python_package(target: Target, trim=None, egg=None) -> Path:
     stage = staging_dir(target)
     if stage.exists():
         shutil.rmtree(stage)
@@ -554,6 +554,30 @@ def build_python_package(target: Target, trim=None) -> Path:
     outputs = build_target_extensions(target, sources)
     copy_native_outputs(outputs, site, target)
     remove_compiled_source_py(site, sources)
+    if egg is not None and egg.enabled:
+        # Only the application's own files are packed: third-party wheels stay
+        # loose so the native dependency closure can still inspect them, and an
+        # application native input that this build did not produce stays put as
+        # a closure input. The compiled outputs are named relative to the site
+        # tree because that is where they were just copied.
+        from .egg import (
+            EGG_NAME, application_files, build_memimporter, pack_egg,
+            remove_packed_files, write_egg_meta,
+        )
+
+        compiled = {artifact.relative_to(native_output_root(target)).as_posix() for artifact in outputs}
+        files = application_files(site, compiled)
+        pack_egg(site, stage / EGG_NAME, files, egg)
+        remove_packed_files(site, files)
+        write_egg_meta(stage, egg)
+        if target.os == "windows" and egg.backend in ("auto", "memory"):
+            try:
+                build_memimporter(target, site)
+            except Exception as exc:
+                if egg.backend == "memory":
+                    raise
+                print(f"warning: _memimporter unavailable ({exc}); egg falls back to extract")
+        print(f"Encrypted egg: {len(files)} application file(s), backend={egg.backend}")
     print(f"Python stage ready: {site}")
     return stage
 

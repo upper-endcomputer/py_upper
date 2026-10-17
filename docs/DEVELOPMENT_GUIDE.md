@@ -500,6 +500,60 @@ Qt 自动裁剪本身也覆盖了这些固定负载：`PySide*/` 与 `PyQt*/` �
 `examples`、`include`，未使用 `QtWebEngineCore` 时的 `resources`，以及
 `qwebgl` 平台插件（它会牵连 QtQuick/QtQml；`qoffscreen` 保留给 headless 冒烟）。
 
+### 9.6 加密 egg（可选）
+
+`[tool.py_upper.egg]` 把应用自己的 Python 模块与本次构建产出的扩展收进一个
+`app.egg`，不再以散文件留在 `site-packages`。格式是
+`MAGIC (8 字节) + XOR(zip, SHAKE-256 key stream)`，launcher 在导入入口前安装
+loader。
+
+```toml
+[tool.py_upper.egg]
+enabled = true
+key_hex = "047636cf3ddbaae2346f597256416e858ee0b7c8b7448221e5babfbb4f74c20d"
+backend = "auto"          # auto | memory | extract
+compression = "deflated"  # deflated | stored | lzma
+```
+
+**进 egg 的东西**：`app/src` 下的 `.py` 和应用自带的其它非原生文件、本次构建
+编译出的 `.pyd`/`.so`。**不进 egg 的东西**：第三方 wheel、runtime，以及
+`[tool.py_upper.native]` 依赖闭包要检查的 `.dll`/`.so` 等原生输入——它们必须
+留在 `site-packages`，否则 `bundle_native_dependencies` 看不到。
+
+后端：
+
+- `memory`：仅 Windows。扩展用 vendored `_memimporter` 从内存映射，需要 PATH
+  里能找到 Zig，`build/cache/memimporter/<target>/_memimporter.pyd` 会缓存。
+- `extract`：所有平台。启动时解密到 `py_upper_egg_*` 私有临时目录，插入
+  `sys.path`，进程退出时删除。Linux 没有稳定的内存 dlopen 接口；macOS 的
+  hardened runtime 还要求临时目录里的 `.so` 通过签名校验，否则需要
+  `com.apple.security.cs.disable-library-validation`。
+- `auto`：Windows 且 `_memimporter` 能导入时用 memory，否则 extract。Windows
+  上编译失败只打印 warning；显式 `memory` 则报错。
+
+launcher 内嵌 loader 源码、key 与 backend，并在运行入口前调用
+`install(EGG_PATH, key_hex, backend)`；`PY_UPPER_EGG` 指向包内的 `app.egg`
+（Windows/Linux 在可执行文件旁，macOS 在 `Contents/Resources/`）。stage 下的
+`egg.json` 记录本次构建实际使用的 key/backend/compression；`--verify` 和冒烟
+以它为准，因为 `--egg-key` 等覆盖不会写回项目配置。
+
+单次构建覆盖：
+
+```bash
+python tools/build.py --egg
+python tools/build.py --no-egg
+python tools/build.py --egg --egg-key <HEX> --egg-backend extract --egg-compression lzma
+```
+
+验证点：`--verify` 检查 `app.egg` 存在、MAGIC 正确、成员可解，并确认已打包的
+应用文件不再以散文件出现；`backend = memory` 的 stage 还必须带
+`_memimporter.pyd`。冒烟脚本内嵌同一份 loader，先 `install()` 再导入入口。
+
+边界：这是混淆而不是现代密码学——key 编在 launcher 里，有决心的逆向者仍能
+取回；它也不会显著缩小产物，runtime/第三方 wheel/Qt 才是体积大头，裁剪仍用
+§9.3/§9.4。memory 后端下模块的 `__file__` 是 `app.egg` 内的虚拟路径，依赖
+真实文件路径的代码需要自己处理；extract 后端则指向临时目录。
+
 ### 9.5 MVVM 应用骨架
 
 `app/src/mvvm/` 是一个能跑的最小 MVVM 骨架，依赖方向单向：View → ViewModel → Model/Service，反向靠属性的变更通知回来。

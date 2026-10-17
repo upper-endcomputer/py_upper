@@ -11,6 +11,7 @@ from py_upper.config import (
     pbs_sdk_dir, python_version, runtime_provider, target_runtime_dir,
     trim_policy, validate_build_python_version, validate_target, require_local_python,
 )
+from py_upper.egg import COMPRESSIONS, egg_config
 from py_upper.lock import verify_lock, write_lock
 from py_upper.package import build_launcher, package, write_release_manifest
 from py_upper.python_build import build_python_package
@@ -20,6 +21,7 @@ from py_upper.verify import run_launcher_smoke, run_packaged_launcher, run_targe
 from py_upper.toolchain import describe_toolchain
 from py_upper.third_party import resolve_wheels
 from py_upper.trim import PRESETS
+from py_upper.egg_loader import BACKENDS
 from py_upper.verify import verify
 
 
@@ -101,6 +103,17 @@ def main(argv=None) -> int:
                         help="remove paths from the bundled runtime; repeatable")
     parser.add_argument("--trim-runtime-keep", action="append", default=[], metavar="GLOB",
                         help="never remove matching runtime paths; repeatable")
+    egg_actions = parser.add_mutually_exclusive_group()
+    egg_actions.add_argument("--egg", dest="egg", action="store_true", default=None,
+                             help="pack application code into an encrypted app.egg for this build")
+    egg_actions.add_argument("--no-egg", dest="egg", action="store_false", default=None,
+                             help="ship loose application files even when the project enables the egg")
+    parser.add_argument("--egg-key", metavar="HEX",
+                        help="override [tool.py_upper.egg].key_hex (at least 16 hex bytes)")
+    parser.add_argument("--egg-backend", choices=BACKENDS, metavar="NAME",
+                        help="egg extension loader: auto, memory or extract")
+    parser.add_argument("--egg-compression", choices=COMPRESSIONS, metavar="NAME",
+                        help="egg archive compression: " + ", ".join(COMPRESSIONS))
     args = parser.parse_args(argv)
 
     action = args.command or "build"
@@ -147,13 +160,15 @@ def main(argv=None) -> int:
             runtime_keep=args.trim_runtime_keep,
         )
 
+        egg = egg_config(args.egg, args.egg_key, args.egg_backend, args.egg_compression)
+
         print("[1/6] Runtime + SDK")
         ensure_sdk(target)
         ensure_runtime(target)
         print("[2/6] Third-party dependencies")
-        build_python_package(target, trim)
+        build_python_package(target, trim, egg)
         print("[3/6] Target launcher")
-        launcher = build_launcher(target)
+        launcher = build_launcher(target, egg)
         print("[4/6] Package + native dependency closure")
         out = package(target, launcher, trim)
         print("[5/6] Static verification")

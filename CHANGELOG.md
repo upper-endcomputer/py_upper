@@ -1,3 +1,28 @@
+## 0.17.16
+
+### Problem
+- The application's own Python modules and the extensions this build produced shipped as loose files under `site-packages`, so the shipped code could be read and copied straight out of the bundle. There was no supported way to carry them in one envelope, and no CLI to enable that for a single build.
+
+### Root cause
+- `python_build` copied `app/src` and the compiled extensions into the stage and stopped there. `package.py` embedded only the entry source, and the launcher had no import hook before the application entry ran. Nothing in the build described an archive format, a key or a loader.
+
+### Changes
+- New `tools/py_upper/egg.py`: `[tool.py_upper.egg]` (`enabled`, `key_hex`, `backend`, `compression`), `EggConfig`, deterministic `pack_egg` (`MAGIC` + SHAKE-256 keystream XOR over a zip with sorted entries and a fixed timestamp), member listing, `application_files()` / `remove_packed_files()`, loader-source validation, the Windows `_memimporter` build (Zig only, cached under `build/cache/memimporter/<target>`), and `egg.json`, which records the key/backend/compression a stage was actually built with.
+- New `tools/py_upper/egg_loader.py`: a pure-ASCII `MetaPathFinder` / `Loader` with `memory`, `extract` and `auto` backends. Windows maps extension modules from memory through the vendored `_memimporter`; POSIX decrypts into a private temporary directory and inserts it into `sys.path`. Lookup order matches CPython: extension `__init__`, source `__init__`, extension, source, namespace package.
+- `python_build.build_python_package(..., egg=...)` packs the application files after `remove_compiled_source_py()`, deletes the packed originals from the stage, writes `egg.json`, and compiles `_memimporter.pyd` for Windows `auto` / `memory`. `auto` falls back to `extract` with a warning when Zig is absent; `memory` fails instead of silently shipping a backend it cannot run.
+- `package.py` embeds `kEggLoader` / `kEggKey` / `kEggBackend` in the launcher and copies `app.egg` to `out/app.egg` on Windows/Linux and `Contents/Resources/app.egg` on macOS. `launcher/src/PyUpper.cpp` exports `PY_UPPER_EGG` and installs the loader before the application entry, including in smoke mode.
+- `verify.py` checks the egg and its members, that packed application files are gone from `site-packages`, and that `memory` stages carry `_memimporter.pyd`; package verification only requires the egg when one is present, and a stage without an archive is treated as a `--no-egg` build even when the project enables the egg. The smoke script embeds the loader and calls `install()`.
+- `tools/build.py` gains `--egg` / `--no-egg`, `--egg-key`, `--egg-backend` and `--egg-compression`.
+- Vendored `_memimporter` sources under `tools/py_upper/vendor/memimporter/` (py2exe `_memimporter.c` / `MyLoadLibrary.c` under MIT, `MemoryModule.c` under MPL-2.0), together with their license texts.
+- Tests: new `app/tests/test_egg.py` covers the archive round trip, a wrong key, unsafe members, all three backends and the packaged layout, CLI overrides, meta precedence and the loader-source guard.
+- Version 0.17.16 in both project files.
+
+### Verification
+1. `python -m pytest app/tests -q`: 254 passed, 7 skipped (0.17.15: 223 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+2. Full Windows x86_64 build (`python tools/build.py --target windows-x86_64 --egg`, PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]`; launcher and target-runtime smoke both pass. `dist/Upper/app.egg` is 1,970,782 bytes / 24 application files; `_memimporter.pyd` is 198,144 bytes; `site-packages/main.py` and `main.pyd` are gone.
+3. Size is unchanged in practice: the egg replaces loose application files one-for-one and is compressed, while the runtime and third-party wheels dominate. This is obfuscation (it raises the cost of reading the shipped code), not strong cryptography; bundle size still comes from `[tool.py_upper.trim]` and Qt pruning.
+4. Limits: `_memimporter` is Windows-only and needs Zig; `auto` falls back to `extract` there when Zig is missing. On macOS the `extract` backend writes unsigned `.so` files to a temporary directory, which a hardened-runtime app may refuse to load without `com.apple.security.cs.disable-library-validation`. POSIX hosts were not full-built on this Windows machine; the archive, key handling, member lookup and all backends are covered by unit tests.
+
 ## 0.17.15
 
 ### Problem

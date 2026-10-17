@@ -1,3 +1,13 @@
+## v0.17.16
+
+应用自己的 `.py` 和本次构建产出的扩展原先以散文件躺在 `site-packages` 里，打包后可以直接抄走，构建工具也没有开关能把它们收进一个封套。0.17.16 新增 `[tool.py_upper.egg]`：构建时把 `app/src` 里的应用模块和本次编译的扩展写进 `app.egg`（8 字节 MAGIC + SHAKE-256 密钥流异或的 zip），再从 staging 删掉原文件；launcher 在导入入口前安装内存导入器，所以包体里不再出现 `main.py` / `main.pyd`。
+
+后端有三档：Windows 用 vendored `_memimporter` 直接把扩展从内存映射（`memory`），Linux/macOS 解密到私有临时目录再挂 `sys.path`（`extract`），`auto` 在 Windows 且 `_memimporter` 可用时走内存、否则回退临时目录。`memory` 需要 Zig 工具链；`auto` 编译失败会打印 warning 并继续，`memory` 则直接报错，不会静默产出一个跑不起来的包。归档支持 `deflated`/`stored`/`lzma`，条目排序且时间戳固定，同一输入可复现。launcher 内嵌 loader 源码、key 和 backend；stage 的 `egg.json` 记录本次实际使用的三项配置，`--verify` 与冒烟因此不会拿项目默认值去解一个被 CLI 覆盖过的 egg。`--egg` / `--no-egg`、`--egg-key`、`--egg-backend`、`--egg-compression` 可只对本次构建覆盖。
+
+需要说清楚的是：这是提高逆向成本的混淆，不是强加密，密钥就编在 launcher 里；它也不会让产物明显变小——runtime、第三方 wheel 和 Qt 才是大头，裁剪仍然靠 `[tool.py_upper.trim]` 与 Qt prune。macOS 的 `extract` 后端会把未签名的 `.so` 写进临时目录，hardened runtime 下可能被 dyld 拒绝，需要 `com.apple.security.cs.disable-library-validation` 或改用已签名的独立原生库。
+
+验证：`python -m pytest app/tests -q` 254 passed, 7 skipped（上一版 223），compileall 与 `git diff --check` 干净；Windows x86_64 全量构建 `[1/6]`…`[6/6]` 与 launcher/目标 runtime 冒烟全部通过，`dist/Upper/app.egg` 1,970,782 字节 / 24 个应用文件，`_memimporter.pyd` 198,144 字节，`site-packages/main.py` 与 `main.pyd` 均已消失。限制：`_memimporter` 仅 Windows；POSIX 未在这台 Windows 宿主上跑全量构建，归档、密钥、成员查找和三个后端由单元测试覆盖。
+
 ## v0.17.15
 
 0.17.14 的 `minimal` 预设只按 Windows 的 PySide 平铺布局写：`*/plugins/...` 里的单个 `*` 不跨目录，于是它命中 `PySide2/plugins/...`，却漏掉 macOS/Linux 的 `PySide6/Qt/plugins/...`，也漏掉所有平台上的 `PyQt5/Qt5/...` 与 `PyQt6/Qt6/...`——预设在最需要它的平台上静默变成 no-op。同一类错误还在 Qt 自动裁剪里：`_qt_layout()` 只认 `Qt` 目录，PyQt 的 `Qt5`/`Qt6` 被当成 Windows 平铺布局，`plugins`、`qml`、`translations`、`metatypes` 全指向不存在的包根路径，`prune()` 于是什么也没删；`prune()` 自己又硬编码了一次 `pyside / "Qt"` 来决定 `examples`、`include`、`resources` 的位置。

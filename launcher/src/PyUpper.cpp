@@ -42,6 +42,9 @@ namespace fs = std::filesystem;
 namespace py_upper_embedded {
 extern const char* const kEntry;
 extern const char* const kSmoke;
+extern const char* const kEggLoader;
+extern const char* const kEggKey;
+extern const char* const kEggBackend;
 }  // namespace py_upper_embedded
 #endif
 
@@ -68,6 +71,10 @@ constexpr const char* kRuntimeEntrySymbol = "PyConfig_InitIsolatedConfig";
 // without an embedded entry still finds its application after being renamed
 // (PyStand's _pystand_static.int).
 constexpr const char* kStaticEntry = "_py_upper_static.int";
+
+// The encrypted application archive. It has one name so the build and the
+// loader agree without another setting to keep in sync.
+constexpr const char* kEggFile = "app.egg";
 
 // Fatal errors must be visible: on Windows the launcher is a GUI-subsystem
 // binary and a macOS bundle started from Finder has no terminal, so a broken
@@ -245,6 +252,32 @@ const char* embedded_smoke() {
 #endif
 }
 
+// The egg loader and the key it needs. Both are null/empty in a launcher built
+// without an egg, which makes the bootstrap skip installation entirely.
+const char* embedded_egg_loader() {
+#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
+    return py_upper_embedded::kEggLoader;
+#else
+    return nullptr;
+#endif
+}
+
+const char* embedded_egg_key() {
+#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
+    return py_upper_embedded::kEggKey;
+#else
+    return "";
+#endif
+}
+
+const char* embedded_egg_backend() {
+#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
+    return py_upper_embedded::kEggBackend;
+#else
+    return "auto";
+#endif
+}
+
 // A crash report has to survive the interpreter: the bootstrap writes the
 // traceback here before the exception unwinds past PyRun_SimpleString, where a
 // SystemExit would otherwise terminate the process before the launcher can act.
@@ -350,8 +383,17 @@ def _py_upper_run():
         runpy.run_path(ENTRY_SCRIPT, run_name="__main__")
 
 
+def _py_upper_install_egg():
+    if EGG_LOADER_SOURCE is None or not EGG_PATH or not os.path.isfile(EGG_PATH):
+        return
+    namespace = {"__name__": "py_upper_eggloader", "__file__": EGG_PATH}
+    exec(compile(EGG_LOADER_SOURCE, "<py_upper_eggloader>", "exec"), namespace)
+    namespace["install"](EGG_PATH, key_hex=EGG_KEY_HEX, backend=EGG_BACKEND)
+
+
 _py_upper_streams()
 try:
+    _py_upper_install_egg()
     _py_upper_run()
 except SystemExit:
     raise
@@ -363,11 +405,22 @@ except BaseException:
 // The program the launcher runs arrives from one of two places: compiled into
 // the binary, or as a file next to it. The bootstrap below carries whichever
 // applies as a literal, so the Python side stays one program with one branch.
-std::string bootstrap(const fs::path& script, const fs::path& entry_file, const char* source, const fs::path& crash_report) {
+std::string bootstrap(const fs::path& script, const fs::path& entry_file, const char* source,
+                      const fs::path& egg_path, const char* egg_loader, const char* egg_key,
+                      const char* egg_backend, const fs::path& crash_report) {
     std::string text = "ENTRY_FILE = " + py_quote(path_to_utf8(entry_file)) + "\n"
         "ENTRY_SOURCE = None\n"
         "ENTRY_SCRIPT = None\n"
-        "CRASH_REPORT = " + py_quote(path_to_utf8(crash_report)) + "\n";
+        "CRASH_REPORT = " + py_quote(path_to_utf8(crash_report)) + "\n"
+        "EGG_PATH = " + py_quote(path_to_utf8(egg_path)) + "\n"
+        "EGG_KEY_HEX = " + py_quote(egg_key ? egg_key : "") + "\n"
+        "EGG_BACKEND = " + py_quote(egg_backend ? egg_backend : "auto") + "\n"
+        "EGG_LOADER_SOURCE = None\n";
+    if (egg_loader != nullptr && *egg_loader != '\0') {
+        // Same carrier as the entry: a raw literal whose payload the generator
+        // validated, so a triple quote cannot end it early.
+        text += std::string("EGG_LOADER_SOURCE = r\"\"\"") + egg_loader + "\"\"\"\n";
+    }
     if (source != nullptr) {
         // The generator refuses a payload that carries a triple double quote,
         // which is what keeps this raw literal from ending early
@@ -540,6 +593,11 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         const fs::path entry_dir = root;
 #endif
 
+        // The loader embedded in the launcher looks for the archive in the
+        // bundle root (Contents/Resources on macOS), which is where packaging
+        // copies it. It is simply absent when the project ships loose files.
+        const fs::path egg = entry_dir / kEggFile;
+
         const char* smoke = std::getenv("PY_UPPER_SMOKE");
         const bool smoke_mode = smoke && std::string(smoke) == "1";
 
@@ -582,6 +640,7 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         // carries its entry, and naming a path that does not exist would be
         // worse than saying nothing.
         if (!script.empty()) set_env("PY_UPPER_SCRIPT", path_to_utf8(script));
+        if (fs::exists(egg)) set_env("PY_UPPER_EGG", path_to_utf8(egg));
         set_env("PY_UPPER_EXECUTABLE", exe);
 #ifdef PY_UPPER_APP_NAME
         set_env("PY_UPPER_APP_NAME", PY_UPPER_APP_NAME);
@@ -675,7 +734,9 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         // A compiled-in entry reports the launcher as its own location, a file
         // entry reports the file.
         const fs::path entry_file = script.empty() ? path_from_utf8(exe) : script;
-        const std::string source = bootstrap(script, entry_file, embedded, crash_report);
+        const std::string source = bootstrap(
+            script, entry_file, embedded, egg, embedded_egg_loader(), embedded_egg_key(),
+            embedded_egg_backend(), crash_report);
         int rc = run_simple(source.c_str());
         int frc = finalize();
         finalize = nullptr;

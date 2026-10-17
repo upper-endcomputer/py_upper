@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.9**。
+当前稳定开发线：**0.17.16**。
 
 ## 构建模型
 
@@ -284,6 +284,56 @@ runtime_keep = []
 可能因此起不来。默认仍是 `safe`，确认目标环境后再切到 `minimal`。四种布局由
 单元测试覆盖；完整构建只在 Windows x86_64 上实测，macOS/Linux 需在对应宿主
 执行一次 `[1/6]`…`[6/6]`。
+
+## 加密 egg（可选）
+
+`[tool.py_upper.egg]` 把应用自己的 Python 模块和本次构建产出的扩展收进一个
+`app.egg`，不再以散文件留在 `site-packages`。归档格式是
+`MAGIC (8 字节) + XOR(zip, SHAKE-256 key stream)`；launcher 在导入应用入口前
+安装内存导入器，所以产物里不会再有 `main.py` / `main.pyd`。
+
+```toml
+[tool.py_upper.egg]
+enabled = true
+key_hex = "047636cf3ddbaae2346f597256416e858ee0b7c8b7448221e5babfbb4f74c20d"
+backend = "auto"          # auto / memory / extract
+compression = "deflated"  # deflated / stored / lzma
+```
+
+只有应用自己的代码进 egg：`app/src` 下的 Python 模块、本次构建编译出的
+`.pyd`/`.so`，以及随应用分发的其它非原生文件。第三方 wheel、runtime 和
+`[tool.py_upper.native]` 依赖闭包需要看到的原生输入仍留在 `site-packages`，
+否则闭合检查看不见它们。
+
+后端有三档：
+
+- `memory`：仅 Windows。扩展模块通过 vendored `_memimporter` 直接从内存映射，
+  需要 Zig 工具链；编译产物缓存在 `build/cache/memimporter/<target>/`。
+- `extract`：所有平台。启动时解密到 `py_upper_egg_*` 私有临时目录并插入
+  `sys.path`，进程退出时删除。Linux 没有稳定的内存 dlopen 接口；macOS 开启
+  hardened runtime 时，临时目录里未签名的 `.so` 可能被 dyld 拒绝，需要
+  `com.apple.security.cs.disable-library-validation`，或改用签名后的独立原生库。
+- `auto`：Windows 且 `_memimporter` 可用时走 memory，否则 extract。Windows 上
+  编译失败只打印 warning 并回退；显式 `memory` 则直接报错，不会静默产出跑不
+  起来的包。
+
+单次构建可以覆盖配置，不写回文件：
+
+```bash
+python tools/build.py --egg
+python tools/build.py --no-egg
+python tools/build.py --egg --egg-key <HEX> --egg-backend extract --egg-compression lzma
+```
+
+stage 下的 `egg.json` 记录本次构建实际使用的 key/backend/compression，
+`--verify` 和冒烟脚本以它为准，不会拿项目默认值去解一个被 CLI 覆盖过的 egg。
+`--verify` 会检查 `app.egg` 的 MAGIC、成员列表，并确认已打包的应用文件不再以
+散文件出现；`memory` 后端还必须带 `_memimporter.pyd`。
+
+**加密不等于变小**：SHAKE-256 密钥流只提高直接读源码/反编译的成本，key 本身
+编在 launcher 里，不是秘密存储格式；压缩后的 egg 与普通 zip 体积相当。产物
+大小仍由 runtime、第三方 wheel 和 Qt 决定，减小体积请用上面的 trim、Qt 裁剪
+和 `strip_native`。
 
 ## 可选 native 组件排除
 
