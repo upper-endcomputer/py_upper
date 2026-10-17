@@ -34,6 +34,21 @@ EMBEDDED_SOURCE_FILE = "py_upper_embedded.cpp"
 RAW_STRING_DELIMITER = "pyupper"
 
 
+def _cmake_path(path: Path) -> str:
+    r"""A path spelled the way a ``-D`` value has to be for CMake.
+
+    CMake copies some ``-D`` values verbatim into the cache-reload scripts it
+    generates. ``CMAKE_RC_COMPILER`` lands in ``CMakeRCCompiler.cmake`` as
+    ``set(CMAKE_RC_COMPILER "...")``, and a Windows path with backslashes is
+    then read back as a CMake string literal: ``D:\XY_Project\...`` is the
+    invalid escape ``\X``, so configuration dies with "Invalid character
+    escape" before the resource compiler is ever invoked. The compiler path
+    CMake finds for itself is normalized; a pre-set one is not. Forward slashes
+    are the spelling the CMake language accepts on every host.
+    """
+    return path.as_posix()
+
+
 def build_launcher(target: Target):
     sdk = resolve_target_python(target)
     tc = resolve_toolchain(target)
@@ -47,13 +62,13 @@ def build_launcher(target: Target):
     cmd = [
         "cmake", "-S", str(LAUNCHER), "-B", str(b), "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
-        f"-DPYSTAND_PYTHON_INCLUDE={sdk.include_dir}",
+        f"-DPYSTAND_PYTHON_INCLUDE={_cmake_path(sdk.include_dir)}",
         # Compiled into the launcher so a renamed executable still reports the
         # configured application name instead of its own filename.
         f"-DPY_UPPER_APP_NAME={app_name()}",
         # The entry programs ride in the launcher, so a packaged bundle needs no
         # script next to the executable.
-        f"-DPY_UPPER_EMBEDDED_SOURCE={embedded}",
+        f"-DPY_UPPER_EMBEDDED_SOURCE={_cmake_path(embedded)}",
     ]
     if target.os == "windows" and tc.compiler_args:
         # CMake needs to invoke a single executable. Zig's compiler frontend is
@@ -81,7 +96,7 @@ def build_launcher(target: Target):
         cmd += [
             "-DCMAKE_SYSTEM_NAME=Windows",
             f"-DCMAKE_SYSTEM_PROCESSOR={CMAKE_WINDOWS_PROCESSOR[target.arch]}",
-            f"-DCMAKE_RC_COMPILER={rc}",
+            f"-DCMAKE_RC_COMPILER={_cmake_path(rc)}",
             # MinGW uses the ANSI WinMain entry unless the Unicode entry point
             # is explicitly selected; MSVC infers it from WIN32_EXECUTABLE.
             # CMake's compiler probe builds a main() executable, which is the
@@ -103,7 +118,7 @@ def build_launcher(target: Target):
             # and stderr attached unconditionally, at the cost of a console
             # window for every user.
             cmd += ["-DPY_UPPER_LAUNCHER_CONSOLE=ON"]
-        cmd += [f"-DPY_UPPER_RESOURCE_RC={_windows_version_resource(b)}"]
+        cmd += [f"-DPY_UPPER_RESOURCE_RC={_cmake_path(_windows_version_resource(b))}"]
     subprocess.run(cmd, check=True, env=env)
     subprocess.run(["cmake", "--build", str(b), "--config", "Release"], check=True, env=env)
     exe = b / ("PyUpper.exe" if target.os == "windows" else "PyUpper")

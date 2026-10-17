@@ -247,6 +247,35 @@ def _find_zig(root: Path) -> Path:
 _ZIG_TRIPLE_ARCH = {"i686": "x86"}
 
 
+def windows_gnu_cpython_defines(target: Target) -> tuple[str, ...]:
+    r"""The defines a GNU driver needs for the Windows target's CPython headers.
+
+    The SDK ships the MSVC-shaped ``pyconfig.h`` of the official Windows build,
+    and two of its statements are wrong for a MinGW-w64 ABI:
+
+    * The pointer width is spelled out only on the branch pyconfig.h reaches
+      through ``_MSC_VER``
+      (``#ifdef _MSC_VER`` / ``#ifdef _WIN64`` / ``#define MS_WIN64``), and
+      ``SIZEOF_VOID_P`` is only then 8.  A GNU driver never defines ``_MSC_VER``,
+      so a 64-bit target fell through to the ``MS_WIN32`` branch with
+      ``SIZEOF_VOID_P 4`` (and ``SIZEOF_SIZE_T 4``) -- a lie about the ABI of a
+      runtime whose ``PyConfig`` the launcher shares.  Cython's own guard,
+      ``1 / (int)(SIZEOF_VOID_P == sizeof(void*))``, was what failed loudly.
+    * ``pyerrors.h`` renames ``snprintf`` to ``_snprintf`` under
+      ``defined(MS_WIN32) && !defined(HAVE_SNPRINTF)``, which is right for
+      MSVC's pre-C99 CRT and wrong for MinGW-w64's C99 one: ``std::snprintf``
+      became ``std::_snprintf`` and the launcher did not compile.
+
+    Both corrections are properties of the target ABI, so they come from the
+    toolchain and every consumer -- the Cython extensions and the launcher --
+    compiles against the same view of the headers.
+    """
+    defines = ["-DHAVE_SNPRINTF"]
+    if target.arch in {"x86_64", "arm64"}:
+        defines.append("-DMS_WIN64")
+    return tuple(defines)
+
+
 def ensure_zig(target: Target) -> Toolchain:
     """Download and unpack the pinned host-native Zig, then cross-compile.
 
@@ -307,11 +336,17 @@ def ensure_zig(target: Target) -> Toolchain:
     # component already matches Zig's spelling.
     arch, separator, remainder = triple.partition("-")
     zig_triple = _ZIG_TRIPLE_ARCH.get(arch, arch) + separator + remainder
+    # The CPython headers of this SDK describe an MSVC build; the corrections
+    # that make them describe the ABI the GNU driver actually emits are shared
+    # with every consumer of the toolchain, so they ride in the frontend
+    # spelled out below.
+    zig_cc = ("cc", "-target", zig_triple, *windows_gnu_cpython_defines(target))
+    zig_cxx = ("c++", "-target", zig_triple, *windows_gnu_cpython_defines(target))
     env.update({
-        "CC": str(zig) + " cc -target " + zig_triple,
-        "CXX": str(zig) + " c++ -target " + zig_triple,
+        "CC": " ".join((str(zig), *zig_cc)),
+        "CXX": " ".join((str(zig), *zig_cxx)),
     })
-    return Toolchain(target, env, str(zig), env["CXX"], env["CC"], compiler_args=("cc", "-target", zig_triple))
+    return Toolchain(target, env, str(zig), env["CXX"], env["CC"], compiler_args=zig_cc)
 
 
 def resolve_toolchain(target: Target) -> Toolchain:

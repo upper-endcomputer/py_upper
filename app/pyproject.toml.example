@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.11"
+version = "0.17.12"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -67,7 +67,13 @@ manylinux = ["manylinux_2_39", "manylinux_2_34"]
 #     shiboken6 wheel alike. Windows on ARM cannot map an ARM32 image at all,
 #     no image in either wheel imports it (it is the C++/CX runtime, which Qt
 #     does not use), and leaving it in makes the payload arch guard reject the
-#     whole windows-arm64 bundle.
+#     whole windows-arm64 bundle;
+#   - the win_amd64 wheels also ship a 32-bit ucrtbase.dll, again in the
+#     PySide6 and the shiboken6 wheel alike. The UCRT belongs to Windows: it is
+#     on the closure's host-library list (native/deps.py), so it is never
+#     resolved and copied, the loader takes it from System32, and no bundled
+#     image can map this copy. Leaving it in makes the arch guard reject the
+#     whole x86_64 bundle.
 exclude = [
     # macOS and Windows wheels use different PySide6 plugin/qml prefixes, and
     # these optional SQL/design payloads cannot be bundled.
@@ -81,7 +87,9 @@ exclude = [
     "PySide6/Qt/plugins/sqldrivers/*qsqlodbc*",
     "PySide6/Qt/plugins/sqldrivers/*qsqlpsql*",
     "PySide6/Qt/qml/QtQuick/Shapes/DesignHelpers/*",
+    "PySide6/ucrtbase.dll",
     "PySide6/vccorlib140.dll",
+    "shiboken6/ucrtbase.dll",
     "shiboken6/vccorlib140.dll",
 ]
 

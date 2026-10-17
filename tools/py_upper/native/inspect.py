@@ -144,6 +144,17 @@ def expected_arch(target) -> str:
     return target.arch
 
 
+# A wheel occasionally ships a native payload built for another architecture,
+# which no image in that wheel loads (PySide2's win_amd64 wheels carry a 32-bit
+# ucrtbase.dll). The guard is the right answer for that too, but the reader of
+# the error has to be told which door leads out of it, or the tempting move is
+# to weaken the guard instead.
+_ARCH_MISMATCH_REMEDY = (
+    " A foreign payload that no bundled image loads can be dropped with"
+    " [tool.py_upper.native].exclude in app/pyproject.toml."
+)
+
+
 def compatible_with(arch: str, target_arch: str) -> bool:
     """Whether a target of ``target_arch`` can load an image of ``arch``."""
     return arch == target_arch or target_arch in _COMPATIBLE_TARGETS.get(arch, ())
@@ -158,9 +169,12 @@ def verify_arch(path: Path, target) -> BinaryInfo:
         if expected_arch(target) not in arches:
             raise RuntimeError(
                 f"Architecture mismatch: {path.name}: universal ({', '.join(sorted(arches))}), "
-                f"expected {target.arch}"
+                f"expected {target.arch}." + _ARCH_MISMATCH_REMEDY
             )
         return info
     if not compatible_with(info.arch, expected_arch(target)):
-        raise RuntimeError(f"Architecture mismatch: {path.name}: {info.arch}, expected {target.arch}")
+        raise RuntimeError(
+            f"Architecture mismatch: {path.name}: {info.arch}, expected {target.arch}."
+            + _ARCH_MISMATCH_REMEDY
+        )
     return info

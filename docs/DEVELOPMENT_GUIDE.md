@@ -589,6 +589,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 | `No module named 'main'` | 扩展后缀不是 CPython 识别的形式 | 应为 `.cpython-310-darwin.so`（macOS）/`.cp310-win_amd64.pyd` |
 | `import zlib` 失败 / Cython 字符串压缩报错 | 搜索路径缺 `lib-dynload`（Unix）或 `DLLs`（Windows） | ≥0.17.1 已加入 launcher 搜索路径 |
 | `PermissionError: ... python3.10` | runtime 拷贝丢了可执行位 | ≥0.17.1 拷贝时保留执行位 |
+| `PermissionError: [WinError 5] ... dist\Upper -> build\retired\...` | 上一轮打包出的程序、解析 `dist/**/python` 解释器的编辑器进程、或杀软扫描仍持有 `dist/<app>`；Windows 把“还被占用”和“没权限”都报成 WinError 5 | 构建会先等待这类短命占用再失败，并在失败信息里列出可能的占用者；按提示关掉该进程后重试 |
 | `Errno 1: Operation not permitted` 打包时 | 回放源文件权限/元数据 | ≥0.16.10 只拷内容 + 执行位 |
 | `Unresolved native dependencies` | 原生依赖闭包里有找不到的库 | 看清单；可选组件用 `[tool.py_upper.native].exclude`；自带库放 `app/src` 会被自动纳入 |
 | Linux 上 `Unresolved native dependencies` 里全是 `libGL` / `libEGL` / `libxcb*` / `libxkbcommon` / `libwayland*` / `libwebp*` / `libtiff` | Qt 平台插件无条件链接宿主桌面栈，这些库属于目标机 | 已在 `deps.py` 的 `LINUX_HOST_LIBRARIES` 白名单，不再算未解析；目标机需装运行库（Debian/Ubuntu：`libgl1 libegl1 libxkbcommon0 libwayland-client0 libtiff6 libwebp7`） |

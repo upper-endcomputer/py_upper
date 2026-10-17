@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -317,6 +319,45 @@ def test_windows_pruning_never_touches_the_package_itself(tmp_path, monkeypatch)
     assert (pyside / "support" / "__init__.py").exists()
 
 
+def test_windows_pruning_drops_the_binding_prefixed_tool_copy(tmp_path, monkeypatch):
+    """PySide ships lupdate twice, and the prefixed copy is the one that leaks.
+
+    The Windows wheels carry ``pyside2-lupdate.exe`` beside ``lupdate.exe``. Only
+    the bare name was listed as tooling, so the prefixed executable survived the
+    sweep while the Qt5Xml.dll it links did not (the application never imports
+    QtXml) and the build stopped at "Unresolved native dependencies:
+    site-packages/PySide2/pyside2-lupdate.exe: Qt5Xml.dll" -- over a translation
+    tool that is developer tooling, not runtime payload.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = site / "PySide2"
+    _touch(pyside / "QtCore.pyd")
+    _touch(pyside / "Qt5Core.dll")
+    _touch(pyside / "pyside2.abi3.dll")
+    _touch(pyside / "lupdate.exe")
+    _touch(pyside / "pyside2-lupdate.exe")
+
+    def dependencies(path: Path) -> list[str]:
+        return {
+            "QtCore.pyd": ["Qt5Core.dll", "pyside2.abi3.dll"],
+            "pyside2-lupdate.exe": ["Qt5Xml.dll"],
+        }.get(path.name, [])
+
+    monkeypatch.setattr(qt_prune, "dependency_names", dependencies)
+
+    counters = prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert counters and counters["files"] >= 2
+    assert not (pyside / "lupdate.exe").exists()
+    assert not (pyside / "pyside2-lupdate.exe").exists()
+    # The payload the application does import is untouched.
+    assert (pyside / "QtCore.pyd").exists()
+    assert (pyside / "Qt5Core.dll").exists()
+    assert (pyside / "pyside2.abi3.dll").exists()
+
+
 def test_configured_modules_expands_explicit_lists_through_the_closure(tmp_path, monkeypatch):
     from py_upper import qt_prune
 
@@ -395,3 +436,39 @@ def test_prune_is_disabled_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(qt_prune, "dependency_names", lambda path: [])
     assert prune(site, TARGETS["macos-arm64"]) is None
     assert (pyside / "QtWebEngineCore.abi3.so").exists()
+
+
+def test_runtime_closure_probe_inherits_the_host_environment(tmp_path, monkeypatch):
+    """The closure probe must not hand the target interpreter a built environment.
+
+    It needs PYTHONPATH (the staged payload) and PYTHONDONTWRITEBYTECODE, but
+    everything else has to come from the host. A block containing only those two
+    plus a POSIX PATH is not a smaller host environment: on Windows the target
+    interpreter dies during preinit without SystemRoot, reporting
+    "_Py_HashRandomization_Init: failed to get random numbers to initialize
+    Python", which failed every Windows host build with qt = "imports" before
+    the launcher step.
+    """
+    from py_upper import qt_prune
+
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    recorded: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        recorded["cmd"] = cmd
+        recorded["env"] = kwargs["env"]
+        loaded = '["PySide6.QtWidgets", "PySide6.QtCore"]'
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{loaded}\n", stderr="")
+
+    monkeypatch.setattr(qt_prune, "_native_runtime_python", lambda target: Path(sys.executable))
+    monkeypatch.setattr(qt_prune.subprocess, "run", fake_run)
+
+    closure = qt_prune._runtime_closure(site, TARGETS["macos-arm64"], {"QtWidgets"})
+
+    assert closure == {"QtWidgets", "QtCore"}
+    env = recorded["env"]
+    assert env["PYTHONPATH"] == str(site)
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    dropped = {name: value for name, value in os.environ.items() if env.get(name) != value}
+    assert not dropped, f"the probe dropped host variables: {sorted(dropped)}"

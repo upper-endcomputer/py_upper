@@ -205,6 +205,26 @@ def test_template_drops_the_pyside6_arm64_orphan():
     assert "shiboken6/vccorlib140.dll" in exclude
 
 
+def test_template_drops_the_32_bit_ucrt_orphan():
+    """The PySide6 and shiboken6 win_amd64 wheels ship a 32-bit ``ucrtbase.dll``.
+
+    The UCRT ships with Windows and is on the closure's host-library list
+    (``native/deps.py``), so it is never resolved and copied and no bundled
+    image loads the wheel's copy; the payload arch guard rightly refuses to
+    ship it. Like the ARM32 ``vccorlib140.dll``, it goes through the documented
+    wheel-defect list instead of relaxing that guard: if a wheel ever starts
+    importing the file, the closure still fails loudly rather than shipping a
+    bundle that cannot load.
+    """
+    from py_upper.compat import tomllib
+    from py_upper.config import APP_CONFIG_EXAMPLE
+
+    data = tomllib.loads(APP_CONFIG_EXAMPLE.read_text(encoding="utf-8"))
+    exclude = data["tool"]["py_upper"]["native"]["exclude"]
+    assert "PySide6/ucrtbase.dll" in exclude
+    assert "shiboken6/ucrtbase.dll" in exclude
+
+
 def test_local_configuration_is_git_ignored_but_the_template_is_not():
     root = Path(__file__).parents[2]
     entries = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
@@ -670,10 +690,11 @@ def test_launcher_build_passes_the_configured_app_name(tmp_path, monkeypatch):
     assert configure[0] == "cmake"
     assert f"-DPY_UPPER_APP_NAME={app_name()}" in configure
     # The entry programs are generated into the build directory and compiled in
-    # through this define; without it the launcher is the hand-made variant.
-    embedded = f"-DPY_UPPER_EMBEDDED_SOURCE={tmp_path / 'launcher' / 'macos-arm64' / 'py_upper_embedded.cpp'}"
-    assert embedded in configure
-    assert (tmp_path / "launcher" / "macos-arm64" / "py_upper_embedded.cpp").is_file()
+    # through this define; without it the launcher is the hand-made variant. The
+    # path is spelled for CMake, see test_launcher_configure_spells_every_path_for_cmake.
+    embedded = tmp_path / "launcher" / "macos-arm64" / "py_upper_embedded.cpp"
+    assert f"-DPY_UPPER_EMBEDDED_SOURCE={embedded.as_posix()}" in configure
+    assert embedded.is_file()
 
 
 def test_zig_launcher_configure_names_every_windows_architecture(tmp_path, monkeypatch):
@@ -714,6 +735,51 @@ def test_zig_launcher_configure_names_every_windows_architecture(tmp_path, monke
     configure = calls[0]
     assert "-DCMAKE_SYSTEM_PROCESSOR=ARM64" in configure
     assert "-DCMAKE_EXE_LINKER_FLAGS=-municode" in configure
+
+
+def test_launcher_configure_spells_every_path_for_cmake(tmp_path, monkeypatch):
+    """A -D path must reach CMake with forward slashes, on a Windows host too.
+
+    CMake writes ``CMAKE_RC_COMPILER`` verbatim into the generated
+    ``CMakeRCCompiler.cmake`` as ``set(CMAKE_RC_COMPILER "...")``. A Windows
+    path with backslashes is then re-read as a CMake string literal, and
+    ``D:\\XY_Project\\...`` fails with "Invalid character escape '\\X'" before
+    the resource compiler is ever invoked, which is what made the launcher step
+    impossible to run from a Windows checkout. A compiler CMake finds itself is
+    normalized; one handed in through ``-D`` is not, so the tool spells every
+    path it passes that way.
+    """
+    from types import SimpleNamespace
+
+    from py_upper import package
+    from py_upper.config import TARGETS
+
+    monkeypatch.setattr(package, "BUILD", tmp_path)
+    monkeypatch.setattr(package, "resolve_target_python", lambda target: SimpleNamespace(include_dir=tmp_path / "include"))
+    monkeypatch.setattr(package, "resolve_toolchain", lambda target: SimpleNamespace(
+        env={}, compiler=str(tmp_path / "zig"), compiler_args=("cc", "-target", "x86_64-windows-gnu"),
+    ))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "--build" in cmd:
+            (tmp_path / "launcher" / "windows-x86_64" / "PyUpper.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(package.subprocess, "run", fake_run)
+
+    package.build_launcher(TARGETS["windows-x86_64"])
+
+    configure = calls[0]
+    defines = [str(token) for token in configure if str(token).startswith("-D")]
+    assert defines, "the configure step carried no defines at all"
+    for define in defines:
+        _, _, value = define.partition("=")
+        assert "\\" not in value, define
+
+    rc = next(token for token in configure if str(token).startswith("-DCMAKE_RC_COMPILER="))
+    # CMake reads this one back as CMake code, so the spelling is what matters.
+    assert Path(str(rc).split("=", 1)[1]).is_absolute()
 
 
 def test_launcher_cmake_requests_the_gui_subsystem_from_every_toolchain():
@@ -1137,6 +1203,26 @@ def test_arm64ec_detection_reads_the_section_table_past_the_header(tmp_path):
     assert verify_arch(deep, TARGETS["windows-arm64"]).arch == "arm64ec"
 
 
+def test_arch_mismatch_names_the_documented_remedy(tmp_path):
+    """The guard's message must point at the exclude list, not at the guard.
+
+    A wheel that ships a foreign payload is the one realistic way to reach this
+    error (PySide2's win_amd64 wheels carry a 32-bit ucrtbase.dll), and the only
+    right answer is to drop the file through the configuration. An error that
+    stops at "Architecture mismatch" invites relaxing the guard instead.
+    """
+    from py_upper.config import TARGETS
+    from py_upper.native.inspect import verify_arch
+
+    foreign = tmp_path / "ucrtbase.dll"
+    foreign.write_bytes(_synthetic_pe(0x14C, (".text", ".rdata", ".reloc")))
+    with pytest.raises(RuntimeError) as excinfo:
+        verify_arch(foreign, TARGETS["windows-x86_64"])
+    message = str(excinfo.value)
+    assert "ucrtbase.dll: x86, expected x86_64" in message
+    assert "[tool.py_upper.native].exclude" in message
+
+
 def test_network_retries_transient_gateway_errors(monkeypatch):
     from py_upper import net
     calls = []
@@ -1335,6 +1421,83 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
     assert "TARGET_LIBRARIES=['python313']" in setup_text
     assert f"TARGET_LIBDIR={str(libs)!r}" in setup_text
     assert str(tmp_path / "runtime") not in setup_text
+
+
+def test_zig_compiled_windows_extensions_name_the_64_bit_abi(tmp_path, monkeypatch):
+    """The toolchain's header corrections must reach the compiler unaltered.
+
+    ``pyconfig.h`` defines ``MS_WIN64`` -- and with it ``SIZEOF_VOID_P 8`` --
+    only on the branch it enters through ``_MSC_VER``. Zig never defines
+    ``_MSC_VER``, so a 64-bit Windows target compiled through it was given
+    ``SIZEOF_VOID_P 4`` and Cython's ``1 / (int)(SIZEOF_VOID_P == sizeof(void*))``
+    ABI guard turned into a division by zero in every generated module. The
+    define belongs to the 64-bit targets only: the 32-bit ones already agree
+    with the ``MS_WIN32`` branch pyconfig.h falls through to.
+
+    The extension build never invents a compiler flag of its own -- it forwards
+    the Zig frontend the toolchain hands it -- so this pins that the corrections
+    arrive with it instead of being dropped on the way.
+    """
+    from types import SimpleNamespace
+
+    from py_upper import python_build
+    from py_upper.config import TARGETS
+    from py_upper.toolchain import windows_gnu_cpython_defines
+
+    app_root = tmp_path / "app"
+    source = app_root / "src" / "demo.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("x = 1\n", encoding="utf-8")
+    generated = tmp_path / "demo.c"
+    generated.write_text("/* generated */\n", encoding="utf-8")
+
+    sdk = tmp_path / "sdk"
+    libs = sdk / "install" / "libs"
+    libs.mkdir(parents=True)
+    (libs / "python38.lib").write_bytes(b"")
+    include = sdk / "install" / "include"
+    include.mkdir(parents=True)
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append([str(token) for token in cmd])
+        artifact = Path(str(cmd[cmd.index("-o") + 1]))
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"")
+
+    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
+    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+
+    def compile_for(key: str) -> list[str]:
+        target = TARGETS[key]
+        target_python = SimpleNamespace(
+            sdk_root=sdk,
+            include_dir=include,
+            python_major_minor="3.8",
+            extension_suffix=f".cp38-{target.extension_platform}.pyd",
+        )
+        frontend = ("cc", "-target", target.triple, *windows_gnu_cpython_defines(target))
+        monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
+        monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: SimpleNamespace(
+            env={}, compiler=str(tmp_path / "zig"), compiler_args=frontend,
+        ))
+        commands.clear()
+        python_build.build_target_extensions(target, [source])
+        assert commands, "the Zig branch never reached the compiler"
+        return commands[0]
+
+    for key in ("windows-x86_64", "windows-arm64"):
+        assert "-DMS_WIN64" in compile_for(key)
+
+    # snprintf is a correction every Windows target needs; the pointer width is
+    # only 8 on the 64-bit ones.
+    x86 = compile_for("windows-x86")
+    assert "-DHAVE_SNPRINTF" in x86
+    assert "-DMS_WIN64" not in x86
 
 
 def test_target_python_points_the_compiler_at_the_sdk(tmp_path, monkeypatch):
@@ -1737,6 +1900,104 @@ def test_retire_tree_takes_the_tree_out_of_its_published_path_first(tmp_path, mo
     assert not_a_tree.is_file()
 
 
+class _HeldByAnotherProcess(PermissionError):
+    """``PermissionError`` carrying the ``winerror`` Windows actually sets.
+
+    Windows spells "the tree is open somewhere else" and "the tree is
+    unreadable" the same way, WinError 5, so the retry logic separates them by
+    ``winerror`` alone. Spelling it as a class attribute keeps the test honest
+    on POSIX, where OSError has no such field to assign.
+    """
+
+    winerror = 5
+
+
+def test_retire_tree_waits_out_a_tree_windows_still_holds(tmp_path, monkeypatch):
+    """A tree another process holds must not fail the build on the first try.
+
+    Windows refuses to rename a directory while any handle under it is open,
+    and that is the state the previously published bundle is in whenever the
+    editor resolves the interpreter it found under ``dist/`` or the developer
+    closes the packaged app at about the time they start the next build. The
+    holder is short-lived, so waiting it out is what makes the build succeed
+    instead of looking for a rename that does not need fixing.
+    """
+    from py_upper import fs
+
+    tree = tmp_path / "dist" / "MyApp"
+    (tree / "runtime").mkdir(parents=True)
+    real_replace = os.replace
+    renames: list[Path] = []
+
+    def flaky_replace(source, destination):
+        renames.append(Path(source))
+        if len(renames) < 3:
+            raise _HeldByAnotherProcess(13, "Access is denied")
+        return real_replace(source, destination)
+
+    waits: list[float] = []
+    monkeypatch.setattr(fs.os, "replace", flaky_replace)
+    monkeypatch.setattr(fs.time, "sleep", waits.append)
+
+    fs.retire_tree(tree, trash=tmp_path / "build" / "retired")
+
+    assert len(renames) == 3
+    assert len(waits) == 2
+    assert not tree.exists()
+
+
+def test_retire_tree_names_what_holds_a_tree_it_cannot_retire(tmp_path, monkeypatch):
+    """A lock that never clears must read as the environment problem it is.
+
+    Left as a bare PermissionError, the failure looks like a bug in the rename
+    that the retire dance exists to do, and the tempting repair is to weaken
+    the rename -- which is what keeps external writers from corrupting the
+    payload. The message has to name the processes that hold a tree instead,
+    and the payload has to be left whole rather than half-deleted.
+    """
+    from py_upper import fs
+
+    tree = tmp_path / "dist" / "MyApp"
+    (tree / "runtime").mkdir(parents=True)
+    (tree / "runtime" / "python38.dll").write_bytes(b"payload")
+
+    def never_released(source, destination):
+        raise _HeldByAnotherProcess(13, "Access is denied")
+
+    monkeypatch.setattr(fs.os, "replace", never_released)
+    monkeypatch.setattr(fs.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(fs, "_BUSY_ATTEMPTS", 3)
+
+    with pytest.raises(RuntimeError) as failure:
+        fs.retire_tree(tree, trash=tmp_path / "build" / "retired")
+
+    message = str(failure.value)
+    assert str(tree) in message
+    assert "WinError 5" in message
+    assert "still running" in message
+    assert (tree / "runtime" / "python38.dll").read_bytes() == b"payload"
+
+
+def test_retire_tree_does_not_retry_a_real_permission_error(tmp_path, monkeypatch):
+    """Only the "someone holds it" shape may wait; a real denial stays immediate."""
+    from py_upper import fs
+
+    tree = tmp_path / "dist" / "MyApp"
+    tree.mkdir(parents=True)
+    renames: list[Path] = []
+
+    def unreadable(source, destination):
+        renames.append(Path(source))
+        raise OSError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(fs.os, "replace", unreadable)
+    monkeypatch.setattr(fs.time, "sleep", lambda seconds: pytest.fail("must not wait"))
+
+    with pytest.raises(OSError):
+        fs.retire_tree(tree, trash=tmp_path / "build" / "retired")
+    assert len(renames) == 1
+
+
 def test_package_assembles_outside_the_published_path(tmp_path, monkeypatch):
     """The bundle must not be assembled in dist/, where the editor executes it.
 
@@ -1878,5 +2139,40 @@ def test_zig_cross_compiles_windows_x86_from_a_verified_toolchain(tmp_path, monk
     tc = toolchain.ensure_zig(TARGETS["windows-x86"])
     # Zig spells the 32-bit architecture "x86" and rejects the packaging
     # triple's "i686" outright, so the arch component is translated too.
-    assert tc.compiler_args == ("cc", "-target", "x86-windows-gnu")
+    assert tc.compiler_args == ("cc", "-target", "x86-windows-gnu", "-DHAVE_SNPRINTF")
     assert "-target x86-windows-gnu" in tc.env["CC"]
+
+
+def test_zig_windows_frontend_carries_the_cpython_header_corrections(tmp_path, monkeypatch):
+    """The SDK's pyconfig.h is MSVC-shaped; the Zig frontend must correct it.
+
+    ``SIZEOF_VOID_P``/``SIZEOF_SIZE_T`` are only 8 on the branch pyconfig.h
+    reaches through ``_MSC_VER``, and pyerrors.h renames ``snprintf`` to
+    ``_snprintf`` unless ``HAVE_SNPRINTF`` is set -- which is right for MSVC's
+    pre-C99 CRT and wrong for MinGW-w64. A GNU driver therefore saw a 32-bit
+    ABI on a 64-bit target and a ``std::_snprintf`` that does not exist. Both
+    corrections belong to the target ABI, so they are emitted for the
+    extensions and for the launcher alike, here and in ``env["CC"]``.
+    """
+    import platform as platform_module
+
+    from py_upper import toolchain
+    from py_upper.config import TARGETS
+
+    monkeypatch.setattr(toolchain, "BUILD", tmp_path)
+    host_key = toolchain._zig_host_key(platform_module.system(), toolchain._host_arch())
+    root = tmp_path / "host-tools" / "zig" / f"{toolchain.ZIG_VERSION}-{host_key}"
+    zig = root / "archive" / f"zig-{host_key}" / toolchain._zig_exe_name()
+    zig.parent.mkdir(parents=True)
+    zig.write_text("", encoding="utf-8")
+    (root / ".verified").write_text("verified\n", encoding="utf-8")
+    monkeypatch.setattr(toolchain, "http_json", lambda *a, **k: pytest.fail("a verified toolchain must not hit the network"))
+
+    for key in ("windows-x86_64", "windows-arm64"):
+        tc = toolchain.ensure_zig(TARGETS[key])
+        assert "-DMS_WIN64" in tc.compiler_args
+        assert "-DHAVE_SNPRINTF" in tc.compiler_args
+        assert "-DMS_WIN64" in tc.env["CC"]
+        assert "-DMS_WIN64" in tc.env["CXX"]
+
+    assert toolchain.windows_gnu_cpython_defines(TARGETS["windows-x86"]) == ("-DHAVE_SNPRINTF",)

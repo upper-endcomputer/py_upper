@@ -166,38 +166,57 @@ def _dist_name(dist_info: Path) -> str:
     return re.sub(r"[-_.]+", "-", re.sub(r"-\d.*$", "", stem)).lower()
 
 
-def _top_level_imports(dist_info: Path) -> list[str]:
-    top = dist_info / "top_level.txt"
+def _record_import_roots(dist_info: Path) -> set[str]:
+    """The import roots RECORD says this distribution installed.
+
+    RECORD lists exactly the files the distribution installed. Scanning the
+    whole site-packages directory instead would attribute every other
+    distribution's modules (and unrelated empty directories) to this one, so a
+    smoke test would try to import unrelated test packages.
+    """
     names: set[str] = set()
+    record = dist_info / "RECORD"
+    if not record.exists():
+        return names
+    for line in record.read_text(encoding="utf-8", errors="replace").splitlines():
+        entry = line.split(",", 1)[0].strip()
+        if not entry or entry.endswith("/") or entry.startswith(".."):
+            continue
+        head, _, tail = entry.partition("/")
+        if head.endswith((".dist-info", ".data")) or head.startswith("."):
+            continue
+        if tail:
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", head):
+                names.add(head)
+        elif entry.endswith(".py") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", entry):
+            names.add(entry[:-3])
+    return names
+
+
+def _top_level_imports(dist_info: Path) -> list[str]:
+    # top_level.txt is optional, and it is a claim about the wheel rather than a
+    # record of it. Wheels do get it wrong: PySide2's and shiboken2's both list a
+    # bare ``QtCore`` that neither installs, because their modules live under
+    # ``PySide2/`` and ``shiboken2/``. Trusting the claim makes the build's own
+    # smoke test import a module no distribution provides, so an intact PySide2
+    # payload fails [6/6] with "No module named 'QtCore'". Every declared name
+    # therefore has to appear in RECORD to count.
+    declared: set[str] = set()
+    top = dist_info / "top_level.txt"
     if top.exists():
         for line in top.read_text(encoding="utf-8", errors="replace").splitlines():
             value = line.strip()
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-                names.add(value)
-    if names:
-        return sorted(names)
+                declared.add(value)
 
-    # top_level.txt is optional. Derive the import roots from RECORD, which
-    # lists exactly the files this distribution installed. Scanning the whole
-    # site-packages directory instead would attribute every other
-    # distribution's modules (and unrelated empty directories) to this one, so
-    # a smoke test would try to import unrelated test packages.
-    record = dist_info / "RECORD"
-    if record.exists():
-        for line in record.read_text(encoding="utf-8", errors="replace").splitlines():
-            entry = line.split(",", 1)[0].strip()
-            if not entry or entry.endswith("/") or entry.startswith(".."):
-                continue
-            head, _, tail = entry.partition("/")
-            if head.endswith((".dist-info", ".data")) or head.startswith("."):
-                continue
-            if tail:
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", head):
-                    names.add(head)
-            elif entry.endswith(".py") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", entry):
-                names.add(entry[:-3])
-    if names:
-        return sorted(names)
+    installed = _record_import_roots(dist_info)
+    if installed:
+        # A name RECORD does not mention is not importable from this
+        # distribution. When nothing declared survives, RECORD is the only
+        # remaining description of what the distribution installs.
+        return sorted(declared & installed) or sorted(installed)
+    if declared:
+        return sorted(declared)
 
     fallback = _dist_name(dist_info).replace("-", "_")
     return [fallback] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", fallback) else []

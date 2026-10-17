@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -258,7 +259,18 @@ def _runtime_closure(site: Path, target: Target, modules: set[str]) -> set[str] 
         f"    importlib.import_module('{binding}.' + name)\n"
         f"print(json.dumps(sorted(m for m in sys.modules if m.startswith('{binding}.'))))\n"
     )
-    env = {"PYTHONPATH": str(site), "PYTHONDONTWRITEBYTECODE": "1", "PATH": "/usr/bin:/bin:/usr/local/bin"}
+    # The probe has to import from the staged payload, and nothing else about
+    # the child environment is this function's business. A hand-built
+    # environment block is not a smaller version of the host's: on Windows the
+    # target interpreter dies in preinit without SystemRoot
+    # ("_Py_HashRandomization_Init: failed to get random numbers to initialize
+    # Python"), so every Windows host build with qt = "imports" failed here
+    # before the launcher was even configured. Inherit the host environment and
+    # override only the two variables the probe actually needs, the way every
+    # other subprocess in the build tool does.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(site)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     probe = subprocess.run([str(python), "-c", script], capture_output=True, text=True, check=False, env=env)
     requested = ", ".join(sorted(modules))
     if probe.returncode != 0:
@@ -423,9 +435,20 @@ def prune(site: Path, target: Target, modules: set[str] | None = None) -> dict[s
         else:
             path.unlink(missing_ok=True)
 
+    # PySide ships each non-importable tool twice: once bare and once under a
+    # binding-prefixed name. PySide2 comes with ``lupdate.exe`` beside
+    # ``pyside2-lupdate.exe``, and PySide6 spells the same pair with its prefix.
+    # The prefixed copy is a full build of the same tool, and it links the Qt
+    # modules that tool needs rather than the ones the application imports
+    # (lupdate reads Qt5Xml), so the reachability sweep would remove those
+    # libraries while leaving this executable behind: the native dependency
+    # closure then refuses the whole bundle over a dangling Qt5Xml.dll. The bare
+    # name is not enough, and a toolkit tool is never runtime payload.
+    tooling_prefix = binding.lower() + "-"
     for name in TOOLING_ENTRIES:
         for suffix in layout.tooling_suffixes:
             drop(pyside / f"{name}{suffix}")
+            drop(pyside / f"{tooling_prefix}{name}{suffix}")
     if layout.metatypes is not None:
         drop(layout.metatypes)
     for helper in layout.helpers:

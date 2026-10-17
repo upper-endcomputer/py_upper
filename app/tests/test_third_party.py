@@ -312,6 +312,37 @@ def test_native_wheel_fixture_has_target_extension_and_import_metadata(tmp_path)
     assert "demo_native-1.0.0.dist-info/top_level.txt" in names
 
 
+def test_direct_import_discovery_rejects_a_declared_module_the_wheel_does_not_install(tmp_path):
+    """top_level.txt is a claim about the wheel, and wheels get it wrong.
+
+    PySide2's and shiboken2's both declare a bare ``QtCore`` that neither
+    installs: their modules live under ``PySide2/`` and ``shiboken2/``, and the
+    name is a leftover from the PySide1 layout. Trusting the claim makes the
+    build's own smoke test import a module no distribution provides, so an
+    intact PySide2 payload fails [6/6] with "No module named 'QtCore'". RECORD
+    is the record of what was installed, so a declared name has to appear there.
+    """
+    from py_upper.third_party import _top_level_imports
+
+    dist = tmp_path / "PySide2-5.15.2.1.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: PySide2\nVersion: 5.15.2.1\n", encoding="utf-8")
+    (dist / "top_level.txt").write_text("PySide2\nQtCore\n", encoding="utf-8")
+    (dist / "RECORD").write_text(
+        "PySide2/__init__.py,sha256=x,1\n"
+        "PySide2/QtCore.pyd,sha256=x,1\n"
+        "PySide2-5.15.2.1.dist-info/METADATA,,\n",
+        encoding="utf-8",
+    )
+    assert _top_level_imports(dist) == ["PySide2"]
+
+    # A declaration that names nothing the wheel installs leaves RECORD as the
+    # only description of the distribution, rather than yielding no import at
+    # all and silently skipping the smoke coverage.
+    (dist / "top_level.txt").write_text("QtCore\n", encoding="utf-8")
+    assert _top_level_imports(dist) == ["PySide2"]
+
+
 def test_direct_import_fallback_reads_record_instead_of_sibling_scan(tmp_path):
     """Without top_level.txt only this distribution's own files count.
 
