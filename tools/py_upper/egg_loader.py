@@ -14,9 +14,12 @@
 #   memory  - extension modules are mapped from memory through _memimporter.
 #             This is the Windows path and needs the py2exe MemoryModule
 #             helper that tools/py_upper builds into the bundle.
-#   extract - the egg is decrypted into a private temporary directory and
-#             added to sys.path. This is the portable fallback for Linux and
-#             macOS, where no stable in-memory dlopen API exists.
+#   extract - the egg is decrypted into a content-addressed cache directory
+#             and added to sys.path. The directory name is the SHA-256 of the
+#             decrypted archive, so a rebuilt egg gets a fresh root and an
+#             existing one is reused without extracting again. This is the
+#             portable fallback for Linux and macOS, where no stable in-memory
+#             dlopen API exists. PY_UPPER_EGG_CACHE overrides the cache root.
 #   auto    - memory on Windows when _memimporter imports, extract otherwise.
 #
 # The key stream is obfuscation, not modern cryptography: it raises the cost of
@@ -38,6 +41,9 @@ import zipfile
 MAGIC = b'WBEGG01!'
 DEFAULT_KEY_HEX = '047636cf3ddbaae2346f597256416e858ee0b7c8b7448221e5babfbb4f74c20d'
 BACKENDS = ('auto', 'memory', 'extract')
+CACHE_PREFIX = 'egg-'
+CACHE_MARKER = '.complete'
+CACHE_ATTEMPTS = 3
 
 
 def keystream_xor(data, key):
@@ -74,6 +80,37 @@ def _safe_member(name):
     return '/'.join(parts)
 
 
+def _cache_root():
+    override = os.environ.get('PY_UPPER_EGG_CACHE')
+    if override:
+        root = os.path.abspath(os.path.expanduser(override))
+    elif os.name == 'nt':
+        base = os.environ.get('LOCALAPPDATA') or os.path.join(
+            os.path.expanduser('~'), 'AppData', 'Local')
+        root = os.path.join(base, 'py_upper', 'cache', 'eggs')
+    elif sys.platform == 'darwin':
+        root = os.path.join(os.path.expanduser('~'), 'Library', 'Caches',
+                            'py_upper', 'eggs')
+    else:
+        base = os.environ.get('XDG_CACHE_HOME') or os.path.join(
+            os.path.expanduser('~'), '.cache')
+        root = os.path.join(base, 'py_upper', 'eggs')
+    try:
+        os.makedirs(root, mode=0o700, exist_ok=True)
+    except OSError:
+        return None
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
+    return root
+
+
+def _write_marker(path, digest):
+    with open(path, 'w', encoding='ascii') as handle:
+        handle.write(digest + '\n')
+
+
 def _memimporter_module():
     try:
         import _memimporter
@@ -99,6 +136,7 @@ class EncryptedEggImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             payload = decrypt_if_needed(raw, key)
             self.archive = zipfile.ZipFile(io.BytesIO(payload))
             self.names = frozenset(self.archive.namelist())
+            self.payload = payload
         except Exception as exc:
             raise ValueError('bad egg, not a zip or wrong key: ' + self.egg_path + ': ' + str(exc))
         self.extensions = tuple(importlib.machinery.EXTENSION_SUFFIXES)
@@ -117,26 +155,63 @@ class EncryptedEggImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         else:
             self.backend = 'memory'
 
+    def _extract_into(self, root):
+        for name in self.names:
+            if name.endswith('/'):
+                continue
+            safe = _safe_member(name)
+            target = os.path.join(root, *safe.split('/'))
+            parent = os.path.dirname(target)
+            if parent and not os.path.isdir(parent):
+                os.makedirs(parent)
+            with self.lock:
+                data = self.archive.read(name)
+            with open(target, 'wb') as handle:
+                handle.write(data)
+
+    def _publish(self, staging, final, marker):
+        for _ in range(CACHE_ATTEMPTS):
+            if os.path.isfile(marker):
+                shutil.rmtree(staging, ignore_errors=True)
+                return
+            try:
+                os.replace(staging, final)
+                return
+            except OSError:
+                if os.path.isfile(marker):
+                    shutil.rmtree(staging, ignore_errors=True)
+                    return
+                shutil.rmtree(final, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError('cannot publish egg cache: ' + final)
+
     def _extract(self):
-        root = tempfile.mkdtemp(prefix='py_upper_egg_')
+        digest = hashlib.sha256(self.payload).hexdigest()
+        cache_root = _cache_root()
+        if cache_root is None:
+            root = tempfile.mkdtemp(prefix='py_upper_egg_')
+            try:
+                self._extract_into(root)
+            except Exception:
+                shutil.rmtree(root, ignore_errors=True)
+                raise
+            self.extract_root = root
+            atexit.register(shutil.rmtree, root, True)
+            return
+        final = os.path.join(cache_root, CACHE_PREFIX + digest)
+        marker = os.path.join(final, CACHE_MARKER)
+        if os.path.isfile(marker):
+            self.extract_root = final
+            return
+        staging = tempfile.mkdtemp(prefix='.egg-' + digest + '-', dir=cache_root)
         try:
-            for name in self.names:
-                if name.endswith('/'):
-                    continue
-                safe = _safe_member(name)
-                target = os.path.join(root, *safe.split('/'))
-                parent = os.path.dirname(target)
-                if parent and not os.path.isdir(parent):
-                    os.makedirs(parent)
-                with self.lock:
-                    data = self.archive.read(name)
-                with open(target, 'wb') as handle:
-                    handle.write(data)
+            self._extract_into(staging)
+            _write_marker(os.path.join(staging, CACHE_MARKER), digest)
+            self._publish(staging, final, marker)
         except Exception:
-            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
             raise
-        self.extract_root = root
-        atexit.register(shutil.rmtree, root, True)
+        self.extract_root = final
 
     def read_data(self, name):
         with self.lock:

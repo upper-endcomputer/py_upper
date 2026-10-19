@@ -2,7 +2,7 @@
 
 `py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
-当前稳定开发线：**0.17.19**。
+当前稳定开发线：**0.17.20**。
 
 ## 构建模型
 
@@ -346,9 +346,15 @@ compression = "deflated"  # deflated / stored / lzma
 
 - `memory`：仅 Windows。扩展模块通过 vendored `_memimporter` 直接从内存映射，
   需要 Zig 工具链；编译产物缓存在 `build/cache/memimporter/<target>/`。
-- `extract`：所有平台。启动时解密到 `py_upper_egg_*` 私有临时目录并插入
-  `sys.path`，进程退出时删除。Linux 没有稳定的内存 dlopen 接口；macOS 开启
-  hardened runtime 时，临时目录里未签名的 `.so` 可能被 dyld 拒绝，需要
+- `extract`：所有平台。启动时解密到按内容寻址的缓存目录（目录名是解密后
+  归档的 SHA-256）并插入 `sys.path`；首次启动解压一次，之后直接复用，重新
+  构建的 egg 会自然切换到新目录。缓存根默认是
+  `~/Library/Caches/py_upper/eggs`（macOS）、
+  `%LOCALAPPDATA%/py_upper/cache/eggs`（Windows）、
+  `$XDG_CACHE_HOME/py_upper/eggs` 或 `~/.cache/py_upper/eggs`（Linux），可用
+  `PY_UPPER_EGG_CACHE` 覆盖；目录不可写时回退到 `py_upper_egg_*` 临时目录。
+  Linux 没有稳定的内存 dlopen 接口；macOS 开启 hardened runtime 时，缓存目录
+  里未签名的 `.so` 可能被 dyld 拒绝，需要
   `com.apple.security.cs.disable-library-validation`，或改用签名后的独立原生库。
 - `auto`：Windows 且 `_memimporter` 可用时走 memory，否则 extract。Windows 上
   编译失败只打印 warning 并回退；显式 `memory` 则直接报错，不会静默产出跑不

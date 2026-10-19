@@ -55,16 +55,24 @@ int do_import(FARPROC init_func, char *modname, PyObject *spec, PyObject **mod)
 	PyObject* (*p)(void);
 	PyObject *m = NULL;
 	struct PyModuleDef *def;
-	char *oldcontext;
 	PyObject *name = PyUnicode_FromString(modname);
+	PyObject *sysmodules;
+	PyObject *existing;
 
 	if (name == NULL)
 		return -1;
 
-	PyObject *sysmodules = PyImport_GetModuleDict();
-	if (PyMapping_HasKeyString(sysmodules, (const char *)name)) {
+	sysmodules = PyImport_GetModuleDict();
+	existing = PyDict_GetItemString(sysmodules, modname);
+	if (existing != NULL) {
+		Py_INCREF(existing);
+		*mod = existing;
 		Py_DECREF(name);
-		return 0;
+		return 1;
+	}
+	if (PyErr_Occurred()) {
+		Py_DECREF(name);
+		return -1;
 	}
 
 	if (init_func == NULL) {
@@ -79,26 +87,38 @@ int do_import(FARPROC init_func, char *modname, PyObject *spec, PyObject **mod)
 		return -1;
 	}
 
-        oldcontext = _Py_PackageContext;
-	_Py_PackageContext = modname;
-
 	p = (PyObject*(*)(void))init_func;
+#if PY_VERSION_HEX < 0x030D0000
+	{
+		char *oldcontext = _Py_PackageContext;
+		_Py_PackageContext = modname;
+		m = (*p)();
+		_Py_PackageContext = oldcontext;
+	}
+#else
+	/* Python 3.13 removed _Py_PackageContext from the ABI.  Multi-phase
+	   modules take their name from the spec; single-phase modules fall back
+	   to the static PyModuleDef name, which is what our own extensions use. */
 	m = (*p)();
-
-	_Py_PackageContext = oldcontext;
-
+#endif
 
 	if (PyErr_Occurred()) {
+		Py_DECREF(name);
+		Py_XDECREF(m);
+		return -1;
+	}
+	if (m == NULL) {
+		PyErr_SetString(PyExc_SystemError, "module init function returned NULL");
 		Py_DECREF(name);
 		return -1;
 	}
 
 	/* multi-phase initialization - PEP 489 */
-    if (PyObject_TypeCheck(m, &PyModuleDef_Type)) {
-		Py_DECREF(name);
+	if (PyObject_TypeCheck(m, &PyModuleDef_Type)) {
 		*mod = PyModule_FromDefAndSpec((PyModuleDef*)m, spec);
-		return 2;
-    }
+		Py_DECREF(name);
+		return (*mod == NULL) ? -1 : 2;
+	}
 
 	/* fall back to single-phase initialization */
 
@@ -113,24 +133,35 @@ int do_import(FARPROC init_func, char *modname, PyObject *spec, PyObject **mod)
 			Py_DECREF(msg);
 		}
 		Py_DECREF(name);
+		Py_DECREF(m);
 		return -1;
 	}
 	def->m_base.m_init = p;
 
-    #if (PY_VERSION_HEX >= 0x03070000)
+#if PY_VERSION_HEX >= 0x030D0000
+	/* Python 3.13 removed _PyImport_FixupExtensionObject from the ABI.
+	   Register the module before returning; importlib will store the same
+	   object again after create_module() completes. */
+	{
+		PyObject *modules = PyImport_GetModuleDict();
+		res = PyDict_SetItemString(modules, modname, m);
+	}
+#elif PY_VERSION_HEX >= 0x03070000
+	{
+		PyObject *modules = PyImport_GetModuleDict();
+		res = _PyImport_FixupExtensionObject(m, name, name, modules);
+	}
+#else
+	res = _PyImport_FixupExtensionObject(m, name, name);
+#endif
 
-    PyObject *modules = NULL;
-    modules = PyImport_GetModuleDict();
-    res = _PyImport_FixupExtensionObject(m, name, name, modules);
-
-    #else
-
-    res = _PyImport_FixupExtensionObject(m, name, name);
-
-    #endif
-
-    Py_DECREF(name);
-	return res;
+	Py_DECREF(name);
+	if (res < 0) {
+		Py_DECREF(m);
+		return -1;
+	}
+	*mod = m;
+	return 1;
 }
 
 #else
@@ -173,7 +204,7 @@ import_module(PyObject *self, PyObject *args)
 				  &spec))
 		return NULL;
 
-	PyObject *m = PyModule_New(modname);
+	PyObject *m = NULL;
 
 	cookie = _My_ActivateActCtx(); // some windows manifest magic...
 	/*
@@ -245,20 +276,19 @@ import_module(PyObject *self, PyObject *args)
 
 	if (imp_res < 0) {
 		MyFreeLibrary(hmem);
+		Py_XDECREF(m);
 		return NULL;
-	} else if (imp_res == 2) {
-		def = PyModule_GetDef(m);
-		state = PyModule_GetState(m);
-		if (state == NULL) {
-			PyModule_ExecDef(m, def);
-		}
-		return m;
 	}
 
-	Py_DECREF(m);
+	if (imp_res == 2) {
+		def = PyModule_GetDef(m);
+		if (def == NULL || PyModule_ExecDef(m, def) < 0) {
+			Py_DECREF(m);
+			return NULL;
+		}
+	}
 
-	/* Retrieve from sys.modules */
-	return PyImport_ImportModule(modname);
+	return m;
 }
 
 static PyObject *

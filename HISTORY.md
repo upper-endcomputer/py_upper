@@ -1,3 +1,15 @@
+## v0.17.20
+
+上一版收尾时还剩四个问题。第一，`__init__.py` 是唯一没有进 Cython 的应用源码：源文件选择直接跳过了所有包标记，所以 `mvvm/__init__.py` 这类文件仍以可读源码躺在 egg 里。现在包标记也参与编译；`module_name()` 返回 `mvvm` 用于 include/exclude 匹配，`extension_name()` 保留 `mvvm.__init__` 供 setuptools 生成文件名和 `PyInit___init__` 入口，两者不再共用一个函数。测试同时断言包标记被选中以及两个名字各自的取值。
+
+第二，macOS 双击启动慢。`extract` 后端每次都在新的 `py_upper_egg_*` 临时目录里解压，17 个 `.so` 对 dyld 来说每次都是首次出现，缓存元数据无法复用，冷启动约 6.6 秒。现在解压目录按解密后 zip 的 SHA-256 命名（`egg-<digest>`）：先在同级 `.egg-<digest>-*` 暂存目录写入并打 `.complete` 标记，再用 `os.replace` 原子发布；命中标记时直接复用，不再解压，也不再注册 `atexit.rmtree`。缓存根在 macOS 是 `~/Library/Caches/py_upper/eggs`，Windows 是 `%LOCALAPPDATA%/py_upper/cache/eggs`，Linux 是 `$XDG_CACHE_HOME/py_upper/eggs` 或 `~/.cache/py_upper/eggs`，`PY_UPPER_EGG_CACHE` 可覆盖；目录不可写时回退旧的临时目录。实测同一份 egg 冷启动 6.6–10.0 秒（受磁盘状态和首次签名校验影响），命中缓存 0.58–0.64 秒，约 10–17 倍。
+
+第三，Windows 交叉构建暴露 `_memimporter` 在 CPython 3.13 上编译失败：3.13 删除了 `_Py_PackageContext` 和 `_PyImport_FixupExtensionObject`，`auto` 后端于是静默退回 extract。vendored `_memimporter.c` 现在按版本分支：3.13+ 不设置 package context（Cython 走 multi-phase，spec 自带模块名），单阶段模块直接写入 `sys.modules`；`do_import()` 返回模块对象，不再依赖 `PyImport_ImportModule`；multi-phase 始终调用并检查 `PyModule_ExecDef`，init 返回 NULL 也会报错。重新交叉构建后警告消失，`_memimporter.pyd` 正常生成并包含 `PyInit__memimporter`。
+
+第四，窗口能创建但不会自动置前。`MainWindow.show()` 只调用了 `QMainWindow.show()`，Qt 只负责显示窗口，不会强制应用激活；冷启动一慢，LaunchServices 的激活就过期了，Finder 看起来像没反应。现在显示后补 `raise_()` 和 `activateWindow()`，测试里的 fake window 记录两个调用并在装配测试里断言。用 Finder 实际打开验证：冷启动 1.13 秒 check-in、1.70 秒内到前台；热启动 0.47 秒 check-in、0.69 秒到前台；「关于 MVVM 架构」按钮能正常打开第二个窗口。
+
+验证：全量测试 276 passed, 5 skipped；macOS arm64 构建 READY、21 个原生二进制检查通过，headless 冷/热启动为 6.6–10.0 s / 0.58–0.64 s，Finder 实际打开冷启动 1.13 秒 check-in、热启动 0.47 秒 check-in；Windows x86_64 Zig 交叉构建 READY、420 个原生二进制检查通过。限制是 Windows 产物只在 macOS 上完成交叉编译和静态布局检查，没有在 Windows 宿主上实际运行。
+
 ## v0.17.19
 
 0.17.18 之后，Windows 和 macOS 的产物里仍能看到第三方包的源码。真正能删的是 binding 自带的部署工具：PySide6 的 scripts/support/doc/docs/lib，shiboken6 的同名目录加 include。这些目录里大量是 `.py`，但运行时不会 import，import 闭包也看不见，所以按引用删模块/库/插件的逻辑对它们无效。serial 这类纯 Python 包保持 wheel 原样，不属于裁剪范围。

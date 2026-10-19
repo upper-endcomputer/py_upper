@@ -1,3 +1,32 @@
+## 0.17.20
+
+### Problem
+- Package markers were the only application Python left readable in the egg. `selected_sources()` skipped every `__init__.py`, so `mvvm/__init__.py` and the other package files shipped as source while their siblings were compiled.
+- Every launch on macOS/Linux extracted the egg into a brand-new `py_upper_egg_*` temporary directory. dyld then treated all 17 `.so` files as first-seen objects and revalidated them, so a warm launch still took about 6.6 seconds.
+- CPython 3.13 removed `_Py_PackageContext` and `_PyImport_FixupExtensionObject`. The vendored `_memimporter` failed to compile on the Windows build and the `auto` backend silently fell back to `extract`.
+- On macOS the newly created window could stay behind the previously active app. A slow cold start outlasts the activation LaunchServices requested, so Finder looked like it did nothing until the window was raised manually.
+
+### Root cause
+- Source selection and setuptools naming shared one helper. `module_name()` has to return `mvvm` for a package marker, but the extension file still has to be named `mvvm.__init__` with a `PyInit___init__` entry point; the old code avoided the conflict by dropping the file entirely.
+- The extract backend used `tempfile.mkdtemp()` per process, so neither the extracted bytes nor their filesystem metadata could be reused across launches.
+- `_memimporter` used the pre-3.13 package-context API unconditionally.
+- `MainWindow.show()` only called `QMainWindow.show()`. Qt creates and orders the window but does not force the application to become active, and macOS will not hand focus to a process that no longer holds a fresh launch activation.
+
+### Changes
+- `tools/py_upper/python_build.py` now compiles `__init__.py` files. `module_name()` strips the marker for include/exclude matching, `extension_name()` keeps `pkg.__init__` for setuptools, and `windows_setup_script()` uses the latter. `app/tests/test_build_tool_compat.py` asserts both names and the presence of the marker.
+- `tools/py_upper/egg_loader.py` extracts into a content-addressed cache: `egg-<sha256 of the decrypted zip>`. A staging directory under the cache root is populated, marked with `.complete`, and published with `os.replace`; a marker hit reuses the directory without reading the zip. The cache root is `~/Library/Caches/py_upper/eggs` on macOS, `%LOCALAPPDATA%/py_upper/cache/eggs` on Windows, `$XDG_CACHE_HOME/py_upper/eggs` or `~/.cache/py_upper/eggs` elsewhere, and `PY_UPPER_EGG_CACHE` overrides it. An unwritable cache falls back to the old `py_upper_egg_*` temporary directory and `atexit` cleanup.
+- `app/tests/test_egg.py` covers same-content reuse, different-content separation, marker hits without extraction, recovery from a partial cache, and rejection of `../escape.py` without leaving staging directories.
+- `tools/py_upper/vendor/memimporter/_memimporter.c` keeps the package context on Python < 3.13 and registers single-phase modules directly in `sys.modules` on 3.13+. `do_import()` returns the module object instead of re-importing it by name, and multi-phase initialization always checks `PyModule_ExecDef`.
+- `app/src/mvvm/views/main_window.py` raises and activates the main window after showing it (`raise_()`, `activateWindow()`). The fake window in `app/tests/test_mvvm_example.py` records both calls, and the composition-root test asserts they happen.
+- `README.md` and `docs/DEVELOPMENT_GUIDE.md` document the cache layout and `PY_UPPER_EGG_CACHE`; the version moves to 0.17.20.
+
+### Verification
+1. `python -m pytest app/tests -q`: 276 passed, 5 skipped. The new cases include the egg cache behavior and the package-marker assertions.
+2. macOS arm64 rebuild: `python3 tools/build.py --target macos-arm64` reports `READY: dist/Upper.app`, `native binaries checked=21`. Headless startup with `PY_UPPER_HEADLESS=1` takes 6.6-10.0 s with an empty cache and 0.58-0.64 s on cache hits (10-17x; the cold number varies with disk state and first-time dyld validation).
+3. Windows x86_64 Zig cross-build: `READY: dist/Upper`, `native binaries checked=420`, no `_memimporter unavailable` warning. `dist/Upper/site-packages/_memimporter.pyd` exists and contains `PyInit__memimporter`.
+4. Real Finder launch of `dist/Upper.app`: the window reaches the front and the menu bar switches to Upper. Cold check-in was 1.13 s (1.70 s until observed from the polling loop); a warm launch checked in in 0.47 s and was frontmost in 0.69 s. The `关于 MVVM 架构` button opens the second window correctly.
+5. Limit: the Windows artifact was cross-compiled on macOS; compilation and layout are verified, but it was not executed on a Windows host.
+
 ## 0.17.19
 
 ### Problem

@@ -49,6 +49,11 @@ class MainWindow(ViewBase):
 
     def show(self) -> None:
         self._window.show()
+        # A cold start can take long enough that LaunchServices' activation
+        # expires, leaving the new window behind the previously active app.
+        # Both calls are harmless once the window is already frontmost.
+        self._window.raise_()
+        self._window.activateWindow()
 
     def close(self) -> None:
         self._window.close()

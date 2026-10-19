@@ -447,13 +447,20 @@ def test_windows_extensions_are_named_for_the_target_not_the_build_host(tmp_path
 
 
 def test_source_selection_is_layout_agnostic():
-    from py_upper.python_build import module_name, selected_sources
+    from py_upper.python_build import APP, extension_name, module_name, selected_sources
 
-    modules = {module_name(path) for path in selected_sources()}
+    sources = selected_sources()
+    modules = {module_name(path) for path in sources}
     assert "main" in modules
     assert "application" in modules
     assert "utils.paths" in modules
-    assert not any(path.name == "__init__.py" for path in selected_sources())
+
+    # Package markers are compiled too. Their import name is the package name,
+    # while setuptools still needs the __init__ extension path and entry point.
+    package_init = APP / "src" / "mvvm" / "__init__.py"
+    assert package_init in sources
+    assert module_name(package_init) == "mvvm"
+    assert extension_name(package_init) == "mvvm.__init__"
 
 
 def test_cython_cache_is_keyed_by_development_python(monkeypatch, tmp_path):

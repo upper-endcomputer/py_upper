@@ -571,9 +571,15 @@ compression = "deflated"  # deflated | stored | lzma
 
 - `memory`：仅 Windows。扩展用 vendored `_memimporter` 从内存映射，需要 PATH
   里能找到 Zig，`build/cache/memimporter/<target>/_memimporter.pyd` 会缓存。
-- `extract`：所有平台。启动时解密到 `py_upper_egg_*` 私有临时目录，插入
-  `sys.path`，进程退出时删除。Linux 没有稳定的内存 dlopen 接口；macOS 的
-  hardened runtime 还要求临时目录里的 `.so` 通过签名校验，否则需要
+- `extract`：所有平台。启动时解密到按内容寻址的缓存目录并插入 `sys.path`。
+  目录名是解密后归档的 SHA-256：首次启动解压一次并写入 `.complete` 标记，
+  后续启动直接复用；egg 内容变化时目录名随之变化，不存在的缓存会重新解压。
+  缓存根默认是 `~/Library/Caches/py_upper/eggs`（macOS）、
+  `%LOCALAPPDATA%/py_upper/cache/eggs`（Windows）、
+  `$XDG_CACHE_HOME/py_upper/eggs` 或 `~/.cache/py_upper/eggs`（Linux），
+  `PY_UPPER_EGG_CACHE` 可覆盖；目录不可写时回退到 `py_upper_egg_*` 临时目录。
+  Linux 没有稳定的内存 dlopen 接口；macOS 的 hardened runtime 还要求缓存
+  目录里的 `.so` 通过签名校验，否则需要
   `com.apple.security.cs.disable-library-validation`。
 - `auto`：Windows 且 `_memimporter` 能导入时用 memory，否则 extract。Windows
   上编译失败只打印 warning；显式 `memory` 则报错。

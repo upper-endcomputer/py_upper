@@ -46,6 +46,8 @@ class FakeWindow:
 
     def __init__(self) -> None:
         self.visible = False
+        self.raised = False
+        self.activated = False
         self.title = ""
         self.central_widget = None
         self.size = None
@@ -61,6 +63,12 @@ class FakeWindow:
 
     def show(self) -> None:
         self.visible = True
+
+    def raise_(self) -> None:  # noqa: N802 - Qt spelling
+        self.raised = True
+
+    def activateWindow(self) -> None:  # noqa: N802 - Qt spelling
+        self.activated = True
 
     def close(self) -> None:
         self.visible = False
@@ -297,6 +305,8 @@ def test_the_about_button_opens_and_closes_the_window(fake_qt):
 
     # start() 显示了主窗口，但没点按钮就不该弹出「关于」窗口
     assert window.visible is True
+    assert window.raised is True
+    assert window.activated is True
     assert dialog.visible is False
 
     # 绑定生效：窗口标题/文案来自 ViewModel，ViewModel 又来自 model 与 service

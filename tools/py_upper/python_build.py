@@ -64,6 +64,25 @@ def _run_parallel(tasks: list[tuple[list[str], Path | None, dict[str, str] | Non
 
 
 def module_name(path: Path) -> str:
+    """The import name of a source file.
+
+    A package marker names its package: ``pkg/__init__.py`` is ``pkg``, not
+    ``pkg.__init__``. Selection patterns therefore match what application code
+    imports, and the compiler still gets the package marker as a source file.
+    """
+    parts = list(path.relative_to(APP / "src").with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def extension_name(path: Path) -> str:
+    """The setuptools extension name for a source file.
+
+    ``pkg/__init__.py`` has to stay ``pkg.__init__`` here: setuptools derives
+    the output path from the dotted name, and the package loader looks for
+    ``pkg/__init__<suffix>`` with a ``PyInit___init__`` entry point.
+    """
     return ".".join(path.relative_to(APP / "src").with_suffix("").parts)
 
 
@@ -74,8 +93,6 @@ def selected_sources() -> list[Path]:
     root = APP / "src"
     result: list[Path] = []
     for path in sorted(root.rglob("*.py")):
-        if path.name == "__init__.py":
-            continue
         name = module_name(path)
         if any(fnmatch.fnmatch(name, pattern) for pattern in include) and not any(fnmatch.fnmatch(name, pattern) for pattern in exclude):
             result.append(path)
@@ -313,7 +330,7 @@ def windows_setup_script(
     own suffix instead, the same value that names the Unix outputs.
     """
     source_repr = ", ".join(repr(str(generated[p])) for p in sources)
-    name_repr = ", ".join(repr(module_name(p)) for p in sources)
+    name_repr = ", ".join(repr(extension_name(p)) for p in sources)
     return (
         "import os\n"
         "from setuptools import setup, Extension\n"

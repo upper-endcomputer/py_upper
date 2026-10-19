@@ -6,6 +6,7 @@ import io
 import sys
 import types
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,11 @@ from py_upper.egg_loader import (
 
 KEY = DEFAULT_KEY_HEX
 EXT = importlib.machinery.EXTENSION_SUFFIXES[0]
+
+
+@pytest.fixture(autouse=True)
+def isolated_egg_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("PY_UPPER_EGG_CACHE", str(tmp_path / "egg-cache"))
 
 
 def make_site(tmp_path, files, name="site"):
@@ -147,6 +153,64 @@ def test_extract_backend_imports_a_source_module(tmp_path):
         sys.modules.pop(name, None)
         if importer.extract_root in sys.path:
             sys.path.remove(importer.extract_root)
+
+
+def test_extract_cache_is_content_addressed_and_reused(tmp_path):
+    files = {"pkg/__init__.py": "", "pkg/mod.py": "VALUE = 1\n"}
+    first = make_egg(tmp_path, files, "first.egg")
+    same = make_egg(tmp_path, files, "same.egg")
+    different = make_egg(tmp_path, {"pkg/mod.py": "VALUE = 2\n"}, "different.egg")
+
+    one = EncryptedEggImporter(first, bytes.fromhex(KEY), "extract")
+    two = EncryptedEggImporter(same, bytes.fromhex(KEY), "extract")
+    three = EncryptedEggImporter(different, bytes.fromhex(KEY), "extract")
+
+    assert one.extract_root == two.extract_root
+    assert one.extract_root != three.extract_root
+    root = Path(one.extract_root)
+    assert root.parent == tmp_path / "egg-cache"
+    assert root.name.startswith("egg-")
+    assert (root / ".complete").is_file()
+    assert (root / "pkg" / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_extract_cache_reuses_a_complete_directory(tmp_path, monkeypatch):
+    egg = make_egg(tmp_path, {"mod.py": "VALUE = 1\n"})
+    first = EncryptedEggImporter(egg, bytes.fromhex(KEY), "extract")
+
+    def unexpected_extract(self, root):
+        raise AssertionError("complete cache entry was extracted again")
+
+    monkeypatch.setattr(EncryptedEggImporter, "_extract_into", unexpected_extract)
+    second = EncryptedEggImporter(egg, bytes.fromhex(KEY), "extract")
+    assert second.extract_root == first.extract_root
+
+
+def test_extract_cache_rebuilds_an_incomplete_directory(tmp_path):
+    egg = make_egg(tmp_path, {"pkg/__init__.py": "", "pkg/mod.py": "VALUE = 1\n"})
+    first = EncryptedEggImporter(egg, bytes.fromhex(KEY), "extract")
+    root = Path(first.extract_root)
+    (root / ".complete").unlink()
+    (root / "pkg" / "mod.py").unlink()
+
+    second = EncryptedEggImporter(egg, bytes.fromhex(KEY), "extract")
+    assert second.extract_root == str(root)
+    assert (root / ".complete").is_file()
+    assert (root / "pkg" / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not list(root.parent.glob(".egg-*"))
+
+
+def test_extract_rejects_unsafe_members_without_leaving_staging_dirs(tmp_path):
+    egg = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(egg, "w") as archive:
+        archive.writestr("../escape.py", "VALUE = 1\n")
+
+    with pytest.raises(ValueError, match="unsafe egg member"):
+        EncryptedEggImporter(egg, bytes.fromhex(KEY), "extract")
+
+    cache = tmp_path / "egg-cache"
+    assert not list(cache.glob(".egg-*"))
+    assert not (tmp_path / "escape.py").exists()
 
 
 def test_install_replaces_its_own_finder_instead_of_stacking(tmp_path):
