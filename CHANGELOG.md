@@ -1,3 +1,26 @@
+## 0.17.23
+
+### Problem
+- The 0.17.22 launcher smoke passed, but the real Windows application still exited immediately with code 1 before any window appeared. Both headless and interactive launches failed.
+- The failure was in application code, not in the merged-bundle import path: `ModuleNotFoundError` was gone, but `utils.paths.app_name()` raised `IndexError: 2`.
+
+### Root cause
+- A merged Cython bundle is registered as a built-in module, so CPython reports its spec origin, `built-in`, as `__file__`. `utils/paths.py` counted `Path(__file__).resolve().parents[2]`, which is not a source path and has no third parent. macOS never reached it because the launcher export was visible and the early return won.
+- On Windows the launcher exported `PY_UPPER_HOME` and `PY_UPPER_APP_NAME` with `SetEnvironmentVariableW`. That updates the process environment block but not the CRT environment snapshot Python copies into `os.environ`, so the application saw none of the exported values. POSIX `setenv` updates `environ` directly, which is why the same code worked on macOS and Linux.
+- The crash report used the launcher executable as the embedded entry's `__file__`. `traceback.print_exc` tried to decode the PE image as Python source, raising `SyntaxError` while reporting the original exception, so the useful traceback was lost.
+
+### Changes
+- `launcher/src/PyUpper.cpp` collects every exported `PY_UPPER_*` value while calling `set_env`, embeds a `LAUNCHER_ENV` dictionary in the bootstrap and runs `os.environ.update(LAUNCHER_ENV)` before installing the egg or the entry. The native `SetEnvironmentVariableW` call stays for child processes and native consumers.
+- The bootstrap caches the embedded entry source in `linecache` under `ENTRY_FILE`, so a crash report can show the entry line without reading the executable.
+- `app/src/utils/paths.py` adds `_module_file()` and `_project_root()`: parent directories are counted only when `__file__` names a real file. `app_name()` and `_declared_app_name()` fall back to the compiled default when there is no source tree, and `resource_root()` falls back to the executable directory.
+- `app/tests/test_app.py` covers the built-in `__file__` case; `app/tests/test_build_tool_compat.py` asserts the bootstrap republishes the launcher environment and caches the entry source.
+- The version moves to 0.17.23.
+
+### Verification
+1. `python -m pytest app/tests -q`: 287 passed, 7 skipped.
+2. `python tools/build.py --target windows-x86_64 --egg`: all static checks PASS, `SMOKE PASS launcher`, `READY: dist/Upper`.
+3. `PY_UPPER_HEADLESS=1 dist/Upper/Upper.exe` exits 0 with `Hello from py_upper` and `GUI OK offscreen`, and an empty stderr.
+4. Interactive launch stays alive with a real top-level window: `MainWindowHandle` is non-zero and the title is `Upper`.
 ## 0.17.22
 
 ### Problem

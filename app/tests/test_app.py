@@ -38,6 +38,22 @@ def test_app_name_agrees_with_the_packaging_configuration(monkeypatch):
     assert paths.app_name() == "Renamed Tool"
 
 
+def test_paths_survive_the_builtin_file_a_merged_bundle_reports(monkeypatch, tmp_path):
+    """A merged bundle is a built-in module: __file__ is "built-in", not a path."""
+    from utils import paths
+
+    monkeypatch.delenv(paths.BUNDLE_HOME_ENV, raising=False)
+    monkeypatch.delenv(paths.APP_NAME_ENV, raising=False)
+    monkeypatch.setattr(paths, "__file__", "built-in")
+    monkeypatch.setattr(paths.sys, "executable", str(tmp_path / "Upper.exe"))
+
+    assert paths._module_file() is None
+    assert paths._project_root() is None
+    assert paths._declared_app_name() is None
+    assert paths.app_name() == paths._DEFAULT_APP_NAME
+    assert paths.resource_root() == tmp_path.resolve() / "resources"
+
+
 def test_declared_app_name_ignores_the_project_section(tmp_path, monkeypatch):
     from utils import paths
 
@@ -47,7 +63,10 @@ def test_declared_app_name_ignores_the_project_section(tmp_path, monkeypatch):
         '[project]\nname = "not-the-app-name"\n\n[tool.py_upper.app]\nname = "Real App"  # inline comment\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(paths, "__file__", str(project.parent / "src" / "utils" / "paths.py"))
+    module = project.parent / "src" / "utils" / "paths.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("", encoding="utf-8")
+    monkeypatch.setattr(paths, "__file__", str(module))
 
     assert paths._declared_app_name() == "Real App"
 

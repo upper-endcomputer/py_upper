@@ -641,6 +641,14 @@ def test_launcher_uses_global_python_symbols_and_smoke_switch():
     # The application name is compiled in: a renamed executable must still
     # report the configured name, not its own filename.
     assert "PY_UPPER_APP_NAME" in text
+    # SetEnvironmentVariableW updates the process block but not the CRT copy
+    # Python snapshots into os.environ, so the bootstrap republishes every
+    # exported value inside the interpreter.
+    assert "os.environ.update(LAUNCHER_ENV)" in text
+    assert 'launcher_env += "    " + py_quote(entry.first)' in text
+    # A compiled-in entry reports the launcher as its file; linecache must not
+    # try to decode the PE image when the crash report wants a source line.
+    assert "linecache.cache[ENTRY_FILE]" in text
     # The packaged entry programs are compiled in, which is what lets a bundle
     # ship no .int sidecar at all. The define is what tells the launcher the
     # generated symbols exist, and the accessors are what resolve them.

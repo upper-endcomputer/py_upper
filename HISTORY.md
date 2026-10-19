@@ -1,3 +1,16 @@
+## v0.17.23
+
+0.17.22 的 launcher 冒烟能过，但真正的 Windows 应用仍然一启动就退出，返回码 1，窗口根本没有出现。报错已经不是 `ModuleNotFoundError`，而是 `utils.paths.app_name()` 里的 `IndexError: 2`：合并 bundle 的导入问题修好了，应用自己的路径推断又挡住了启动。
+
+第一个根因是 `__file__`。合并后的 Cython 模块通过 inittab 注册成 built-in 模块，CPython 给它的 spec origin 是 `built-in`，Cython 又把这个字符串复制成 `__file__`。`utils/paths.py` 直接算 `Path(__file__).resolve().parents[2]`，但 `built-in` 不是源码路径，也没有第三层父目录。macOS 上因为 launcher 导出的 `PY_UPPER_HOME` 可见，`app_name()` 和 `resource_root()` 提前返回，恰好没有走到这里。
+
+第二个根因是 Windows 的环境变量可见性。launcher 用 `SetEnvironmentVariableW` 导出 `PY_UPPER_HOME`、`PY_UPPER_APP_NAME` 等值，这个 API 更新的是进程环境块，但不会刷新 CRT 里那份环境快照，而 Python 的 `os.environ` 正是从 CRT 快照构建的。结果应用读到的全是空值。POSIX 的 `setenv` 直接更新 `environ`，所以同一份代码在 macOS/Linux 上正常。现在 launcher 在设置原生环境变量的同时，把所有导出值收集成 `LAUNCHER_ENV` 字典，bootstrap 在加载 egg 和入口之前执行 `os.environ.update(LAUNCHER_ENV)`，Python 侧始终能看到这些值。
+
+第三个问题出在崩溃报告本身：内置入口的 `__file__` 指向 `Upper.exe`，`traceback.print_exc` 为了显示源码行去解码 PE 镜像，抛出 `SyntaxError`，把真正的异常覆盖掉了。现在 bootstrap 把入口源码缓存进 `linecache`，报告可以直接显示入口代码，不再读 exe。
+
+`utils/paths.py` 也改成了防御式实现：新增 `_module_file()` 和 `_project_root()`，只有 `__file__` 确实是存在的文件时才计算父目录；没有源码树时 `app_name()` 返回编译进 launcher 的默认名，`resource_root()` 回退到可执行文件所在目录。测试覆盖 `__file__ == "built-in"` 的情况，并断言 bootstrap 会重新发布 launcher 环境、缓存入口源码。
+
+验证：全量测试 287 passed, 7 skipped；Windows x86_64 全量构建全部 PASS，launcher 冒烟通过。`PY_UPPER_HEADLESS=1 dist\Upper\Upper.exe` 返回 0，stdout 为 `Hello from py_upper` 和 `GUI OK offscreen`，stderr 为空。交互启动后进程保持运行，存在真实顶层窗口，标题为 `Upper`。
 ## v0.17.22
 
 0.17.21 的合并 bundle 在 macOS（CPython 3.13）上启动正常，但 Windows x86_64（CPython 3.8.10）一启动就报 `ModuleNotFoundError: No module named 'mvvm.views.base_view'`。bundle 已经成功 `dlopen`，`_imp.is_builtin()` 和 `sys.builtin_module_names` 也都能看到这个名字，说明问题不在注册，而在查找。

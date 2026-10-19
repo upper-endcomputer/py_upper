@@ -20,6 +20,7 @@
 #include <locale>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #ifdef _WIN32
 #include <io.h>
@@ -343,6 +344,7 @@ import os
 import runpy
 import sys
 import traceback
+import linecache
 
 
 def _py_upper_streams():
@@ -402,6 +404,13 @@ def _py_upper_install_egg():
 
 
 _py_upper_streams()
+if ENTRY_SOURCE is not None:
+    linecache.cache[ENTRY_FILE] = (
+        len(ENTRY_SOURCE), None, ENTRY_SOURCE.splitlines(True), ENTRY_FILE)
+# The launcher exports the bundle paths through SetEnvironmentVariableW on
+# Windows. Python's os.environ is a snapshot of the CRT environment, which that
+# API does not refresh, so publish the same values inside the interpreter too.
+os.environ.update(LAUNCHER_ENV)
 try:
     _py_upper_install_egg()
     _py_upper_run()
@@ -417,8 +426,10 @@ except BaseException:
 // applies as a literal, so the Python side stays one program with one branch.
 std::string bootstrap(const fs::path& script, const fs::path& entry_file, const char* source,
                       const fs::path& egg_path, const char* egg_loader, const char* egg_key,
-                      const char* egg_backend, const fs::path& crash_report) {
-    std::string text = "ENTRY_FILE = " + py_quote(path_to_utf8(entry_file)) + "\n"
+                      const char* egg_backend, const fs::path& crash_report,
+                      const std::string& launcher_env) {
+    std::string text = launcher_env;
+    text += "ENTRY_FILE = " + py_quote(path_to_utf8(entry_file)) + "\n"
         "ENTRY_SOURCE = None\n"
         "ENTRY_SCRIPT = None\n"
         "CRASH_REPORT = " + py_quote(path_to_utf8(crash_report)) + "\n"
@@ -818,22 +829,32 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         // The bundle layout is exported so the application never has to guess its
         // own location by counting parent directories (PyStand exports
         // PYSTAND_HOME for the same reason).
-        set_env("PY_UPPER_HOME", path_to_utf8(entry_dir));
-        set_env("PY_UPPER_RUNTIME", path_to_utf8(home));
-        set_env("PY_UPPER_SITE_PACKAGES", path_to_utf8(site));
+        std::vector<std::pair<std::string, std::string>> exported_env;
+        auto export_env = [&](const std::string& name, const std::string& value) {
+            set_env(name, value);
+            exported_env.emplace_back(name, value);
+        };
+        export_env("PY_UPPER_HOME", path_to_utf8(entry_dir));
+        export_env("PY_UPPER_RUNTIME", path_to_utf8(home));
+        export_env("PY_UPPER_SITE_PACKAGES", path_to_utf8(site));
         // Exported only when the entry really is a file. A packaged launcher
         // carries its entry, and naming a path that does not exist would be
         // worse than saying nothing.
-        if (!script.empty()) set_env("PY_UPPER_SCRIPT", path_to_utf8(script));
-        if (fs::exists(egg)) set_env("PY_UPPER_EGG", path_to_utf8(egg));
-        set_env("PY_UPPER_EXECUTABLE", exe);
+        if (!script.empty()) export_env("PY_UPPER_SCRIPT", path_to_utf8(script));
+        if (fs::exists(egg)) export_env("PY_UPPER_EGG", path_to_utf8(egg));
+        export_env("PY_UPPER_EXECUTABLE", exe);
 #ifdef PY_UPPER_APP_NAME
-        set_env("PY_UPPER_APP_NAME", PY_UPPER_APP_NAME);
+        export_env("PY_UPPER_APP_NAME", PY_UPPER_APP_NAME);
 #else
         // A launcher built by hand has no compiled-in name; the executable stem
         // is the best answer available.
-        set_env("PY_UPPER_APP_NAME", stem);
+        export_env("PY_UPPER_APP_NAME", stem);
 #endif
+        std::string launcher_env = "LAUNCHER_ENV = {\n";
+        for (const auto& entry : exported_env) {
+            launcher_env += "    " + py_quote(entry.first) + ": " + py_quote(entry.second) + ",\n";
+        }
+        launcher_env += "}\n";
 
         RuntimeLoad loaded = load_python(home);
         runtime.handle = loaded.handle;
@@ -927,7 +948,7 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         const fs::path entry_file = script.empty() ? path_from_utf8(exe) : script;
         const std::string source = bootstrap(
             script, entry_file, embedded, egg, embedded_egg_loader(), embedded_egg_key(),
-            embedded_egg_backend(), crash_report);
+            embedded_egg_backend(), crash_report, launcher_env);
         int rc = run_simple(source.c_str());
         int frc = finalize();
         finalize = nullptr;

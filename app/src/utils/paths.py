@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # Exported by the packaged launcher: the directory that holds `runtime/`,
@@ -24,13 +25,42 @@ def bundle_home() -> Path | None:
     return Path(value).resolve() if value else None
 
 
+def _module_file() -> Path | None:
+    # A merged Cython bundle is registered as a built-in module. CPython gives
+    # it the spec origin "built-in" as __file__, which is not a path and has no
+    # parent directories to count.
+    value = globals().get("__file__")
+    if not value:
+        return None
+    try:
+        path = Path(value).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return path if path.is_file() else None
+
+
+def _project_root() -> Path | None:
+    module = _module_file()
+    if module is None:
+        return None
+    try:
+        return module.parents[2]
+    except IndexError:
+        return None
+
+
 def resource_root() -> Path:
     # In development: app/src/utils -> app/resources.
     # In a package: site-packages/utils -> bundled-app/resources.
     home = bundle_home()
     if home is not None:
         return home / "resources"
-    return Path(__file__).resolve().parents[2] / "resources"
+    project = _project_root()
+    if project is not None:
+        return project / "resources"
+    # A merged bundle has no source path. The executable still lives in the
+    # bundle root, which is the best fallback when the launcher export is lost.
+    return Path(sys.executable).resolve().parent / "resources"
 
 
 def app_name() -> str:
@@ -48,11 +78,14 @@ def app_name() -> str:
 
 
 def _declared_app_name() -> str | None:
-    # app/src/utils -> app/pyproject.toml. Inside a package this resolves to
-    # Contents/Resources/pyproject.toml, which does not exist: the launcher's
-    # export is the only source there. The read stays hand-rolled because
-    # `tomllib` is Python 3.11+ and this application supports 3.8.
-    project = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    # app/src/utils -> app/pyproject.toml. Inside a package there is no source
+    # path to count from; the launcher's export is the only source there. The
+    # read stays hand-rolled because `tomllib` is Python 3.11+ and this
+    # application supports 3.8.
+    root = _project_root()
+    if root is None:
+        return None
+    project = root / "pyproject.toml"
     if not project.is_file():
         return None
     section = None
