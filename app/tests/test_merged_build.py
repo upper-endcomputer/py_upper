@@ -104,6 +104,24 @@ def test_registration_table_names_every_module(tmp_path, monkeypatch):
         assert "PyInit_b(" not in path.read_text(encoding="utf-8")
 
 
+def test_windows_merged_setup_exports_the_registration_entry_point(tmp_path):
+    # MSVC's build_ext appends /EXPORT:PyInit_<extension name> unless the command
+    # overrides get_export_symbols. A merged bundle has no such entry point: its
+    # translation units were renamed and register.c exports the launcher symbol.
+    # Without the override the Windows link fails with LNK2001.
+    script = python_build.windows_merged_setup_script(
+        tmp_path / "include",
+        tmp_path / "libs",
+        ["python313"],
+        {"pkg": [tmp_path / "0000_a.c", tmp_path / "register.c"]},
+        ".cp313-win_amd64.pyd",
+    )
+
+    assert "def get_export_symbols(self, ext):" in script
+    assert "return ['py_upper_register_modules']" in script
+    assert "PyInit_py_upper" not in script
+
+
 def test_merged_compile_links_every_translation_unit_once(tmp_path, monkeypatch):
     target = TARGETS["linux-x86_64"]
     include = tmp_path / "sdk" / "include"

@@ -1,3 +1,15 @@
+## v0.17.24
+
+0.17.23 的 macOS/Linux 全绿，但三个 Windows CI job 全部倒在 `Local end-to-end build with third-party wheel`，链接器报 `LNK2001: unresolved external symbol PyInit_py_upper__root`。问题不在 Cython 生成，也不在 register.c，而是 MSVC 路径多要了一个根本不存在的入口。
+
+合并 bundle 的每个 Cython 单元都被重写成唯一的 `PyInit_py_upper_<模块名>_<摘要>`，真正的导出入口是 register.c 里的 `py_upper_register_modules()`，launcher 也是按这个名字解析的。但 `windows_merged_setup_script()` 走的是 setuptools：Windows 上的 `build_ext` 会按 Extension 名自动补 `/EXPORT:PyInit_<扩展名>`，除非覆盖 `get_export_symbols()`。于是 link.exe 把 `PyInit_py_upper__root` 当成必须存在的符号，找不到就 LNK2001，连 `.pyd` 都生成不出来。
+
+macOS/Linux 和本机 macOS 交叉构建没有暴露，是因为 Unix 直接调 clang/gcc，Windows 交叉走 Zig，根本不经过 setuptools 的导出推断；只有 Windows 宿主上的原生 MSVC 路径会加这个参数。
+
+修复是在生成的合并 `setup.py` 里覆盖 `TargetBuildExt.get_export_symbols()`，固定返回 `['py_upper_register_modules']`。register.c 本身仍带 `__declspec(dllexport)`，两条导出路径一致。新增测试直接断言生成的脚本包含这个覆盖，并且不再出现 `PyInit_py_upper`。
+
+验证：全量 `python -m pytest app/tests -q` 为 290 passed, 5 skipped；合并构建测试 9 passed。MSVC 实际链接由 CI 的 `native-integration` Windows jobs 复验。
+
 ## v0.17.23
 
 0.17.22 的 launcher 冒烟能过，但真正的 Windows 应用仍然一启动就退出，返回码 1，窗口根本没有出现。报错已经不是 `ModuleNotFoundError`，而是 `utils.paths.app_name()` 里的 `IndexError: 2`：合并 bundle 的导入问题修好了，应用自己的路径推断又挡住了启动。

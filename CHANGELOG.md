@@ -1,3 +1,24 @@
+## 0.17.24
+
+### Problem
+- Every Windows CI job (`windows-2025` x86_64, `windows-2025` x86 and `windows-11-arm` arm64) failed in `Local end-to-end build with third-party wheel`. macOS, Linux and the Python-matrix build jobs passed.
+- Linking the merged `_root` bundle failed with `LNK2001: unresolved external symbol PyInit_py_upper__root`, followed by `LNK1120: 1 unresolved externals`.
+
+### Root cause
+- `windows_merged_setup_script()` creates one setuptools `Extension` per top-level group. On Windows, `build_ext` derives the exported entry point from the extension name and appends `/EXPORT:PyInit_<name>` unless `get_export_symbols()` is overridden.
+- Merged bundles intentionally have no `PyInit_<bundle>` symbol: `prepare_merged_group()` rewrites every Cython unit to `PyInit_py_upper_<sanitized>_<digest>`, and the generated `register.c` exports `py_upper_register_modules()`. MSVC treats `/EXPORT:...` as a required symbol, so the link failed before producing a `.pyd`.
+- The Zig cross path does not use setuptools and never emitted that flag. Local macOS builds exercised Zig, while CI Windows hosts use native MSVC.
+
+### Changes
+- `tools/py_upper/python_build.py` overrides `TargetBuildExt.get_export_symbols()` in the generated merged `setup.py` to return `py_upper_register_modules` instead of the implicit `PyInit_<bundle>`.
+- `app/tests/test_merged_build.py` pins the generated setup script: the override must exist and must not reference `PyInit_py_upper`.
+- The version moves to 0.17.24.
+
+### Verification
+1. `python -m pytest app/tests -q`: 290 passed, 5 skipped.
+2. `python -m pytest app/tests/test_merged_build.py -q`: 9 passed.
+3. Windows MSVC link validation is delegated to the `native-integration` CI jobs, which previously failed at this exact step.
+
 ## 0.17.23
 
 ### Problem

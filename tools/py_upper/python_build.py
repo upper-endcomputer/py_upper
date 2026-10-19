@@ -590,6 +590,12 @@ def windows_merged_setup_script(
         "    def get_ext_fullpath(self, ext_name):\n"
         "        fullname = self.get_ext_fullname(ext_name)\n"
         "        return os.path.join(self.build_lib, *fullname.split('.')) + TARGET_SUFFIX\n"
+        "    def get_export_symbols(self, ext):\n"
+        "        # A bundle has no PyInit_<bundle> entry point: every translation\n"
+        "        # unit was renamed individually and register.c exports the single\n"
+        "        # symbol the launcher resolves. MSVC would otherwise add\n"
+        "        # /EXPORT:PyInit_<bundle> and fail with LNK2001.\n"
+        "        return ['py_upper_register_modules']\n"
         "extensions=[Extension(n,s,include_dirs=[TARGET_INCLUDE],library_dirs=[TARGET_LIBDIR],libraries=TARGET_LIBRARIES) for n,s in EXTENSIONS]\n"
         "setup(name='py-upper-target-merged',ext_modules=extensions,cmdclass={'build_ext':TargetBuildExt})\n"
     )
