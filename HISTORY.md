@@ -1,3 +1,12 @@
+## v0.17.22
+
+0.17.21 的合并 bundle 在 macOS（CPython 3.13）上启动正常，但 Windows x86_64（CPython 3.8.10）一启动就报 `ModuleNotFoundError: No module named 'mvvm.views.base_view'`。bundle 已经成功 `dlopen`，`_imp.is_builtin()` 和 `sys.builtin_module_names` 也都能看到这个名字，说明问题不在注册，而在查找。
+
+根因是 CPython 3.8-3.12 的 `BuiltinImporter.find_spec()`：只要 `path is not None` 就直接返回 `None`，哪怕 `_imp.is_builtin(fullname)` 为真。合并模式把 `__init__.py` 保留成 `.py` 包标记，所以每个 bundle 叶子模块都是通过父包导入的，父包的 `__path__` 一定会作为 `path` 传进来。3.13 删掉了这个检查，macOS 因此掩盖了问题；Windows 仍用 3.8.10，问题就暴露了。
+
+修复放在 Python 层的 `egg_loader.py`：新增 `BuiltinSubmoduleFinder`，只处理带点号的 built-in 名字，且只在 `path is not None` 时接管，然后以 `path=None` 调用 `BuiltinImporter.find_spec()`。`install()` 在 memory 和 extract 两条后端上都会安装这个 finder，位置在 egg importer 之后、`BuiltinImporter` 之前，所以 egg 里真实存在的散落模块仍然优先，合并 bundle 的点号模块也不会被 3.8 的旧检查挡住。测试覆盖 finder 的顺序、幂等性、只解析点号 built-in，并在用例结束后清理 `meta_path`。
+
+验证：全量测试 286 passed, 7 skipped；Windows x86_64 全量构建 `READY: dist\Upper`，launcher 冒烟通过；`py_upper.dat` 内是 `_root`、`mvvm`、`utils` 三个合并 bundle，`dist\Upper\site-packages` 下没有 `py_upper_bundles` 目录。
 ## v0.17.21
 
 0.17.20 把 egg 解压改成内容寻址缓存后，热启动回到了 0.6 秒，但冷启动还是由模块数量决定。原因是每个 Cython 模块都被编译成独立的 Python 扩展，也就是独立的 Mach-O 镜像；macOS 会逐个做 dyld 加载和代码签名校验。实测 24 个 `.so` 冷启动 8.76–8.90 秒，纯 `dlopen` 1001 个扩展要 305.6 秒。缓存能省掉重复解压，省不掉每个镜像的首次校验，所以“文件多”本身就是问题，不是“解压慢”。

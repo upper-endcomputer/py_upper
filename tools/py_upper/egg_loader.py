@@ -25,6 +25,7 @@
 # The key stream is obfuscation, not modern cryptography: it raises the cost of
 # reading the shipped application code, and it is not a secret storage format.
 
+import _imp
 import atexit
 import hashlib
 import importlib.abc
@@ -119,6 +120,40 @@ def _memimporter_module():
     except (ImportError, OSError):
         return None
     return _memimporter
+
+
+# Resolve a dotted built-in module that lives under a real package.
+#
+# A merged bundle registers leaf modules such as mvvm.views.base_view through
+# PyImport_ExtendInittab. Importing one hands the parent package's __path__ to
+# BuiltinImporter, and every CPython before 3.13 refuses a built-in name as
+# soon as path is not None, even when the name is in sys.builtin_module_names.
+# Python 3.13 dropped that check. Restore the newer behaviour here instead of
+# requiring 3.13: the egg keeps package markers as .py files, so the leaves a
+# merged bundle registers are always reached through a parent package.
+#
+# This finder runs after the egg importer, so a loose module shipped in the egg
+# still wins, and before BuiltinImporter, which cannot see the name.
+class BuiltinSubmoduleFinder(importlib.abc.MetaPathFinder):
+
+    def find_spec(self, fullname, path=None, target=None):
+        if path is None or '.' not in fullname:
+            return None
+        if not _imp.is_builtin(fullname):
+            return None
+        return importlib.machinery.BuiltinImporter.find_spec(fullname)
+
+
+def _install_builtin_submodule_finder():
+    for finder in sys.meta_path:
+        if isinstance(finder, BuiltinSubmoduleFinder):
+            return
+    index = len(sys.meta_path)
+    for position, finder in enumerate(sys.meta_path):
+        if finder is importlib.machinery.BuiltinImporter:
+            index = position
+            break
+    sys.meta_path.insert(index, BuiltinSubmoduleFinder())
 
 
 class EncryptedEggImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
@@ -305,6 +340,7 @@ class EncryptedEggImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 def install(egg_path, key_hex=None, backend='auto'):
     key = _key_bytes(key_hex)
     importer = EncryptedEggImporter(egg_path, key, backend)
+    _install_builtin_submodule_finder()
     if importer.backend == 'extract':
         root = importer.extract_root
         if root not in sys.path:

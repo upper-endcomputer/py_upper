@@ -1,3 +1,20 @@
+## 0.17.22
+
+### Problem
+- The Windows x86_64 bundle built with CPython 3.8.10 started but could not import any merged application module, so the launcher exited with `ModuleNotFoundError: No module named 'mvvm.views.base_view'`. The same layout worked on macOS with CPython 3.13.
+- A merged bundle registers leaf modules by dotted name through `PyImport_ExtendInittab`. Importing a child passes the parent package's `__path__` to every meta-path finder.
+
+### Root cause
+- `BuiltinImporter.find_spec()` on CPython 3.8-3.12 returns `None` whenever `path is not None`, even when `_imp.is_builtin(fullname)` is true. Package markers stay as `.py` files, so a bundled leaf is always imported through its parent package and always receives a non-`None` path. CPython 3.13 removed the check, which is why the macOS build hid the defect.
+
+### Changes
+- `tools/py_upper/egg_loader.py` adds `BuiltinSubmoduleFinder`, which resolves only dotted built-in names and only when a parent path is present, delegating to `BuiltinImporter.find_spec(name)` with no path. `install()` inserts one instance immediately before `BuiltinImporter` for both the memory and extract backends and after the egg importer, so loose modules shipped in the egg still take precedence.
+- `app/tests/test_egg.py` covers finder ordering and idempotence, dotted-only resolution, and removes the finder between tests.
+
+### Verification
+1. `python -m pytest app/tests -q`: 286 passed, 7 skipped.
+2. `python tools/build.py --target windows-x86_64 --egg`: all static checks PASS, `SMOKE PASS launcher`, `READY: dist/Upper`.
+3. `py_upper.dat` contains the `_root`, `mvvm` and `utils` merged bundles; `dist/Upper/site-packages/py_upper_bundles` does not exist.
 ## 0.17.21
 
 ### Problem

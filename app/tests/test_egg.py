@@ -17,8 +17,8 @@ from py_upper.egg import (
     remove_packed_files, write_egg_meta,
 )
 from py_upper.egg_loader import (
-    DEFAULT_KEY_HEX, MAGIC, EncryptedEggImporter, decrypt_if_needed, install,
-    keystream_xor,
+    DEFAULT_KEY_HEX, MAGIC, BuiltinSubmoduleFinder, EncryptedEggImporter,
+    decrypt_if_needed, install, keystream_xor,
 )
 
 KEY = DEFAULT_KEY_HEX
@@ -28,6 +28,13 @@ EXT = importlib.machinery.EXTENSION_SUFFIXES[0]
 @pytest.fixture(autouse=True)
 def isolated_egg_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("PY_UPPER_EGG_CACHE", str(tmp_path / "egg-cache"))
+    existing = [entry for entry in sys.meta_path
+                if isinstance(entry, BuiltinSubmoduleFinder)]
+    yield
+    sys.meta_path[:] = [
+        entry for entry in sys.meta_path
+        if not isinstance(entry, BuiltinSubmoduleFinder) or entry in existing
+    ]
 
 
 def make_site(tmp_path, files, name="site"):
@@ -264,6 +271,44 @@ def test_install_replaces_its_own_finder_instead_of_stacking(tmp_path):
             sys.modules.pop("_memimporter", None)
         else:
             sys.modules["_memimporter"] = previous
+
+
+def test_install_adds_one_dotted_builtin_finder_ahead_of_builtin_importer(tmp_path):
+    egg = make_egg(tmp_path, {"mod.py": "VALUE = 1\n"})
+    importer = install(egg, KEY, backend="extract")
+    try:
+        finders = [entry for entry in sys.meta_path
+                   if isinstance(entry, BuiltinSubmoduleFinder)]
+        assert len(finders) == 1
+        assert sys.meta_path.index(finders[0]) < sys.meta_path.index(
+            importlib.machinery.BuiltinImporter)
+        install(egg, KEY, backend="extract")
+        assert len([entry for entry in sys.meta_path
+                    if isinstance(entry, BuiltinSubmoduleFinder)]) == 1
+    finally:
+        if importer.extract_root in sys.path:
+            sys.path.remove(importer.extract_root)
+
+
+def test_builtin_submodule_finder_resolves_only_dotted_builtins(monkeypatch):
+    sentinel = object()
+    calls = []
+
+    def find_spec(name):
+        calls.append(name)
+        return sentinel
+
+    monkeypatch.setattr("py_upper.egg_loader._imp", types.SimpleNamespace(
+        is_builtin=lambda name: name == "pkg.leaf"))
+    monkeypatch.setattr(importlib.machinery, "BuiltinImporter", types.SimpleNamespace(
+        find_spec=find_spec))
+    finder = BuiltinSubmoduleFinder()
+    assert finder.find_spec("pkg.leaf", ["site"]) is sentinel
+    assert calls == ["pkg.leaf"]
+    assert finder.find_spec("pkg.leaf") is None
+    assert finder.find_spec("toplevel", ["site"]) is None
+    assert finder.find_spec("pkg.other", ["site"]) is None
+    assert calls == ["pkg.leaf"]
 
 
 def test_memory_backend_passes_the_arcname_and_init_symbol(tmp_path, monkeypatch):
