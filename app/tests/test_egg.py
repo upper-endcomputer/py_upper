@@ -94,6 +94,23 @@ def test_pack_egg_supports_each_compression(tmp_path, compression):
     assert read_egg_members(egg, KEY) == ("mod.py",)
 
 
+def test_pack_egg_stores_launcher_bundles_uncompressed(tmp_path):
+    egg = make_egg(
+        tmp_path,
+        {
+            "pkg/mod.py": "VALUE = 1\n" * 200,
+            "py_upper_bundles/py_upper_pkg.so": b"\x7fELF" + b"\x00" * 512,
+        },
+        compression="deflated",
+    )
+    with zipfile.ZipFile(io.BytesIO(decrypt_if_needed(egg.read_bytes(), bytes.fromhex(KEY)))) as archive:
+        bundle = archive.getinfo("py_upper_bundles/py_upper_pkg.so")
+        source = archive.getinfo("pkg/mod.py")
+        assert bundle.compress_type == zipfile.ZIP_STORED
+        assert bundle.compress_size == bundle.file_size
+        assert source.compress_type == zipfile.ZIP_DEFLATED
+
+
 def test_read_egg_members_accepts_a_plain_zip(tmp_path):
     path = tmp_path / "plain.zip"
     with zipfile.ZipFile(path, "w") as archive:
@@ -153,6 +170,20 @@ def test_extract_backend_imports_a_source_module(tmp_path):
         sys.modules.pop(name, None)
         if importer.extract_root in sys.path:
             sys.path.remove(importer.extract_root)
+
+
+def test_extract_backend_leaves_launcher_bundles_to_the_launcher(tmp_path):
+    egg = make_egg(
+        tmp_path,
+        {
+            "mod.py": "VALUE = 1\n",
+            "py_upper_bundles/py_upper_pkg.so": b"bundle",
+        },
+    )
+    importer = EncryptedEggImporter(egg, bytes.fromhex(KEY), "extract")
+    root = Path(importer.extract_root)
+    assert (root / "mod.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (root / "py_upper_bundles").exists()
 
 
 def test_extract_cache_is_content_addressed_and_reused(tmp_path):

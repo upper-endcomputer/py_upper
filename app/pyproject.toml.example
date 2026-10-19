@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.20"
+version = "0.17.21"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -115,6 +115,14 @@ compression = "deflated"
 [tool.py_upper.cython]
 include = ["*"]
 exclude = []
+# none: one extension per module (historical layout).
+# directory: link every leaf module of a top-level package into one extension
+#            and register them with the launcher before Py_Initialize. Package
+#            markers stay as .py files. Bundles are packed as stored entries in
+#            bundle/py_upper.dat and extracted to a cache by the launcher, so no
+#            loose copy ships in site-packages. On macOS this cuts a cold start
+#            with a thousand extensions from minutes to seconds.
+merge = "directory"
 
 [tool.py_upper.build]
 # 同时编译的模块数；0（默认）= 每 CPU 一个任务。

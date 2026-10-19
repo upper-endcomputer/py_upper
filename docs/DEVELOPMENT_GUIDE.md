@@ -201,6 +201,7 @@ exclude = [                       # 丢弃无法在包内满足依赖的可选�
 [tool.py_upper.cython]
 include = ["*"]                   # 相对 app/src 的模块名 glob
 exclude = []
+merge = "directory"               # none = 一模块一扩展；directory = 按顶层目录合并
 
 [tool.py_upper.build]
 jobs = 0                          # 并行编译任务数；0 = 每 CPU 一个
@@ -308,6 +309,8 @@ PY_UPPER_E2E=1 python -m pytest app/tests -q  # 额外跑真实端到端（较�
 - 目标扩展由**完整的编译命令行**（编译器、架构、ABI 后缀、SDK include 目录、优化开关）与**被编译的 `.c` 内容**决定。
 
 所以只有真正变化的模块会重新 Cython 化并编译，其余直接从缓存复制。两层是链式的：改一个 `.py` 只会让它的 `.c` 和它自己的扩展失效，删掉或改名的模块不会留下会被打包的旧产物（staging 只处理当前源码）。
+
+`merge = "directory"` 时，缓存分成两层：第一步仍按模块缓存生成的 `.c`；第二步按顶层目录把该组所有 `.c` 加上生成的 `register.c` 链接成一个 bundle，缓存 key（`py_upper-merged-native-1`）包含每个翻译单元的内容、链接命令和 MSVC 环境。改一个模块只会让它所在的 bundle 失效，其他组继续复用。
 
 Cython 与编译器调用都在线程池里并发执行，并行度由 `[tool.py_upper.build].jobs` 控制（默认 `0` = 每 CPU 一个任务）。
 
@@ -583,6 +586,18 @@ compression = "deflated"  # deflated | stored | lzma
   `com.apple.security.cs.disable-library-validation`。
 - `auto`：Windows 且 `_memimporter` 能导入时用 memory，否则 extract。Windows
   上编译失败只打印 warning；显式 `memory` 则报错。
+
+**合并扩展（`merge = "directory"`）**：每个顶层目录下的叶子模块链接成一个
+bundle，文件名是 `py_upper_<group><扩展后缀>`，统一放在
+`site-packages/py_upper_bundles/`，再以 **`ZIP_STORED`** 写进 `py_upper.dat`
+（launcher 在 `Py_Initialize` 之前读归档，没有 zlib/lzma 可用，所以这些 entry
+不能压缩）。`__init__.py` 不参与合并，仍以 `.py` 包标记进入 egg。launcher
+启动时从 egg 取出 bundle 到内容寻址缓存
+（`<cache>/eggs/merged-<shake256(payload)[:16]>/`），`dlopen` 后调用
+`py_upper_register_modules()`，由它用 `PyImport_ExtendInittab` 在解释器初始化
+前注册所有模块名。Python 层的 egg loader 会跳过 `py_upper_bundles/`，不会重复
+解压。`--verify` 会检查 bundle 在 egg 内、`site-packages` 没有散落副本、entry
+是 `ZIP_STORED`、架构与 target 一致。
 
 launcher 内嵌 loader 源码、key 与 backend，并在运行入口前调用
 `install(EGG_PATH, key_hex, backend)`；`PY_UPPER_EGG` 指向包内的

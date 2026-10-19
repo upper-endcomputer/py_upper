@@ -177,6 +177,7 @@ def test_windows_unchanged_extension_skips_the_setuptools_driver(tmp_path, monke
     monkeypatch.setattr(python_build, "APP", app_root)
     monkeypatch.setattr(python_build, "BUILD", build)
     monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: "none")
     monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
     monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
     monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)

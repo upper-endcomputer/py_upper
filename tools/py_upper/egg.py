@@ -31,7 +31,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import APP, BUILD, Target, py_upper_config, resolve_target_python
+from .config import (
+    APP, BUILD, BUNDLE_DIR, Target, py_upper_config, resolve_target_python,
+)
 from .egg_loader import BACKENDS, DEFAULT_KEY_HEX, MAGIC, keystream_xor
 
 EGG_DIR = "bundle"
@@ -177,6 +179,10 @@ def pack_egg(site: Path, destination: Path, files, config: EggConfig) -> Path:
 
     Entries are sorted and carry a fixed timestamp, so two builds over the same
     inputs produce byte-identical eggs and a release manifest stays stable.
+
+    Merged extension bundles are stored uncompressed: the launcher reads them
+    from the decrypted archive before ``Py_Initialize`` without linking zlib or
+    lzma, so their entry method is part of the format contract.
     """
     names = sorted({str(name).replace("\\", "/") for name in files})
     method, level = _compression(config.compression)
@@ -186,11 +192,17 @@ def pack_egg(site: Path, destination: Path, files, config: EggConfig) -> Path:
             source = site / Path(name)
             if not source.is_file():
                 raise RuntimeError("egg input is missing: " + str(source))
+            stored = name.startswith(BUNDLE_DIR + "/")
+            entry_method = zipfile.ZIP_STORED if stored else method
+            entry_level = None if stored else level
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = method
+            info.compress_type = entry_method
             info.external_attr = 0o644 << 16
             with source.open("rb") as handle:
-                archive.writestr(info, handle.read(), compress_type=method, compresslevel=level)
+                archive.writestr(
+                    info, handle.read(),
+                    compress_type=entry_method, compresslevel=entry_level,
+                )
     payload = MAGIC + keystream_xor(buffer.getvalue(), config.key)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(payload)

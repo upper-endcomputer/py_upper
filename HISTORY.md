@@ -1,3 +1,17 @@
+## v0.17.21
+
+0.17.20 把 egg 解压改成内容寻址缓存后，热启动回到了 0.6 秒，但冷启动还是由模块数量决定。原因是每个 Cython 模块都被编译成独立的 Python 扩展，也就是独立的 Mach-O 镜像；macOS 会逐个做 dyld 加载和代码签名校验。实测 24 个 `.so` 冷启动 8.76–8.90 秒，纯 `dlopen` 1001 个扩展要 305.6 秒。缓存能省掉重复解压，省不掉每个镜像的首次校验，所以“文件多”本身就是问题，不是“解压慢”。
+
+这一版在 `[tool.py_upper.cython]` 下新增 `merge = "none" | "directory"`。`none` 保留旧布局；`directory` 按模块名的第一段分组，把同一个顶层目录下的叶子模块链接成一个 bundle。根目录模块（`main.py`、`application.py`）归到 `_root`，`__init__.py` 明确排除：内置模块不是包，包标记必须继续以 `.py` 存在，`from . import` 才能工作。当前应用 17 个叶子模块合并成 3 个 bundle：`_root` 2 个、`mvvm` 13 个、`utils` 2 个。
+
+合并的难点是入口符号。Cython 为每个模块生成自己的 `PyInit_<module>`，直接链接会重名。构建时会把每个生成单元里的入口重写成唯一符号 `PyInit_py_upper_<sanitized>_<sha256[:12]>`，如果某个单元里找不到入口或出现多个入口就直接报错，不会产出一个看起来成功、实际导入不了的包。每组再生成一个 `register.c`，里面有静态 `_inittab` 和导出的 `py_upper_register_modules()`，由它调用 `PyImport_ExtendInittab`。这些改写后的单元放在 `build/merged/<target>/<group>/`，共享的 Cython 缓存不被原地修改；模块被删掉后旧单元也会清掉。bundle 的编译缓存单独使用 `py_upper-merged-native-1`，key 覆盖所有翻译单元内容、`register.c`、完整链接命令和 MSVC 环境，所以只改代码不改模块名也会失效。
+
+`PyImport_ExtendInittab` 只允许在解释器初始化前调用，因此 bundle 不能等 Python 层的 egg loader 处理。现在 `py_upper_bundles/` 下的文件以 `ZIP_STORED` 写进 `bundle/py_upper.dat`，其他成员仍按配置压缩；launcher 新增自实现的 Keccak/SHAKE-256（`sha3.h`）和不依赖 zlib/lzma 的 ZIP 读取（`egg_bundles.h`），在 `Py_InitializeFromConfig` 之前解密、解析、取缓存 key（`shake256(payload)[:16]`），把 bundle 发布到 `merged-<32hex>` 内容寻址目录，再 `dlopen` 并注册。缓存写入沿用 staging + `.complete` + rename，路径与 0.17.20 的 egg 缓存同根：macOS 是 `~/Library/Caches/py_upper/eggs`，Windows 是 `%LOCALAPPDATA%/py_upper/cache/eggs`，Linux 是 `$XDG_CACHE_HOME/py_upper/eggs` 或 `~/.cache/py_upper/eggs`。`RuntimeGuard` 会先卸载 bundle 再卸载 libpython，避免析构顺序出错。Python 层的 egg loader 现在跳过 `py_upper_bundles/`，不会重复解压。
+
+`--verify` 同时支持新旧两种布局。合并模式下检查 bundle 在 egg 内、`site-packages` 没有散落副本、entry 是 `ZIP_STORED`、架构匹配 target、包标记仍是 `.py`、每模块扩展不存在。普通解释器冒烟在合并模式下不再 import 应用入口，因为裸解释器没有 inittab 可扩展；入口由 launcher 冒烟覆盖。新增的 `test_merged_build.py` 覆盖分组、根模块、包标记、符号重写、零/多入口拒绝、bundle 存储、loader 跳过、架构检查和 C++/Python 两侧 egg reader 的一致性。
+
+验证：全量测试 286 passed, 5 skipped；macOS arm64 构建 `READY: dist/Upper.app`，verify 的 `PASS packaged egg merged bundle _root/mvvm/utils`、`PASS packaged merged bundle not loose ...`、`PASS merged bundle stored ...`、`PASS arch bundle ...=arm64` 全部通过；`py_upper.dat` 941 KB、10 个 entry（3 个 bundle 加包标记），`dist/Upper.app` 内没有 `py_upper_bundles` 目录；headless 冷启动 1.22 秒、热启动 0.55 秒；`codesign --verify --deep --strict` 与 `git diff --check` 均通过。限制：合并只处理应用自己的模块，第三方 wheel 仍是原样；bundle 的缓存目录在首次启动时需要可写，否则 launcher 会直接报错而不是退回散文件。
+
 ## v0.17.20
 
 上一版收尾时还剩四个问题。第一，`__init__.py` 是唯一没有进 Cython 的应用源码：源文件选择直接跳过了所有包标记，所以 `mvvm/__init__.py` 这类文件仍以可读源码躺在 egg 里。现在包标记也参与编译；`module_name()` 返回 `mvvm` 用于 include/exclude 匹配，`extension_name()` 保留 `mvvm.__init__` 供 setuptools 生成文件名和 `PyInit___init__` 入口，两者不再共用一个函数。测试同时断言包标记被选中以及两个名字各自的取值。

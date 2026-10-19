@@ -42,6 +42,8 @@ MAGIC = b'WBEGG01!'
 DEFAULT_KEY_HEX = '047636cf3ddbaae2346f597256416e858ee0b7c8b7448221e5babfbb4f74c20d'
 BACKENDS = ('auto', 'memory', 'extract')
 CACHE_PREFIX = 'egg-'
+# Merged bundles are consumed by the launcher before this loader runs.
+BUNDLE_PREFIX = 'py_upper_bundles/'
 CACHE_MARKER = '.complete'
 CACHE_ATTEMPTS = 3
 
@@ -157,7 +159,7 @@ class EncryptedEggImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def _extract_into(self, root):
         for name in self.names:
-            if name.endswith('/'):
+            if name.endswith('/') or name.startswith(BUNDLE_PREFIX):
                 continue
             safe = _safe_member(name)
             target = os.path.join(root, *safe.split('/'))

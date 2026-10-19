@@ -1,4 +1,5 @@
 #include "PyUpper.h"
+#include "egg_bundles.h"
 // Including Python.h must not drag the CPython import library into the link.
 // The launcher resolves every entry point from the bundled libpython at
 // runtime, so it has no use for python3XX.lib and no search path that holds
@@ -61,6 +62,7 @@ using ConfigClear = void (*)(PyConfig*);
 using FinalizeEx = int (*)();
 using IsInitialized = int (*)();
 using RunSimpleString = int (*)(const char*);
+using RegisterModules = int (*)(void);
 
 // The first entry point the launcher resolves, and therefore the symbol that
 // decides which python DLL in the runtime directory is the runtime. python3.dll
@@ -77,6 +79,12 @@ constexpr const char* kStaticEntry = "_py_upper_static.int";
 // sync without another setting.
 constexpr const char* kEggDir = "bundle";
 constexpr const char* kEggFile = "py_upper.dat";
+
+// Merged application extensions. They are loaded and registered with CPython's
+// inittab before Py_Initialize, because PyImport_ExtendInittab only accepts
+// built-in modules while the interpreter is still unborn.
+constexpr const char* kBundlesDir = "py_upper_bundles";
+constexpr const char* kBundlesPrefix = "py_upper_bundles/";
 
 // Fatal errors must be visible: on Windows the launcher is a GUI-subsystem
 // binary and a macOS bundle started from Finder has no terminal, so a broken
@@ -458,8 +466,183 @@ struct RuntimeLoad {
 // releases the runtime before the process ends.
 struct RuntimeGuard {
     void* handle{};
-    ~RuntimeGuard() { unload(handle); }
+    std::vector<void*> bundles;
+    ~RuntimeGuard() {
+        // Bundles depend on libpython, so they leave before it does.
+        for (auto it = bundles.rbegin(); it != bundles.rend(); ++it) unload(*it);
+        unload(handle);
+    }
 };
+
+// Bundles shipped in the egg are extracted here, before CPython exists. The
+// cache is content-addressed by the decrypted archive, so a rebuilt egg gets a
+// fresh directory and a warm start reuses the old one without rewriting it.
+fs::path bundle_cache_root() {
+    const char* override = std::getenv("PY_UPPER_EGG_CACHE");
+    if (override && *override) return path_from_utf8(override);
+#ifdef _WIN32
+    const char* local = std::getenv("LOCALAPPDATA");
+    if (local && *local) return path_from_utf8(local) / "py_upper" / "cache" / "eggs";
+    const char* profile = std::getenv("USERPROFILE");
+    if (profile && *profile) {
+        return path_from_utf8(profile) / "AppData" / "Local" / "py_upper" / "cache" / "eggs";
+    }
+#elif defined(__APPLE__)
+    const char* home = std::getenv("HOME");
+    if (home && *home) return path_from_utf8(home) / "Library" / "Caches" / "py_upper" / "eggs";
+#else
+    const char* xdg = std::getenv("XDG_CACHE_HOME");
+    if (xdg && *xdg) return path_from_utf8(xdg) / "py_upper" / "eggs";
+    const char* home = std::getenv("HOME");
+    if (home && *home) return path_from_utf8(home) / ".cache" / "py_upper" / "eggs";
+#endif
+    std::error_code ec;
+    fs::path fallback = fs::temp_directory_path(ec);
+    if (ec) fallback = fs::path(".");
+    return fallback / "py_upper" / "eggs";
+}
+
+std::string publish_bundle_cache(const std::vector<pyupper::EggBundleFile>& files,
+                                 const std::string& cache_key, fs::path& root) {
+    std::error_code ec;
+    const fs::path base = bundle_cache_root();
+    fs::create_directories(base, ec);
+    if (ec) {
+        return "Could not create the bundle cache at " + path_to_utf8(base) + ": " + ec.message();
+    }
+
+    const fs::path final = base / ("merged-" + cache_key);
+    const fs::path marker = final / ".complete";
+    if (fs::is_regular_file(marker, ec)) {
+        root = final;
+        return std::string();
+    }
+
+    const fs::path staging = base / (".merged-" + cache_key + "-" + std::to_string(process_id()));
+    fs::remove_all(staging, ec);
+    fs::create_directories(staging, ec);
+    if (ec) {
+        return "Could not create the bundle cache staging directory: " + ec.message();
+    }
+
+    for (const auto& file : files) {
+        const fs::path target = staging / path_from_utf8(file.name);
+        if (!target.parent_path().empty()) fs::create_directories(target.parent_path(), ec);
+        if (ec) {
+            const std::string message = "Could not create " + path_to_utf8(target.parent_path()) + ": " + ec.message();
+            fs::remove_all(staging, ec);
+            return message;
+        }
+        std::ofstream stream(target, std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            const std::string message = "Could not write " + path_to_utf8(target);
+            fs::remove_all(staging, ec);
+            return message;
+        }
+        stream.write(reinterpret_cast<const char*>(file.data.data()),
+                     static_cast<std::streamsize>(file.data.size()));
+        if (!stream) {
+            const std::string message = "Could not write " + path_to_utf8(target);
+            fs::remove_all(staging, ec);
+            return message;
+        }
+    }
+    {
+        std::ofstream stream(staging / ".complete", std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            fs::remove_all(staging, ec);
+            return "Could not write the bundle cache marker";
+        }
+        stream << cache_key << "\n";
+        if (!stream) {
+            fs::remove_all(staging, ec);
+            return "Could not write the bundle cache marker";
+        }
+    }
+#ifndef _WIN32
+    fs::permissions(staging, fs::perms::owner_all, fs::perm_options::replace, ec);
+#endif
+
+    ec.clear();
+    fs::rename(staging, final, ec);
+    if (ec) {
+        std::error_code ignored;
+        if (fs::is_regular_file(marker, ignored)) {
+            fs::remove_all(staging, ignored);
+            root = final;
+            return std::string();
+        }
+        fs::remove_all(final, ignored);
+        ec.clear();
+        fs::rename(staging, final, ec);
+        if (ec) {
+            const std::string message = "Could not publish the bundle cache at " + path_to_utf8(final)
+                + ": " + ec.message();
+            fs::remove_all(staging, ignored);
+            return message;
+        }
+    }
+    root = final;
+    return std::string();
+}
+
+// Load every merged bundle and hand its module table to CPython. This has to
+// run before Py_InitializeFromConfig: after initialization the inittab is
+// frozen and the modules would stay invisible to the import system.
+std::string load_module_bundles(const fs::path& site, const fs::path& egg, RuntimeGuard& guard) {
+    fs::path directory = site / kBundlesDir;
+    std::error_code ec;
+    if (fs::is_regular_file(egg, ec)) {
+        std::vector<pyupper::EggBundleFile> packed;
+        std::string cache_key;
+        std::string error;
+        if (!pyupper::read_egg_bundles(egg, embedded_egg_key(), kBundlesPrefix, packed, cache_key, error)) {
+            return "Could not read merged bundles from " + path_to_utf8(egg) + ": " + error;
+        }
+        if (!packed.empty()) {
+            fs::path root;
+            const std::string cache_error = publish_bundle_cache(packed, cache_key, root);
+            if (!cache_error.empty()) return cache_error;
+            directory = root / kBundlesDir;
+        }
+    }
+    if (!fs::is_directory(directory, ec)) return std::string();
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        if (!entry.is_regular_file()) continue;
+        const std::string extension = path_to_utf8(entry.path().extension());
+        if (extension == ".so" || extension == ".dylib" || extension == ".pyd" || extension == ".dll") {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    for (const auto& path : files) {
+#ifdef _WIN32
+        void* handle = LoadLibraryExW(W(path_to_utf8(path)).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!handle) {
+            return "Could not load module bundle " + path_to_utf8(path)
+                + " (error " + std::to_string(GetLastError()) + ")";
+        }
+#else
+        // The default visibility is local; only libpython is global.
+        void* handle = dlopen(path.c_str(), RTLD_NOW);
+        if (!handle) {
+            const char* reason = dlerror();
+            return "Could not load module bundle " + path_to_utf8(path)
+                + ": " + (reason ? reason : "dlopen failed");
+        }
+#endif
+        guard.bundles.push_back(handle);
+        auto register_modules = (RegisterModules)symbol(handle, "py_upper_register_modules");
+        if (!register_modules) {
+            return "Module bundle " + path_to_utf8(path) + " does not export py_upper_register_modules";
+        }
+        if (register_modules() != 0) {
+            return "Registering modules from " + path_to_utf8(path) + " failed";
+        }
+    }
+    return std::string();
+}
 
 RuntimeLoad load_python(const fs::path& home) {
     RuntimeLoad r;
@@ -658,6 +841,12 @@ int PyUpper::run(const std::vector<std::string>& argv) {
             std::string detail = loaded.error.empty() ? "" : "\n" + loaded.error;
             report_fatal("Could not load the bundled CPython runtime from\n" + path_to_utf8(home) + detail);
             return 4;
+        }
+
+        const std::string bundle_error = load_module_bundles(site, egg, runtime);
+        if (!bundle_error.empty()) {
+            report_fatal(bundle_error);
+            return 10;
         }
 
         auto init_config = (ConfigInit)symbol(loaded.handle, kRuntimeEntrySymbol);

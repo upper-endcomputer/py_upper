@@ -1,27 +1,32 @@
 """Verification: static package checks plus the target-runtime and launcher smoke tests."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 from .config import (
-    APP, BUILD, DIST, Target, app_name, entry_module, entry_source, host_target,
-    optimize_config, runtime_executable, runtime_spec, staging_dir,
-    target_extension_suffix, target_runtime_dir,
+    APP, BUILD, DIST, Target, app_name, cython_merge_mode, entry_module,
+    entry_source, host_target, optimize_config, runtime_executable, runtime_spec,
+    staging_dir, target_extension_suffix, target_runtime_dir,
 )
 from .egg import (
     EGG_DIR, EGG_NAME, egg_config, egg_loader_source, read_egg_members, read_egg_meta,
 )
-from .egg_loader import MAGIC
+from .egg_loader import MAGIC, keystream_xor
 from .manifest import read_manifest, validate_manifest
 from .native.inspect import (
     PE_SUBSYSTEM, PE_SUBSYSTEM_CONSOLE, PE_SUBSYSTEM_GUI, inspect,
     target_format, verify_arch,
 )
-from .python_build import module_name, selected_sources
+from .python_build import (
+    merged_bundle_relative, merged_groups, module_name, selected_sources,
+)
 from .runtime import runtime_pip_payloads
 from .third_party import WHEEL_MANIFEST, dependency_specs, wheel_dir
 
@@ -47,6 +52,118 @@ def _stage_egg_config(stage) -> "EggConfig":
     if egg is not None:
         return egg
     return egg_config(enabled=(stage / EGG_DIR / EGG_NAME).is_file())
+
+
+def _egg_payload(egg_path: Path, key_hex: str) -> bytes:
+    """The decrypted zip bytes of an egg, MAGIC-aware like the runtime loader."""
+    raw = Path(egg_path).read_bytes()
+    if raw[:len(MAGIC)] != MAGIC:
+        return raw
+    return keystream_xor(raw[len(MAGIC):], bytes.fromhex(str(key_hex).strip()))
+
+
+def _egg_member(egg_path: Path, key_hex: str, name: str) -> tuple[int, bytes]:
+    with zipfile.ZipFile(io.BytesIO(_egg_payload(egg_path, key_hex))) as archive:
+        info = archive.getinfo(name)
+        return info.compress_type, archive.read(name)
+
+
+def _verify_egg_bundle(
+    egg_path: Path,
+    key_hex: str,
+    member: str,
+    target: Target,
+) -> list[tuple[bool, str]]:
+    """Check the stored method and architecture of a bundle inside an egg."""
+    try:
+        method, data = _egg_member(egg_path, key_hex, member)
+    except Exception as exc:
+        return [(False, f"merged bundle in egg: {exc}")]
+    checks = [(method == zipfile.ZIP_STORED, f"merged bundle stored {member}")]
+    with tempfile.TemporaryDirectory(prefix="py_upper-verify-") as tmp:
+        probe = Path(tmp) / Path(member).name
+        probe.write_bytes(data)
+        try:
+            verify_arch(probe, target)
+            checks.append((True, f"arch bundle {member}={target.arch}"))
+        except Exception as exc:
+            checks.append((False, f"arch bundle {member}: {exc}"))
+    return checks
+
+
+def _application_source_checks(
+    site: Path,
+    sources,
+    target: Target,
+    egg_members,
+    prefix: str,
+    egg_path: Path | None = None,
+    egg_key: str | None = None,
+) -> list[tuple[bool, str]]:
+    """Checks for the application's own files in either native layout.
+
+    The per-module layout has one extension per source. The merged layout has
+    one bundle per top-level group. Bundles ship as stored entries inside the
+    egg; the launcher extracts them before ``Py_Initialize`` and registers them,
+    so site-packages carries no loose copy.
+    """
+    spec = runtime_spec(target)
+    suffix = target_extension_suffix(target, spec.major_minor, spec.abi_tag)
+    checks: list[tuple[bool, str]] = []
+    if cython_merge_mode() != "directory":
+        for source in sources:
+            expected = _expected_extension(site, source, target)
+            name = module_name(source)
+            if egg_members is None:
+                checks.append((expected.is_file(), f"{prefix}extension {name}"))
+                if expected.is_file():
+                    try:
+                        verify_arch(expected, target)
+                        checks.append((True, f"{prefix}arch {name}={target.arch}"))
+                    except Exception as exc:
+                        checks.append((False, f"{prefix}arch {name}: {exc}"))
+            else:
+                member = expected.relative_to(site).as_posix()
+                checks.append((member in egg_members, f"{prefix}egg extension {name}"))
+                checks.append((not expected.is_file(), f"{prefix}extension not loose {name}"))
+            checks.append((not (site / source.relative_to(APP / "src")).exists(), f"{prefix}source removed {name}"))
+        return checks
+
+    leaves = [source for source in sources if source.name != "__init__.py"]
+    for group, grouped in merged_groups(leaves).items():
+        relative = merged_bundle_relative(group, suffix)
+        bundle = site / relative
+        if egg_members is None:
+            checks.append((bundle.is_file(), f"{prefix}merged bundle {group}"))
+            if bundle.is_file():
+                try:
+                    verify_arch(bundle, target)
+                    checks.append((True, f"{prefix}arch bundle {group}={target.arch}"))
+                except Exception as exc:
+                    checks.append((False, f"{prefix}arch bundle {group}: {exc}"))
+        else:
+            present = relative in egg_members
+            checks.append((present, f"{prefix}egg merged bundle {group}"))
+            checks.append((not bundle.is_file(), f"{prefix}merged bundle not loose {group}"))
+            if present and egg_path is not None and egg_key is not None:
+                checks.extend(_verify_egg_bundle(egg_path, egg_key, relative, target))
+        checks.append((bool(grouped), f"{prefix}merged bundle modules {group}={len(grouped)}"))
+
+    for source in sources:
+        name = module_name(source)
+        relative = source.relative_to(APP / "src")
+        expected = _expected_extension(site, source, target)
+        if source.name == "__init__.py":
+            if egg_members is None:
+                checks.append(((site / relative).is_file(), f"{prefix}package marker {name}"))
+            else:
+                checks.append((relative.as_posix() in egg_members, f"{prefix}egg package marker {name}"))
+                checks.append((not (site / relative).exists(), f"{prefix}package marker not loose {name}"))
+            checks.append((not expected.is_file(), f"{prefix}package marker not compiled {name}"))
+        else:
+            checks.append((not (site / relative).exists(), f"{prefix}source removed {name}"))
+            checks.append((not expected.is_file(), f"{prefix}no per-module extension {name}"))
+    return checks
 
 
 def _checks_for_stage(target: Target) -> list[tuple[bool, str]]:
@@ -83,22 +200,11 @@ def _checks_for_stage(target: Target) -> list[tuple[bool, str]]:
             checks.append(((site / "_memimporter.pyd").is_file(),
                            "egg memory backend helper _memimporter"))
 
-    for source in sources:
-        expected = _expected_extension(site, source, target)
-        name = module_name(source)
-        if egg_members is None:
-            checks.append((expected.is_file(), f"extension {name}"))
-            if expected.is_file():
-                try:
-                    verify_arch(expected, target)
-                    checks.append((True, f"arch {name}={target.arch}"))
-                except Exception as exc:
-                    checks.append((False, f"arch {name}: {exc}"))
-        else:
-            member = expected.relative_to(site).as_posix()
-            checks.append((member in egg_members, f"egg extension {name}"))
-            checks.append((not expected.is_file(), f"extension not loose {name}"))
-        checks.append((not (site / source.relative_to(APP / "src")).exists(), f"source removed {name}"))
+    checks.extend(_application_source_checks(
+        site, sources, target, egg_members, "",
+        egg_path=stage / EGG_DIR / EGG_NAME,
+        egg_key=egg.key_hex,
+    ))
 
     leftovers = [path for path in site.rglob("*") if path.is_file() and path.suffix.lower() in {".c", ".cpp", ".pyc", ".pyo"}]
     checks.append((not leftovers, "no generated source/cache files in site-packages"))
@@ -182,9 +288,9 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     # an enabled project actually produced one, and package() copies it
     # unconditionally, so an absent archive here means a loose build.
     egg_path = entry_dir / EGG_DIR / EGG_NAME
+    egg = read_egg_meta(staging_dir(target)) or egg_config()
     egg_members = None
     if egg_path.is_file():
-        egg = read_egg_meta(staging_dir(target)) or egg_config()
         try:
             checks.append((egg_path.read_bytes()[:len(MAGIC)] == MAGIC, "packaged egg magic"))
             egg_members = set(read_egg_members(egg_path, egg.key_hex))
@@ -214,16 +320,11 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
         if target.os == "windows":
             checks.append(_launcher_subsystem_check(executable))
 
-    for source in selected_sources():
-        expected = _expected_extension(site, source, target)
-        name_ = module_name(source)
-        if egg_members is None:
-            checks.append((expected.is_file(), f"packaged extension {name_}"))
-        else:
-            member = expected.relative_to(site).as_posix()
-            checks.append((member in egg_members, f"packaged egg extension {name_}"))
-            checks.append((not expected.is_file(), f"packaged extension not loose {name_}"))
-        checks.append((not (site / source.relative_to(APP / "src")).exists(), f"packaged source removed {name_}"))
+    checks.extend(_application_source_checks(
+        site, selected_sources(), target, egg_members, "packaged ",
+        egg_path=egg_path,
+        egg_key=egg.key_hex,
+    ))
 
     # Only binaries the target OS can actually load are part of the native ABI
     # contract. Bundled runtimes and third-party packages ship inert
@@ -279,17 +380,23 @@ def direct_dependency_imports(target: Target) -> list[str]:
     return sorted({str(value).strip() for value in values if str(value).strip()}) if isinstance(values, list) else []
 
 
-def smoke_modules(target: Target) -> list[str]:
+def smoke_modules(target: Target, include_entry: bool = True) -> list[str]:
     # Import the application entry point and every directly declared third-party
     # distribution. Imported application modules are exercised transitively by
     # the entry point; importing every Cython module independently would turn
     # optional/lazy application modules into false build failures.
-    values = [entry_module()] + direct_dependency_imports(target)
+    #
+    # The launcher registers merged bundles before Py_Initialize, so its smoke
+    # program can import the entry. A plain interpreter started with PYTHONPATH
+    # cannot: it has no inittab to extend, so that smoke run covers third-party
+    # imports and leaves the application modules to the launcher.
+    values = ([entry_module()] if include_entry else []) + direct_dependency_imports(target)
     return sorted({value for value in values if value})
 
 
 def write_smoke_script(target: Target, destination: Path) -> Path:
-    modules = smoke_modules(target)
+    merged = cython_merge_mode() == "directory"
+    modules = smoke_modules(target, include_entry=not merged)
     destination.parent.mkdir(parents=True, exist_ok=True)
     # The target interpreter is started with the stage on PYTHONPATH, not
     # through the launcher, so it has to install the egg itself before the
@@ -310,7 +417,8 @@ def write_smoke_script(target: Target, destination: Path) -> Path:
         f"modules = {modules!r}\n"
         "for name in modules:\n"
         "    importlib.import_module(name)\n"
-        "print('SMOKE PASS', len(modules))\n",
+        "print('SMOKE PASS', len(modules), 'modules (launcher registers merged bundles)' if "
+        + repr(merged) + " else '')\n",
         encoding="utf-8",
     )
     return destination

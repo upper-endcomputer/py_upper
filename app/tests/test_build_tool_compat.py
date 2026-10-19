@@ -1410,6 +1410,7 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
     monkeypatch.setattr(python_build, "APP", app_root)
     monkeypatch.setattr(python_build, "BUILD", build)
     monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: "none")
     monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
     monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
     monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
@@ -1476,6 +1477,7 @@ def test_zig_compiled_windows_extensions_name_the_64_bit_abi(tmp_path, monkeypat
     monkeypatch.setattr(python_build, "APP", app_root)
     monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
     monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: "none")
     monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
     monkeypatch.setattr(python_build.subprocess, "run", fake_run)
 

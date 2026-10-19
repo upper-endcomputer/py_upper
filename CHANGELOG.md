@@ -1,3 +1,35 @@
+## 0.17.21
+
+### Problem
+- macOS validates every Mach-O image it maps into a process. The application was compiled one extension per source file, so cold-start cost grew with the module count: 24 independent `.so` files took 8.76-8.90 s, and a pure `dlopen` loop over 1001 extensions took 305.6 s. The 0.17.20 content-addressed egg cache removed repeated extraction, but it could not remove the per-image dyld and code-signing checks.
+- The cache only helped after the archive had been unpacked, and the archive still carried one Mach-O per module. A project with a thousand modules therefore paid a thousand first-seen validations on every fresh cache.
+- Putting merged bundles directly under `site-packages` would have fixed the image count but broken the packaging contract: the release would grow a loose `py_upper_bundles/` directory, and the application's native code would exist both inside and outside `bundle/py_upper.dat`.
+
+### Root cause
+- CPython's extension importer maps a module name to an extension file, so the historical layout had to emit one `PyInit_<module>` image per file. Multiple modules cannot share an image unless their entry points are renamed and registered through another mechanism.
+- `PyImport_ExtendInittab` only accepts built-in modules before the interpreter is initialized. The launcher therefore has to read, decrypt and load the bundles before `Py_InitializeFromConfig`, which rules out reusing the Python-level egg loader (by then the inittab is frozen).
+- A bundle stored with deflate or LZMA would require zlib/lzma in the launcher before CPython exists. The launcher deliberately links only the platform loader, so compressed bundle entries are not readable at that point.
+
+### Changes
+- `[tool.py_upper.cython]` gains `merge = "none" | "directory"`. `none` keeps the historical one-extension-per-module layout; `directory` links every leaf module of a top-level package into one bundle. Root modules (`main.py`, `application.py`) share the `_root` group; `__init__.py` files never merge and stay as `.py` package markers. `tools/py_upper/config.py` exposes `MERGE_MODES`, `BUNDLE_DIR = "py_upper_bundles"` and `cython_merge_mode()`.
+- `tools/py_upper/python_build.py` renames each generated `PyInit_*` to a unique `PyInit_py_upper_<sanitized>_<sha256[:12]>` before compilation and rejects translation units with zero or more than one entry point. Each group gets a generated `register.c` with a static `_inittab` and an exported `py_upper_register_modules()` that calls `PyImport_ExtendInittab`. Translation units are materialized under `build/merged/<target>/<group>/`, so the shared Cython cache is never edited in place and stale units from deleted modules are removed.
+- Merged linking has its own content-addressed cache (`py_upper-merged-native-1`) keyed by every translation unit, `register.c`, the full link command and the MSVC environment. A module edit invalidates its bundle even when the module name is unchanged.
+- `tools/py_upper/egg.py` forces every `py_upper_bundles/` entry to `ZIP_STORED`; all other entries keep the configured compression. The launcher can then read bundles from the decrypted archive without linking zlib or lzma.
+- `launcher/src/sha3.h` implements Keccak/SHAKE-256 in-tree, so the launcher derives the same cache key as the Python loader without depending on OpenSSL or libcrypto.
+- `launcher/src/egg_bundles.h` reads `bundle/py_upper.dat`, verifies the MAGIC prefix, decrypts with the embedded key, parses the ZIP central directory and returns only stored `py_upper_bundles/` members. The cache key is `shake256(payload)[:16]`.
+- `launcher/src/PyUpper.cpp` publishes the extracted bundles into a content-addressed cache (`~/Library/Caches/py_upper/eggs/merged-<32hex>/` on macOS, `%LOCALAPPDATA%/py_upper/cache/eggs/` on Windows, `$XDG_CACHE_HOME/py_upper/eggs/` or `~/.cache/py_upper/eggs/` elsewhere), using a staging directory, a `.complete` marker and an atomic rename. `load_module_bundles()` runs before `Py_InitializeFromConfig`, `dlopen`s each bundle and calls `py_upper_register_modules()`; `RuntimeGuard` unloads the bundles in reverse order before libpython.
+- `tools/py_upper/egg_loader.py` skips the `py_upper_bundles/` prefix when it extracts the egg, so the Python loader does not duplicate what the launcher already published.
+- `tools/py_upper/verify.py` understands both layouts. In merged mode it checks that each bundle is present in the egg, that `site-packages` has no loose copy, that the entry is `ZIP_STORED`, that the architecture matches the target, that package markers remain `.py`, and that no per-module extension is produced. The plain-interpreter smoke test drops the application entry point in merged mode (a normal interpreter cannot extend the inittab); the launcher smoke test covers it.
+- `app/tests/test_merged_build.py` covers grouping, root modules, package markers, entry-point renaming, rejection of ambiguous units, bundle storage, loader skipping, architecture checks and a C++/Python cross-check of the egg bundle reader.
+- `app/pyproject.toml.example`, `README.md`, `docs/DEVELOPMENT_GUIDE.md` and the working copy document the new mode; the version moves to 0.17.21.
+
+### Verification
+1. `python -m pytest app/tests -q`: 286 passed, 5 skipped.
+2. macOS arm64 rebuild with `PY_UPPER_HEADLESS=1 python3 tools/build.py --target macos-arm64`: `READY: dist/Upper.app`. The current application has 17 leaf modules, grouped into `_root` (2), `mvvm` (13) and `utils` (2).
+3. `--verify` reports `PASS packaged egg merged bundle _root/mvvm/utils`, `PASS packaged merged bundle not loose ...`, `PASS merged bundle stored ...` and `PASS arch bundle ...=arm64`; `py_upper.dat` is 941 KB with 10 entries (3 bundles plus package markers), and `dist/Upper.app` contains no `py_upper_bundles` directory.
+4. Headless cold start is 1.22 s and a warm start is 0.55 s, down from minutes with a thousand independent extensions and from about 6.6 s for the 24-extension 0.17.20 layout.
+5. `codesign --verify --deep --strict` passes and `git diff --check` is clean.
+
 ## 0.17.20
 
 ### Problem
