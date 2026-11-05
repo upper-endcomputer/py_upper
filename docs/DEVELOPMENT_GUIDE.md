@@ -723,6 +723,9 @@ AboutWindow 的「关闭」按钮 ─CommandBinding→ MainViewModel.hide_about_
 因此从 PATH、不同工作目录或符号链接启动仍能找到同一 runtime；导出的 executable
 和 Python 的 `sys.executable` 也是该绝对路径。Windows 缓存路径用宽字符环境 API 读取。
 launcher 不修改安装目录中的 `python*._pth`；显式 PyConfig 路径生效，原 sidecar 保持原样。
+在任何 `PyConfig_SetString` 调用之前，launcher 通过隔离的 `PyPreConfig` 显式启用
+UTF-8，避免 Linux 的默认 C locale 把中文安装路径按 ASCII 编码；不依赖用户 locale
+或 `PYTHONUTF8` 环境变量，也不修改进程 locale。
 
 入口程序**编译在 launcher 里**。打包时 `package.write_embedded_source()` 生成 `py_upper_embedded.cpp`（入口程序 + smoke 程序的 C++ raw string 字面量），CMake 通过 `-DPY_UPPER_EMBEDDED_SOURCE=` 把它编进 launcher，并定义 `PY_UPPER_HAS_EMBEDDED_SOURCE` 让 `PyUpper.cpp` 知道符号存在。入口本来就是从 `[tool.py_upper].entry` 生成的那三行，没有第二份手写副本，改个名字（`Upper.app` → `Renamed.app`、`Upper.exe` → `Renamed.exe`）也不用动任何东西。
 
@@ -797,6 +800,7 @@ CI（`.github/workflows/validate.yml`）在**每个原生平台**都跑：
 本地 E2E 还会复制产物到含中文和空格的目录，改名后隐藏构建仓库，从无开发 PATH、
 新用户缓存和无关工作目录分别运行真实入口与 launcher smoke，并比较包内文件摘要。
 POSIX 测试把复制的安装目录设为只读；Windows 测试保留 `_pth` 并验证启动未改名或删除它。
+迁移启动还设置 `LC_ALL=C`、`PYTHONUTF8=0`，确认隔离解释器不依赖宿主的 UTF-8 配置。
 用 `PY_UPPER_E2E=1 python -m pytest app/tests/test_e2e_local.py -q` 运行这组验证。
 
 触发范围只有 develop：`push` 与 `pull_request` 都带 `branches: [develop]`（`pull_request` 过滤的是 base 分支），`workflow_dispatch` 保留给失败重跑。`feature_*` / `fix_*` 临时分支上的中间提交不跑矩阵——它们的验证由合并后的 develop 承担，一次功能开发不会在临时分支上白烧十几轮全平台 job。确实要单独验证某个分支时用 `gh workflow run validate.yml --ref <branch>` 手动触发。

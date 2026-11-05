@@ -56,6 +56,8 @@ namespace {
 // CPython is never linked into the launcher: every entry point is resolved from
 // the bundled libpython at runtime, so one launcher binary works with any
 // target runtime ABI the build tool ships next to it.
+using PreConfigInit = void (*)(PyPreConfig*);
+using PreInitialize = PyStatus (*)(const PyPreConfig*);
 using ConfigInit = void (*)(PyConfig*);
 using ConfigSetString = PyStatus (*)(PyConfig*, wchar_t**, const wchar_t*);
 using WideAppend = PyStatus (*)(PyWideStringList*, const wchar_t*);
@@ -903,6 +905,8 @@ int PyUpper::run(const std::vector<std::string>& argv) {
             return 10;
         }
 
+        auto init_preconfig = (PreConfigInit)symbol(loaded.handle, "PyPreConfig_InitIsolatedConfig");
+        auto preinit = (PreInitialize)symbol(loaded.handle, "Py_PreInitialize");
         auto init_config = (ConfigInit)symbol(loaded.handle, kRuntimeEntrySymbol);
         auto set_string = (ConfigSetString)symbol(loaded.handle, "PyConfig_SetString");
         auto append = (WideAppend)symbol(loaded.handle, "PyWideStringList_Append");
@@ -910,9 +914,21 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         auto clear = (ConfigClear)symbol(loaded.handle, "PyConfig_Clear");
         finalize = (FinalizeEx)symbol(loaded.handle, "Py_FinalizeEx");
         initialized = (IsInitialized)symbol(loaded.handle, "Py_IsInitialized");
-        if (!init_config || !set_string || !append || !init || !clear || !finalize || !initialized) {
+        if (!init_preconfig || !preinit || !init_config || !set_string || !append || !init || !clear || !finalize || !initialized) {
             report_fatal("The bundled CPython runtime is missing required initialization symbols\n" + path_to_utf8(home));
             return 5;
+        }
+
+        // Isolated initialization leaves the C locale untouched. Its default
+        // filesystem codec is ASCII on Linux, even though our paths are UTF-8.
+        // Select UTF-8 before PyConfig_SetString can implicitly preinitialize
+        // Python, or a Unicode install path cannot import even encodings.
+        PyPreConfig preconfig;
+        init_preconfig(&preconfig);
+        preconfig.utf8_mode = 1;
+        if (failed(preinit(&preconfig))) {
+            report_fatal("Could not preinitialize the embedded CPython runtime\n" + path_to_utf8(home));
+            return 6;
         }
 
         const fs::path crash_report = crash_report_path();

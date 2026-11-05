@@ -89,7 +89,7 @@ def _complete_linux_runtime(runtime: Path, target) -> None:
         elif destination.read_bytes() != source.read_bytes():
             raise RuntimeError(f"Conflicting E2E runtime library: {destination}")
     for binary in native_files(runtime, target):
-        relative = os.path.relpath(lib, binary.parent)
+        relative = Path(os.path.relpath(lib, binary.parent)).as_posix()
         rpath = "$ORIGIN" if relative == "." else "$ORIGIN/" + relative
         subprocess.run(["patchelf", "--set-rpath", rpath, str(binary)], check=True)
 
@@ -387,6 +387,9 @@ def _assert_relocated_launcher(repo: Path, target, destination: Path) -> None:
         "PY_UPPER_EGG_CACHE": str(profile / "中文 缓存"),
         "PY_UPPER_NO_DIALOG": "1", "PY_UPPER_HEADLESS": "1",
     })
+    # An isolated embedded interpreter must select its own UTF-8 codec. A
+    # desktop locale or PYTHONUTF8 override must not make Unicode installs work.
+    env.update(LC_ALL="C", PYTHONUTF8="0")
 
     def snapshot():
         return {

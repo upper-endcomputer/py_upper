@@ -1,3 +1,12 @@
+## v0.17.26
+
+第二轮 CI 的 macOS 两架构已通过，Linux 迁移到中文目录后仍无法导入 encodings。
+同一包在英文目录启动成功，文件与依赖均完整；根因是隔离初始化保持 C locale，
+默认文件系统编码无法访问 UTF-8 路径。launcher 现在在设置任何 PyConfig 字符串前
+通过 PyPreConfig 固定 UTF-8，迁移测试用 `LC_ALL=C`、`PYTHONUTF8=0` 验证独立性。
+同时修正 Linux 夹具在 Windows 单测中生成的 RPATH 分隔符。
+本地 macOS 与 Linux ARM64 各通过 361 项单测及两项 E2E，包含上述中文路径迁移启动。
+
 ## v0.17.25
 
 ### 首次构建无需 GitHub 登录

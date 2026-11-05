@@ -1,3 +1,21 @@
+## 0.17.26
+
+### Problem
+- Linux packages failed to import encodings after relocation to a Unicode directory under the C locale; Linux fixture assertions also failed on Windows path separators.
+
+### Root cause
+- Isolated PyConfig preinitialization retained ASCII filesystem encoding before paths were decoded. The Linux fixture used the host platform separator in RPATHs.
+
+### Changes
+- Relocation CI follow-up: isolated CPython is preinitialized in UTF-8 mode before setting paths, so Linux can import its stdlib from Unicode install directories under the C locale. Relocation tests explicitly set `LC_ALL=C` and `PYTHONUTF8=0`; the Linux fixture uses POSIX RPATH separators when its unit tests run on Windows.
+- The version moves to 0.17.26; README and the configuration template are synchronized.
+
+### Verification
+- UTF-8 follow-up: macOS and Linux ARM64 each pass 361 unit tests (5 skipped) and both E2E tests, including relocation under the C locale with `PYTHONUTF8=0`.
+
+### Impact
+- Unicode installation paths no longer depend on the user locale. Isolation and read-only installation behavior remain unchanged.
+
 ## 0.17.25
 
 ### Problem
