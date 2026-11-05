@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .inspect import inspect as inspect_binary, verify_arch
+from .inspect import inspect as inspect_binary, native_files, verify_arch
 from ..config import python_version
 
 
@@ -239,10 +239,13 @@ class DependencyIndex:
             resolved = path.resolve()
         except OSError:
             return
-        key = resolved.name.lower()
-        bucket = self._by_name.setdefault(key, [])
-        if resolved not in bucket:
-            bucket.append(resolved)
+        # ELF SONAME links (libdemo.so.1 -> libdemo.so.1.2) are load names in
+        # their own right. Indexing only the resolved filename loses them.
+        for candidate in (path, resolved):
+            key = candidate.name.lower()
+            bucket = self._by_name.setdefault(key, [])
+            if candidate not in bucket:
+                bucket.append(candidate)
 
     def matches(self, key: str) -> list[Path]:
         return list(self._by_name.get(key, ()))
@@ -306,7 +309,7 @@ class DependencyResolver:
             # rejected merely because its basename differs from the load name.
             if alias is not None and resolved == Path(alias).resolve():
                 return resolved
-            if resolved.name.lower() == key:
+            if candidate.name.lower() == key or resolved.name.lower() == key:
                 return resolved
         return None
 
@@ -339,16 +342,18 @@ LINUX_HOST_LIBRARIES = frozenset({
 
 
 # DLLs a Windows desktop provides, the counterpart of LINUX_HOST_LIBRARIES.
-# They belong to the host OS: kernel and CRT, shell and windowing, the DirectX
+# They belong to the host OS: kernel and UCRT, shell and windowing, the DirectX
 # and Media Foundation stack, the security and networking APIs, ODBC, and the
 # ICU library Windows has exposed since the Creators Update (Qt 6 links ICU,
 # which is why the PySide6 wheels ship none). Qt links all of them
 # unconditionally, so every one of them reaches the closure; bundling a copy
 # would ship an unpatched binary next to the copy the OS keeps updated.
+# Visual C++ redistributables (vcruntime140*.dll, msvcp140*.dll) are separate
+# runtime dependencies: a clean Windows installation need not provide them.
 WINDOWS_HOST_LIBRARIES = frozenset({
     # Kernel, CRT and device management.
     "kernel32.dll", "ntdll.dll", "msvcrt.dll", "ucrtbase.dll",
-    "vcruntime140.dll", "vcruntime140_1.dll", "advapi32.dll",
+    "advapi32.dll", "rpcrt4.dll",
     "bcrypt.dll", "ncrypt.dll", "cfgmgr32.dll", "setupapi.dll",
     "winusb.dll", "hid.dll", "winscard.dll",
     # Shell, windowing and user interface.
@@ -389,8 +394,7 @@ def _system_dependency(name: str, target) -> bool:
 
 
 def scan_tree(root: Path, target, env: dict[str, str] | None = None) -> list[Dependency]:
-    suffixes = {".pyd", ".dll", ".exe"} if target.os == "windows" else ({".so", ".dylib"} if target.os == "macos" else {".so"})
-    binaries = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in suffixes]
+    binaries = native_files(root, target)
     result: list[Dependency] = []
     search_roots = [root]
     resolver = DependencyResolver(search_roots)

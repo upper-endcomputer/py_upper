@@ -35,6 +35,7 @@ from .config import (
     APP, BUILD, BUNDLE_DIR, Target, py_upper_config, resolve_target_python,
 )
 from .egg_loader import BACKENDS, DEFAULT_KEY_HEX, MAGIC, keystream_xor
+from .native.inspect import inspect as inspect_native
 
 EGG_DIR = "bundle"
 EGG_NAME = "py_upper.dat"
@@ -220,13 +221,24 @@ def read_egg_members(egg_path: Path, key_hex: str) -> tuple:
         return tuple(sorted(archive.namelist()))
 
 
+def _native_input(path: Path) -> bool:
+    if path.suffix.lower() in NATIVE_SUFFIXES:
+        return True
+    try:
+        inspect_native(path)
+    except ValueError:
+        return False
+    return True
+
+
 def application_files(site: Path, compiled) -> list:
     """The files that belong in the egg, relative to ``site``.
 
     ``compiled`` is the set of extension paths this build produced. Everything
-    else under ``app/src`` ships as-is, except native inputs (``.dll``/``.so``/
-    ``.pyd`` outside that set): those are inputs to the dependency closure and
-    must stay visible in ``site-packages``.
+    else under ``app/src`` ships as-is, except native inputs outside that set:
+    those are inputs to the dependency closure and must stay visible in
+    ``site-packages``. File headers also identify versioned ELF libraries and
+    native helpers whose names have no conventional extension.
     """
     compiled_paths = {str(name).replace("\\", "/") for name in compiled}
     result = set(compiled_paths)
@@ -237,7 +249,7 @@ def application_files(site: Path, compiled) -> list:
         relative = path.relative_to(root).as_posix()
         if relative in compiled_paths:
             continue
-        if path.suffix.lower() in NATIVE_SUFFIXES:
+        if _native_input(path):
             continue
         if (site / relative).is_file():
             result.add(relative)

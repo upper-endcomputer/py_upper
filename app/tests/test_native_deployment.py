@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+
+from py_upper.config import TARGETS
+from py_upper import egg
+from py_upper.native import bundle, deps
+
+
+def _elf(path: Path, machine: int = 62) -> Path:
+    data = bytearray(64)
+    data[:6] = b"\x7fELF\x02\x01"
+    data[18:20] = machine.to_bytes(2, "little")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def _pe(path: Path, imports=(), machine: int = 0x8664) -> Path:
+    """A PE32+ image with real import descriptors, readable without host tools."""
+    pe = 0x80
+    optional = pe + 24
+    table = optional + 0xF0
+    data = bytearray(4096)
+    data[:2] = b"MZ"
+    data[0x3C:0x40] = pe.to_bytes(4, "little")
+    data[pe:pe + 4] = b"PE\0\0"
+    data[pe + 4:pe + 6] = machine.to_bytes(2, "little")
+    data[pe + 6:pe + 8] = (1).to_bytes(2, "little")
+    data[pe + 20:pe + 22] = (0xF0).to_bytes(2, "little")
+    data[optional:optional + 2] = (0x20B).to_bytes(2, "little")
+    data[optional + 120:optional + 124] = (0x1000).to_bytes(4, "little")
+    data[table:table + 8] = b".idata\0\0"
+    data[table + 12:table + 16] = (0x1000).to_bytes(4, "little")
+    data[table + 16:table + 20] = (0xE00).to_bytes(4, "little")
+    data[table + 20:table + 24] = (0x200).to_bytes(4, "little")
+    text_offset = 0x400
+    for index, name in enumerate(imports):
+        descriptor = 0x200 + index * 20
+        rva = 0x1000 + text_offset - 0x200
+        data[descriptor + 12:descriptor + 16] = rva.to_bytes(4, "little")
+        encoded = name.encode("ascii") + b"\0"
+        data[text_offset:text_offset + len(encoded)] = encoded
+        text_offset += len(encoded)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+@pytest.fixture
+def closure_workspace(tmp_path, monkeypatch):
+    root = tmp_path / "Upper"
+    (root / "site-packages").mkdir(parents=True)
+    monkeypatch.setattr(bundle, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(bundle, "app_name", lambda: "Upper")
+    monkeypatch.setattr(bundle, "optimize_config", lambda: {})
+    # Exercise the portable PE parser even on Windows hosts with dumpbin.
+    monkeypatch.setattr(deps, "_dumpbin_dependencies", lambda path, env=None: [])
+    return root
+
+
+def test_native_discovery_uses_target_format_instead_of_filename_suffix(tmp_path):
+    expected = [
+        _elf(tmp_path / "extension.so"),
+        _elf(tmp_path / "libdemo.so.1"),
+        _elf(tmp_path / "libdemo.so.1.2"),
+        _elf(tmp_path / "helper"),
+    ]
+    _pe(tmp_path / "foreign.so")
+    (tmp_path / "data.so").write_text("ordinary data", encoding="utf-8")
+    _elf(tmp_path / "symbols.dSYM" / "Contents" / "Resources" / "DWARF" / "helper")
+
+    assert bundle._native_files(tmp_path, TARGETS["linux-x86_64"]) == sorted(expected)
+
+
+def test_scan_tree_checks_versioned_elf_dependencies(tmp_path, monkeypatch):
+    library = _elf(tmp_path / "libdemo.so.2")
+    monkeypatch.setattr(deps, "dependency_names", lambda path, env: ["libmissing.so.1"])
+
+    result = deps.scan_tree(tmp_path, TARGETS["linux-x86_64"])
+
+    assert [(item.owner, item.name, item.external) for item in result] == [
+        (library, "libmissing.so.1", True),
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows developer mode")
+def test_resolver_preserves_soname_symlink_alias(tmp_path):
+    actual = _elf(tmp_path / "libdemo.so.1.2")
+    (tmp_path / "libdemo.so.1").symlink_to(actual.name)
+
+    resolver = deps.DependencyResolver([tmp_path])
+
+    assert resolver.resolve("libdemo.so.1") == actual.resolve()
+    assert resolver.resolve("libdemo.so.1.2") == actual.resolve()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows developer mode")
+def test_closure_accepts_a_symlinked_package_root(closure_workspace, monkeypatch):
+    root = closure_workspace
+    _elf(root / "site-packages" / "module.so")
+    alias = root.with_name("linked-package")
+    alias.symlink_to(root, target_is_directory=True)
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env: ["libmissing.so.1"])
+
+    with pytest.raises(RuntimeError, match=r"site-packages[/\\]module.so: libmissing.so.1"):
+        bundle.bundle_native_dependencies(alias, TARGETS["linux-x86_64"])
+
+
+def test_closure_follows_dependencies_already_inside_package(closure_workspace, monkeypatch):
+    root = closure_workspace
+    parent = _elf(root / "site-packages" / "module.so")
+    middle = _elf(root / "runtime" / "lib" / "libmiddle.so.1")
+    child = _elf(root / "resources" / "libchild.so.2")
+    graph = {
+        parent: ["libmiddle.so.1"],
+        middle: ["libchild.so.2"],
+        child: ["libmissing.so.3"],
+    }
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env: graph.get(path, []))
+
+    with pytest.raises(RuntimeError, match=r"resources[/\\]libchild.so.2: libmissing.so.3"):
+        bundle.bundle_native_dependencies(root, TARGETS["linux-x86_64"])
+
+
+def test_closure_reuses_a_shared_external_library(closure_workspace, monkeypatch):
+    root = closure_workspace
+    first = _elf(root / "site-packages" / "first.so")
+    second = _elf(root / "site-packages" / "second.so")
+    external = _elf(root.parent / "external" / "libshared.so")
+    graph = {first: [str(external)], second: [str(external)]}
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env: graph.get(path, []))
+
+    result = bundle.bundle_native_dependencies(root, TARGETS["linux-x86_64"])
+
+    copied = root / "site-packages" / external.name
+    assert copied.read_bytes() == external.read_bytes()
+    assert [(item.owner, item.resolved) for item in result] == [
+        (first, copied), (second, copied),
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows developer mode")
+def test_linux_closure_copies_external_library_under_its_load_name(closure_workspace, monkeypatch):
+    root = closure_workspace
+    module = _elf(root / "site-packages" / "module.so")
+    external = _elf(root.parent / "external" / "libdevice.so.1.2")
+    load_name = external.with_name("libdevice.so.1")
+    load_name.symlink_to(external.name)
+    monkeypatch.setattr(
+        bundle, "dependency_names",
+        lambda path, env: [str(load_name)] if path == module else [],
+    )
+
+    result = bundle.bundle_native_dependencies(root, TARGETS["linux-x86_64"])
+
+    copied = module.parent / load_name.name
+    assert copied.is_file()
+    assert copied.read_bytes() == external.read_bytes()
+    assert [(item.owner, item.name, item.resolved) for item in result] == [
+        (module, str(load_name), copied),
+    ]
+    assert not (module.parent / external.name).exists()
+
+
+def test_closure_rejects_different_libraries_with_the_same_basename(closure_workspace, monkeypatch):
+    root = closure_workspace
+    first = _elf(root / "site-packages" / "first.so")
+    second = _elf(root / "site-packages" / "second.so")
+    external = _elf(root.parent / "external" / "libshared.so")
+    conflicting = _elf(root.parent / "other" / "libshared.so")
+    conflicting.write_bytes(conflicting.read_bytes() + b"different build")
+    graph = {first: [str(external)], second: [str(conflicting)]}
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env: graph.get(path, []))
+
+    with pytest.raises(RuntimeError, match="Native dependency basename collision"):
+        bundle.bundle_native_dependencies(root, TARGETS["linux-x86_64"])
+
+
+@pytest.mark.parametrize("name", ["vcruntime140.dll", "VCRUNTIME140_1.dll"])
+def test_vc_runtime_is_a_required_bundle_dependency(closure_workspace, name):
+    root = closure_workspace
+    _pe(root / "site-packages" / "extension.pyd", [name])
+
+    assert not deps._system_dependency(name, TARGETS["windows-x86_64"])
+    with pytest.raises(RuntimeError, match=name):
+        bundle.bundle_native_dependencies(root, TARGETS["windows-x86_64"])
+
+
+def test_closure_resolves_vc_runtime_from_bundled_python(closure_workspace):
+    root = closure_workspace
+    extension = _pe(root / "site-packages" / "extension.pyd", ["VCRUNTIME140.dll"])
+    runtime = _pe(root / "runtime" / "vcruntime140.dll", ["KERNEL32.dll"])
+
+    result = bundle.bundle_native_dependencies(root, TARGETS["windows-x86_64"])
+
+    assert [(item.owner, item.name, item.resolved) for item in result] == [
+        (extension, "VCRUNTIME140.dll", runtime),
+    ]
+
+
+def test_runtime_libraries_are_closure_roots(closure_workspace):
+    root = closure_workspace
+    _pe(root / "runtime" / "python313.dll", ["VCRUNTIME140.dll"])
+
+    with pytest.raises(RuntimeError, match=r"runtime[/\\]python313.dll: VCRUNTIME140.dll"):
+        bundle.bundle_native_dependencies(root, TARGETS["windows-x86_64"])
+
+
+def test_foreign_arch_runtime_is_rejected_without_validating_tool_stubs(closure_workspace):
+    root = closure_workspace
+    _pe(root / "runtime" / "Lib" / "venv" / "scripts" / "python.exe", machine=0x14C)
+    _pe(root / "runtime" / "vcruntime140.dll", machine=0x14C)
+
+    with pytest.raises(RuntimeError, match=r"vcruntime140.dll: x86, expected x86_64"):
+        bundle.bundle_native_dependencies(root, TARGETS["windows-x86_64"])
+
+    (root / "runtime" / "vcruntime140.dll").unlink()
+    assert bundle.bundle_native_dependencies(root, TARGETS["windows-x86_64"]) == []
+
+
+@pytest.mark.parametrize("native_name", ["libdevice.so.1", "device-helper"])
+def test_egg_leaves_native_inputs_visible_to_the_closure(closure_workspace, monkeypatch, native_name):
+    root = closure_workspace
+    site = root / "site-packages"
+    app = root.parent / "app"
+    source = app / "src"
+    native = _elf(source / "drivers" / native_name)
+    (source / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    # A similar filename with ordinary data must still be packed as data.
+    (source / "settings.so.1").write_text("plain text settings\n", encoding="utf-8")
+    shutil.copytree(source, site, dirs_exist_ok=True)
+    (site / "main.py").unlink()
+    compiled = _elf(site / "py_upper_bundles" / "py_upper_main.so")
+    monkeypatch.setattr(egg, "APP", app)
+
+    files = egg.application_files(site, {compiled.relative_to(site).as_posix()})
+
+    assert files == ["py_upper_bundles/py_upper_main.so", "settings.so.1"]
+    config = egg.EggConfig()
+    archive = egg.pack_egg(site, root / "bundle" / egg.EGG_NAME, files, config)
+    egg.remove_packed_files(site, files)
+    assert egg.read_egg_members(archive, config.key_hex) == tuple(files)
+    assert (site / native.relative_to(source)).is_file()
+    assert not compiled.exists()
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env: ["libmissing.so.1"])
+    with pytest.raises(RuntimeError, match="libmissing.so.1"):
+        bundle.bundle_native_dependencies(root, TARGETS["linux-x86_64"])

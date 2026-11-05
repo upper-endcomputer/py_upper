@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -80,7 +81,9 @@ def _make_local_runtime(repo: Path) -> str:
 
     if target.os == "windows":
         shutil.copyfile(sys.executable, runtime / "python.exe")
-        for dll in Path(sys.executable).parent.glob(f"python{digits}.dll"):
+        dlls = list(Path(sys.executable).parent.glob(f"python{digits}.dll"))
+        dlls += list(Path(sys.executable).parent.glob("vcruntime140*.dll"))
+        for dll in dlls:
             shutil.copyfile(dll, runtime / dll.name)
         shutil.copytree(stdlib, runtime / "Lib", symlinks=True, ignore=ignore)
         extension_dir = Path(sysconfig.get_path("platstdlib")).parent / "DLLs"
@@ -268,6 +271,8 @@ def _prepare_repo() -> Path:
         "import demo_native\n"
         "import demo_pkg\n\n\n"
         "def main() -> None:\n"
+        "    from importlib.metadata import version\n"
+        '    assert version("demo-pkg") == "1.0.0"\n'
         '    assert demo_pkg.VALUE == "ok"\n'
         "    assert demo_native.value() == 42\n"
         "    run_application()\n\n\n"
@@ -308,6 +313,76 @@ def _packaged_root(repo: Path, target) -> Path:
     return repo / "dist" / app_name
 
 
+def _assert_relocated_launcher(repo: Path, target, destination: Path) -> None:
+    """A cold user profile and foreign cwd must be enough to run a copied app."""
+    resources = _packaged_root(repo, target)
+    source = resources.parents[1] if target.os == "macos" else resources
+    copied = destination / "迁移 安装" / source.name
+    shutil.copytree(source, copied, symlinks=True)
+    if target.os == "windows":
+        digits = f"{sys.version_info.major}{sys.version_info.minor}"
+        # Match python.org's isolation sidecar on this Lib/DLLs fixture. The
+        # embedded PyConfig must win without renaming or deleting the file.
+        (copied / "runtime" / f"python{digits}._pth").write_text("Lib\nDLLs\n.\n", encoding="utf-8")
+    binary_dir = copied / "Contents" / "MacOS" if target.os == "macos" else copied
+    old_name = (source.stem if target.os == "macos" else source.name)
+    old_name += ".exe" if target.os == "windows" else ""
+    executable = binary_dir / ("Renamed.exe" if target.os == "windows" else "Renamed")
+    (binary_dir / old_name).rename(executable)
+    profile = destination / "新用户"
+    cwd = destination / "unrelated-cwd"
+    profile.mkdir(parents=True)
+    cwd.mkdir()
+
+    # Keep OS service variables on Windows, but no development PATH, Python,
+    # Qt or dynamic-loader overrides that can hide missing bundle inputs.
+    os_keys = {"systemroot", "windir", "comspec", "pathext", "temp", "tmp"}
+    env = {key: value for key, value in os.environ.items() if key.lower() in os_keys}
+    env.update({
+        "PATH": str(binary_dir), "HOME": str(profile), "USERPROFILE": str(profile),
+        "LOCALAPPDATA": str(profile / "AppData"), "XDG_CACHE_HOME": str(profile / ".cache"),
+        "PY_UPPER_EGG_CACHE": str(profile / "中文 缓存"),
+        "PY_UPPER_NO_DIALOG": "1", "PY_UPPER_HEADLESS": "1",
+    })
+
+    def snapshot():
+        return {
+            path.relative_to(copied).as_posix(): (
+                os.readlink(path) if path.is_symlink() else hashlib.sha256(path.read_bytes()).hexdigest()
+            )
+            for path in copied.rglob("*") if path.is_file() or path.is_symlink()
+        }
+
+    before = snapshot()
+    modes = {}
+    if os.name != "nt":
+        for path in [copied, *copied.rglob("*")]:
+            if path.is_symlink():
+                continue
+            modes[path] = path.stat().st_mode
+            path.chmod(modes[path] & ~0o222)
+    hidden = repo.with_name(repo.name + "-hidden")
+    repo.rename(hidden)
+    try:
+        # POSIX subprocess searches env['PATH']; Windows CreateProcess uses
+        # the parent's search path, so provide the image and still vary argv0.
+        options = {"executable": str(executable)} if os.name == "nt" else {}
+        for smoke in (False, True):
+            if smoke:
+                env["PY_UPPER_SMOKE"] = "1"
+            result = subprocess.run(
+                [executable.name], cwd=cwd, env=env, capture_output=True,
+                text=True, encoding="utf-8", timeout=60, **options,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert ("SMOKE PASS launcher" if smoke else "Hello from py_upper") in result.stdout
+        assert snapshot() == before, "launching must not modify the installed bundle"
+    finally:
+        hidden.rename(repo)
+        for path, mode in modes.items():
+            path.chmod(mode)
+
+
 @pytest.mark.skipif(os.environ.get("PY_UPPER_E2E") != "1", reason="set PY_UPPER_E2E=1 to run the full local build E2E")
 def test_local_build_end_to_end_with_third_party_dependency():
     target = host_target()
@@ -341,6 +416,7 @@ def test_local_build_end_to_end_with_third_party_dependency():
         assert (repo / "py_upper.lock.json").exists()
         locked = _run_build(repo, "--locked", "--target", target.key)
         assert locked.returncode == 0, locked.stdout + "\n" + locked.stderr
+        _assert_relocated_launcher(repo, target, temp_root / "deployment")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

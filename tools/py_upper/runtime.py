@@ -15,8 +15,8 @@ from .config import (
 )
 from .fs import copy_tree_contents, sha256
 from .manifest import build_manifest, read_manifest, validate_manifest, write_manifest
-from .net import download, http_json
-from .pbs import PBSInputs, ensure_pbs_sdk, resolve_pbs_inputs, sdk_info as pbs_sdk_info, windows_embed_asset
+from .net import download
+from .pbs import ensure_pbs_sdk, resolve_inputs, sdk_info as pbs_sdk_info, windows_embed_asset
 
 
 RUNTIME_MARKER = ".py_upper-runtime.json"
@@ -31,10 +31,6 @@ def safe_extract(tar_path: Path, dest: Path) -> None:
             if os.path.commonpath([str(root), str(target)]) != str(root):
                 raise RuntimeError(f"Unsafe archive path: {member.name}")
         tf.extractall(dest)
-
-
-def resolve_inputs(target: Target) -> PBSInputs:
-    return resolve_pbs_inputs(http_json, pbs_release(), target, python_version())
 
 
 def ensure_pbs_runtime(target: Target) -> Path:

@@ -1,15 +1,143 @@
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 import zipfile
 
 import pytest
 
 
+DIGEST = "a" * 64
+
+
+def _checksums(*names):
+    return "".join(f"{DIGEST}  {name}\n" for name in names)
+
 
 def _target():
     from py_upper.config import TARGETS
     return TARGETS["macos-arm64"]
+
+
+@pytest.mark.parametrize("token", [None, "unused-stale-token"])
+@pytest.mark.parametrize("target_name", [
+    "windows-x86", "windows-x86_64", "windows-arm64", "linux-x86_64", "linux-arm64",
+    "macos-x86_64", "macos-arm64",
+])
+def test_cold_resolution_does_not_need_github_api_or_login(tmp_path, monkeypatch, token, target_name):
+    from py_upper import net, pbs
+    from py_upper.config import TARGETS
+
+    target = TARGETS[target_name]
+    tag = "20250723"
+    prefix = f"https://github.com/astral-sh/python-build-standalone/releases/download/{tag}/"
+    runtime = f"cpython-3.13.5+{tag}-{target.triple}-install_only_stripped.tar.gz"
+    sdk = f"cpython-3.13.5+{tag}-{target.triple}-pgo-full.tar.zst"
+    digest = "a" * 64
+    metadata = {pbs.metadata_key(target, "3.13.5"): {"url": prefix + runtime, "sha256": "b" * 64}}
+    monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "metadata.json")
+    monkeypatch.setattr(pbs, "python_version", lambda: "3.13.5")
+    monkeypatch.setattr(pbs, "pbs_release", lambda: "")
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if token is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, token)
+    requests = []
+
+    def public_downloads_only(request, timeout):
+        url = request.full_url
+        requests.append(url)
+        if url.startswith("https://api.github.com/"):
+            raise urllib.error.HTTPError(url, 403, "API rate limit exceeded", {}, None)
+        assert "Authorization" not in request.headers
+        if url == pbs.PBS_RUNTIME_METADATA_URLS[0]:
+            return io.BytesIO(json.dumps(metadata).encode())
+        if url == prefix + "SHA256SUMS":
+            return io.BytesIO(f"{digest}  {sdk}\n".encode())
+        raise AssertionError(url)
+
+    monkeypatch.setattr(net.urllib.request, "urlopen", public_downloads_only)
+    result = pbs.resolve_inputs(target)
+
+    assert result.sdk.name == sdk
+    assert result.sdk.sha256 == digest
+    assert requests == [pbs.PBS_RUNTIME_METADATA_URLS[0], prefix + "SHA256SUMS"]
+
+
+def test_release_checksums_preserve_hashes_and_encode_download_names():
+    from py_upper.pbs import release_assets
+
+    name = "cpython-3.13.5+20250723-aarch64-apple-darwin-pgo+lto-full.tar.zst"
+    # Both text and binary sha256sum markers, CRLF, and uppercase hex are valid.
+    assets = release_assets(f"{DIGEST.upper()} *{name}\r\n{DIGEST}  extra.txt\r\n", "20250723")
+
+    assert assets[0].name == name
+    assert assets[0].sha256 == DIGEST
+    assert assets[0].url.endswith("cpython-3.13.5%2B20250723-aarch64-apple-darwin-pgo%2Blto-full.tar.zst")
+    assert assets[1].name == "extra.txt"
+
+
+@pytest.mark.parametrize("checksums", [
+    "", "\n", "<html>login required</html>", "a" * 63 + "  asset.tar.zst",
+    f"{DIGEST}  ../escape", f"{DIGEST}  C:\\escape", _checksums("duplicate", "duplicate"),
+])
+def test_release_checksums_reject_corruption(checksums):
+    from py_upper.pbs import release_assets
+
+    with pytest.raises(RuntimeError, match="PBS SHA256SUMS.*20250723"):
+        release_assets(checksums, "20250723")
+
+
+def test_release_download_failure_is_visible_without_api_fallback():
+    from py_upper.pbs import resolve_pbs_inputs
+
+    def fail_download(url):
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+
+    with pytest.raises(urllib.error.HTTPError) as error:
+        resolve_pbs_inputs(
+            lambda _: pytest.fail("must not fall back to GitHub API"),
+            "20250723", _target(), "3.13.5", fetch_text=fail_download,
+        )
+    assert error.value.code == 403
+    assert error.value.url.endswith("/20250723/SHA256SUMS")
+
+
+def test_explicit_release_never_substitutes_a_different_version():
+    from py_upper.pbs import resolve_pbs_inputs
+
+    with pytest.raises(RuntimeError, match="Requested Python: 3.13.5") as error:
+        resolve_pbs_inputs(
+            lambda _: pytest.fail("explicit releases must not use metadata"),
+            "20241016", _target(), "3.13.5",
+            fetch_text=lambda _: _checksums(
+                "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
+                "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst",
+            ),
+        )
+    assert "Available SDK Python versions: 3.11.10" in str(error.value)
+
+
+def test_sdk_download_verifies_release_checksum_before_extraction(tmp_path, monkeypatch):
+    from py_upper import pbs
+
+    sdk_name = "cpython-3.13.5+20250723-x86_64-pc-windows-msvc-pgo-full.tar.zst"
+    sdk = pbs.release_assets(_checksums(sdk_name), "20250723")[0]
+    monkeypatch.setattr(pbs, "CACHE", tmp_path / "cache")
+    monkeypatch.setattr(pbs, "pbs_sdk_dir", lambda _: tmp_path / "sdk")
+    monkeypatch.setattr(pbs, "resolve_inputs", lambda _: pbs.PBSInputs("20250723", sdk, sdk, "release"))
+
+    def corrupted_download(url, destination):
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"corrupted archive")
+
+    monkeypatch.setattr(pbs, "download", corrupted_download)
+    monkeypatch.setattr(pbs, "_safe_extract_zst", lambda *_: pytest.fail("must validate before extraction"))
+    with pytest.raises(RuntimeError, match="PBS SDK SHA256 mismatch"):
+        pbs.ensure_pbs_sdk(_windows_target())
+    assert not (tmp_path / "sdk").exists()
 
 
 def test_exact_pbs_metadata_entry_maps_31110_to_20241016():
@@ -29,16 +157,13 @@ def test_exact_pbs_metadata_entry_maps_31110_to_20241016():
 
 
 def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
-    from py_upper.pbs import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URLS, metadata_key, resolve_pbs_inputs
+    from py_upper.pbs import PBS_RELEASE_URL, PBS_RUNTIME_METADATA_URLS, metadata_key, resolve_pbs_inputs
 
     target = _target()
     runtime_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10%2B20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"
     sdk_name = "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"
     metadata = {metadata_key(target, "3.11.10"): {"url": runtime_url, "sha256": "runtime"}}
-    release = {"assets": [
-        {"name": sdk_name, "browser_download_url": "https://example.invalid/" + sdk_name},
-        {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz", "browser_download_url": runtime_url},
-    ]}
+    checksums_url = PBS_RELEASE_URL.format(tag="20241016") + "/SHA256SUMS"
     calls=[]
     from py_upper import pbs
     # The metadata index is cached on disk. A test must never write its fixture
@@ -49,13 +174,14 @@ def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
         calls.append(url)
         if url in PBS_RUNTIME_METADATA_URLS:
             return metadata
-        if url == PBS_RELEASE_API.format(tag="20241016"):
-            return release
+        if url == checksums_url:
+            return _checksums(sdk_name)
         raise AssertionError(url)
-    result = resolve_pbs_inputs(fetch, "", target, "3.11.10")
+    result = resolve_pbs_inputs(fetch, "", target, "3.11.10", fetch_text=fetch)
     assert result.tag == "20241016"
     assert result.sdk.name == sdk_name
-    assert calls == [PBS_RUNTIME_METADATA_URLS[0], PBS_RELEASE_API.format(tag="20241016")]
+    assert result.sdk.sha256 == DIGEST
+    assert calls == [PBS_RUNTIME_METADATA_URLS[0], checksums_url]
 
 
 def test_pbs_metadata_index_falls_back_when_uv_moves_the_file(tmp_path, monkeypatch):
@@ -63,13 +189,13 @@ def test_pbs_metadata_index_falls_back_when_uv_moves_the_file(tmp_path, monkeypa
     and the old raw URL started returning 404, which took down every build with a
     cold cache. The next candidate must be used instead of failing the build."""
     from py_upper import pbs
-    from py_upper.pbs import PBS_RELEASE_API, PBS_RUNTIME_METADATA_URLS, metadata_key, resolve_pbs_inputs
+    from py_upper.pbs import PBS_RELEASE_URL, PBS_RUNTIME_METADATA_URLS, metadata_key, resolve_pbs_inputs
 
     target = _target()
     runtime_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10%2B20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"
     sdk_name = "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"
     metadata = {metadata_key(target, "3.11.10"): {"url": runtime_url, "sha256": "runtime"}}
-    release = {"assets": [{"name": sdk_name, "browser_download_url": "https://example.invalid/" + sdk_name}]}
+    checksums_url = PBS_RELEASE_URL.format(tag="20241016") + "/SHA256SUMS"
 
     monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
     moved, calls = PBS_RUNTIME_METADATA_URLS[0], []
@@ -80,14 +206,14 @@ def test_pbs_metadata_index_falls_back_when_uv_moves_the_file(tmp_path, monkeypa
             raise OSError("HTTP Error 404: Not Found")
         if url in PBS_RUNTIME_METADATA_URLS:
             return metadata
-        if url == PBS_RELEASE_API.format(tag="20241016"):
-            return release
+        if url == checksums_url:
+            return _checksums(sdk_name)
         raise AssertionError(url)
 
-    result = resolve_pbs_inputs(fetch, "", target, "3.11.10")
+    result = resolve_pbs_inputs(fetch, "", target, "3.11.10", fetch_text=fetch)
     assert result.tag == "20241016"
     assert result.sdk.name == sdk_name
-    assert calls == [moved, PBS_RUNTIME_METADATA_URLS[1], PBS_RELEASE_API.format(tag="20241016")]
+    assert calls == [moved, PBS_RUNTIME_METADATA_URLS[1], checksums_url]
 
 
 def test_pbs_metadata_index_error_names_every_candidate(tmp_path, monkeypatch):
@@ -100,7 +226,7 @@ def test_pbs_metadata_index_error_names_every_candidate(tmp_path, monkeypatch):
         raise OSError("HTTP Error 404: Not Found")
 
     try:
-        resolve_pbs_inputs(fetch, "", _target(), "3.11.10")
+        resolve_pbs_inputs(fetch, "", _target(), "3.11.10", fetch_text=fetch)
     except RuntimeError as exc:
         message = str(exc)
     else:
@@ -109,25 +235,31 @@ def test_pbs_metadata_index_error_names_every_candidate(tmp_path, monkeypatch):
         assert url in message
 
 
-def test_pbs_explicit_release_reports_available_versions():
-    from py_upper.pbs import resolve_pbs_inputs, PBS_RELEASE_API
+def test_pbs_explicit_release_uses_only_public_checksums():
+    from py_upper.pbs import resolve_pbs_inputs, PBS_RELEASE_URL
 
-    release = {"assets": [
-        {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz", "browser_download_url": "u1"},
-        {"name": "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst", "browser_download_url": "u2"},
-    ]}
-    def fetch(url): return release if url == PBS_RELEASE_API.format(tag="20241016") else None
-    result = resolve_pbs_inputs(fetch, "20241016", _target(), "3.11.10")
+    def fetch(url):
+        assert url == PBS_RELEASE_URL.format(tag="20241016") + "/SHA256SUMS"
+        return _checksums(
+            "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
+            "cpython-3.11.10+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst",
+        )
+    result = resolve_pbs_inputs(
+        lambda _: pytest.fail("explicit release must not fetch metadata/API"),
+        "20241016", _target(), "3.11.10", fetch_text=fetch,
+    )
     assert result.runtime.name.endswith("install_only_stripped.tar.gz")
+    assert result.runtime.sha256 == DIGEST
+    assert result.sdk.sha256 == DIGEST
 
 
 def test_no_runtime_asset_error_is_actionable():
-    from py_upper.pbs import no_asset_error
+    from py_upper.pbs import no_asset_error, release_assets
 
-    release = {"assets": [
-        {"name": "cpython-3.10.15+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"},
-        {"name": "cpython-3.10.15+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-    ]}
+    release = release_assets(_checksums(
+        "cpython-3.10.15+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "cpython-3.10.15+20241016-aarch64-apple-darwin-pgo+lto-full.tar.zst",
+    ), "20241016")
     error = no_asset_error("20241016", _target(), "3.11.10", release, missing_runtime=True, missing_sdk=True)
     text = str(error)
     assert "Requested Python: 3.11.10" in text
@@ -223,17 +355,17 @@ def test_best_sdk_follows_the_runtime_build_flavour():
     """Windows releases of that era shipped shared-pgo and static-noopt SDKs under
     names that sort the static one first. Extension modules link the versioned
     import library, which only the shared flavour carries."""
-    from py_upper.pbs import _best_sdk
+    from py_upper.pbs import _best_sdk, release_assets
 
-    assets = [
-        {"name": "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-shared-pgo-full.tar.zst"},
-        {"name": "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-static-noopt-full.tar.zst"},
-    ]
+    assets = release_assets(_checksums(
+        "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-shared-pgo-full.tar.zst",
+        "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-static-noopt-full.tar.zst",
+    ), "20230507")
     shared_runtime = "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
     static_runtime = "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-static-install_only.tar.gz"
 
-    assert _best_sdk(assets, shared_runtime)["name"].endswith("-shared-pgo-full.tar.zst")
-    assert _best_sdk(assets, static_runtime)["name"].endswith("-static-noopt-full.tar.zst")
+    assert _best_sdk(assets, shared_runtime).name.endswith("-shared-pgo-full.tar.zst")
+    assert _best_sdk(assets, static_runtime).name.endswith("-static-noopt-full.tar.zst")
 
     try:
         _best_sdk([assets[1]], shared_runtime)
@@ -244,39 +376,38 @@ def test_best_sdk_follows_the_runtime_build_flavour():
 
 
 def test_best_sdk_keeps_pgo_lto_when_the_runtime_records_no_flavour():
-    from py_upper.pbs import _best_sdk
+    from py_upper.pbs import _best_sdk, release_assets
 
-    assets = [
-        {"name": "cpython-3.11.13+20251007-aarch64-apple-darwin-full.tar.zst"},
-        {"name": "cpython-3.11.13+20251007-aarch64-apple-darwin-pgo+lto-full.tar.zst"},
-    ]
+    assets = release_assets(_checksums(
+        "cpython-3.11.13+20251007-aarch64-apple-darwin-full.tar.zst",
+        "cpython-3.11.13+20251007-aarch64-apple-darwin-pgo+lto-full.tar.zst",
+    ), "20251007")
     runtime = "cpython-3.11.13+20251007-aarch64-apple-darwin-install_only_stripped.tar.gz"
-    assert _best_sdk(assets, runtime)["name"].endswith("-pgo+lto-full.tar.zst")
+    assert _best_sdk(assets, runtime).name.endswith("-pgo+lto-full.tar.zst")
 
 
 def test_windows_metadata_resolution_pairs_a_shared_sdk_with_a_shared_runtime(tmp_path, monkeypatch):
     from py_upper import pbs
-    from py_upper.pbs import PBS_RELEASE_API, metadata_key, resolve_pbs_inputs
+    from py_upper.pbs import PBS_RELEASE_URL, metadata_key, resolve_pbs_inputs
 
     target = _windows_target()
     runtime_name = "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
     runtime_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20230507/" + runtime_name
     metadata = {metadata_key(target, "3.10.11"): {"url": runtime_url, "sha256": "runtime"}}
-    release = {"assets": [
-        {"name": "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-shared-pgo-full.tar.zst", "browser_download_url": "u1"},
-        {"name": "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-static-noopt-full.tar.zst", "browser_download_url": "u2"},
-    ]}
 
     monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
 
     def fetch(url):
         if url in pbs.PBS_RUNTIME_METADATA_URLS:
             return metadata
-        if url == PBS_RELEASE_API.format(tag="20230507"):
-            return release
+        if url == PBS_RELEASE_URL.format(tag="20230507") + "/SHA256SUMS":
+            return _checksums(
+                "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-shared-pgo-full.tar.zst",
+                "cpython-3.10.11+20230507-x86_64-pc-windows-msvc-static-noopt-full.tar.zst",
+            )
         raise AssertionError(url)
 
-    result = resolve_pbs_inputs(fetch, "", target, "3.10.11")
+    result = resolve_pbs_inputs(fetch, "", target, "3.10.11", fetch_text=fetch)
     assert result.runtime.name == runtime_name
     assert result.sdk.name.endswith("-shared-pgo-full.tar.zst")
 

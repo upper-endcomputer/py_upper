@@ -99,13 +99,24 @@ def _fat_arches(data: bytes, magic: int) -> set[str]:
 
 
 def inspect(path: Path) -> BinaryInfo:
-    raw = path.read_bytes()
-    data = raw[:4096]
+    # Discovery also sees archives and data without native suffixes. Read only
+    # the header unless a PE section table extends beyond it; inspecting a
+    # Python ZIP must not load the entire runtime into memory.
+    with path.open("rb") as stream:
+        data = stream.read(4096)
+    raw = data
     if data[:2] == b"MZ" and len(data) >= 0x40:
         pe = struct.unpack_from("<I", data, 0x3C)[0]
         if pe + 6 <= len(data) and data[pe:pe + 4] == b"PE\0\0":
             machine = struct.unpack_from("<H", data, pe + 4)[0]
             arch = PE_MACHINE.get(machine, f"0x{machine:04x}")
+            if pe + 24 <= len(data):
+                sections = struct.unpack_from("<H", data, pe + 6)[0]
+                optional_size = struct.unpack_from("<H", data, pe + 20)[0]
+                end = pe + 24 + optional_size + sections * 40
+                if end > len(data):
+                    with path.open("rb") as stream:
+                        raw = stream.read(end)
             if machine == _ARM64EC_MACHINE and _pe_has_arm64ec_section(raw, pe):
                 arch = "arm64ec"
             return BinaryInfo(path, "PE", arch, _pe_subsystem(raw, pe))
@@ -138,6 +149,29 @@ def target_format(target) -> str:
         return _TARGET_FORMATS[target.os]
     except KeyError as exc:
         raise RuntimeError(f"Unsupported target OS: {target.os}") from exc
+
+
+def is_debug_artifact(path: Path) -> bool:
+    """dSYM images are debugging data, not libraries the application loads."""
+    return any(part.endswith(".dSYM") for part in path.parts)
+
+
+def native_files(root: Path, target) -> list[Path]:
+    """Find target images by header, including versioned ELF and Qt helpers."""
+    expected = target_format(target)
+    result: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or is_debug_artifact(path):
+            continue
+        try:
+            info = inspect(path)
+        except (OSError, ValueError):
+            continue
+        # Runtime trees can carry foreign-format executable templates. They
+        # are data on this platform and cannot enter its dependency graph.
+        if info.format.startswith(expected):
+            result.append(path)
+    return sorted(set(result))
 
 
 def expected_arch(target) -> str:

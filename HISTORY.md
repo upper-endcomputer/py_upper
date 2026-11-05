@@ -1,3 +1,33 @@
+## 未发布：首次构建无需 GitHub 登录
+
+Windows 新机器下载 runtime/SDK 时，公开资源的选择绕到了 `api.github.com`。
+匿名 API 限流会返回 403；CI 注入 `GITHUB_TOKEN` 只解决了 CI 的额度，未解决新机器问题。
+现在自动模式从 uv 精确版本索引取得 release，随后直接读该 release 公开的 `SHA256SUMS`；
+显式 release 也走同一份清单。SDK 选择和摘要来自同一来源，下载后校验再解包，
+删除了 API 依赖、隐式 token 读取和 CI 的构建 token 注入，runtime 复用同一个解析器。
+
+全量单测 348 passed / 5 skipped。无凭据、空缓存且禁止 API/Authorization 的真实验证中，
+七个 target 解析通过，Windows x86/x64/ARM64 三套 Python 3.13.5 SDK 与 runtime 均下载、
+校验、解包成功；无 token 的 Windows x64 交叉构建通过。未把 macOS 上的下载与交叉构建
+等同于 Windows 本机运行验证；目标机网络与原生启动仍需对应环境复测。
+
+## 未发布：换机部署可靠性
+
+本机 290 个原有测试和静态验证全过，仍复现了 PATH 启动错找 runtime、默认 safe
+裁剪抹掉版本/插件元数据两个问题。launcher 现在从操作系统获取真实可执行路径，
+Windows 缓存路径走 Unicode API，并删除启动时改名 `_pth` 的副作用；safe 默认保留
+安装元数据，release/minimal 才显式删除。
+
+原生闭包改成按文件头识别并纳入 runtime 库，包内依赖也继续递归；修复 SONAME
+符号链接与外部库复制名、同内容库被误判冲突，Windows VC runtime 缺失不再放行。
+自带 `.so.N`/无后缀 native 输入不再被藏进 egg；归档中的编译扩展新增依赖校验，
+当前缓存布局不支持的自定义链接明确提示关闭 egg，避免输出看似成功的坏包。
+
+新增迁移 E2E：中文路径和缓存、改名、隐藏原仓库、清空开发环境、无关 cwd、
+安装目录摘要不变，POSIX 还覆盖只读目录。全量单测 323 passed / 5 skipped，
+macOS 完整构建、迁移后的真实 Qt headless 启动及 Windows x64 交叉构建通过。
+Windows/Linux 原生运行尚待对应宿主验证，不把交叉编译成功当作换机启动成功。
+
 ## v0.17.24
 
 0.17.23 的 macOS/Linux 全绿，但三个 Windows CI job 全部倒在 `Local end-to-end build with third-party wheel`，链接器报 `LNK2001: unresolved external symbol PyInit_py_upper__root`。问题不在 Cython 生成，也不在 register.c，而是 MSVC 路径多要了一个根本不存在的入口。

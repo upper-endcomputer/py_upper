@@ -7,39 +7,9 @@ import subprocess
 from pathlib import Path
 
 from ..config import BUILD, app_name, native_exclude_patterns, optimize_config
-from ..fs import copy_file_contents
+from ..fs import copy_file_contents, sha256
 from .deps import Dependency, DependencyResolver, _mac_install_name, _system_dependency, dependency_names
-from .inspect import inspect, verify_arch
-
-
-def is_debug_artifact(path: Path) -> bool:
-    """Debug symbol bundles are data, not loadable images.
-
-    pyobjc wheels ship ``*.dSYM/Contents/Resources/DWARF/*`` Mach-O files;
-    they are not importable libraries and tools such as install_name_tool
-    reject them.
-    """
-    return any(part.endswith(".dSYM") for part in path.parts)
-
-
-def _native_files(root: Path, target) -> list[Path]:
-    """Return native images, including framework binaries without .dylib suffixes."""
-    result: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file() or is_debug_artifact(path):
-            continue
-        suffix = path.suffix.lower()
-        if target.os == "windows" and suffix not in {".pyd", ".dll", ".exe"}:
-            continue
-        if target.os == "linux" and suffix != ".so":
-            continue
-        try:
-            info = inspect(path)
-        except (OSError, ValueError):
-            continue
-        if (target.os == "macos" and info.format.startswith("Mach-O")) or info.format in {"ELF", "PE"}:
-            result.append(path)
-    return sorted(set(result))
+from .inspect import inspect, is_debug_artifact, native_files as _native_files, verify_arch
 
 
 def prune_excluded_native_files(site: Path) -> list[Path]:
@@ -157,11 +127,19 @@ def _strip_native(path: Path, target) -> None:
 
 def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = None) -> list[Dependency]:
     """Resolve and embed the native dependency closure of the application payload."""
+    root = root.resolve()
     name = app_name()
     package_site = root / "Contents" / "Resources" / "site-packages" if target.os == "macos" else root / "site-packages"
-    runtime_lib = root / "Contents" / "Resources" / "runtime" / "lib" if target.os == "macos" else root / "runtime" / "lib"
+    runtime_root = package_site.parent / "runtime"
+    runtime_lib = runtime_root if target.os == "windows" else runtime_root / "lib"
     search_roots = [package_site, runtime_lib, root]
     queue = _native_files(package_site, target)
+    # libpython and stdlib extensions are loaded even when no third-party
+    # image imports them. They need the same complete closure as the app.
+    # Windows runtimes also contain foreign-architecture venv/tool .exe stubs;
+    # those are standalone templates, not libraries loaded by the launcher.
+    queue.extend(path for path in _native_files(runtime_lib, target)
+                 if target.os != "windows" or path.suffix.lower() != ".exe")
     launcher = (root / "Contents" / "MacOS" / name) if target.os == "macos" else root / (f"{name}.exe" if target.os == "windows" else name)
     if launcher.is_file():
         queue.append(launcher)
@@ -188,16 +166,26 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
                 continue
             if not _inside(resolved, root):
                 verify_arch(resolved, target)
-                destination = source.parent / resolved.name
+                # ELF keeps the load name (often libdemo.so.1) even when its
+                # source symlink resolves to libdemo.so.1.2. macOS install
+                # names are rewritten below and can use the physical name.
+                filename = Path(dep_name).name if target.os == "linux" else resolved.name
+                destination = source.parent / filename
                 if destination.exists():
-                    if destination.resolve() != resolved.resolve():
+                    # Several owners can import the same absolute library.
+                    # Its first copy is a different path by definition; only
+                    # different bytes under that basename are a collision.
+                    if sha256(destination) != sha256(resolved):
                         raise RuntimeError(f"Native dependency basename collision: {destination} != {resolved}")
                 else:
                     copy_file_contents(resolved, destination)
                     resolver.index.add(destination)
                 resolved = destination.resolve()
-                if resolved not in seen:
-                    queue.append(resolved)
+            # A library already inside runtime/resources still has its own
+            # dependencies. Stopping at "found in bundle" hides broken chains
+            # until a clean machine first tries to load them.
+            if resolved not in seen:
+                queue.append(resolved)
             dependencies.append(Dependency(source, dep_name, resolved, False))
 
     report_dir = BUILD / "native-deps" / target.key

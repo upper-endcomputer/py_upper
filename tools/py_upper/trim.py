@@ -31,15 +31,12 @@ RUNTIME_SCOPE = "runtime"
 # They remove payload a running application never imports and that is not
 # specific to a project or a Qt layout:
 #
-# * distribution metadata (pip / importlib.metadata bookkeeping);
 # * type stubs (the interpreter never loads them);
 # * Qt binding examples and C++ headers (development-only in every layout).
 #
-# A project that really queries importlib.metadata/pkg_resources can protect a
-# distribution with ``site_packages_keep``; keep wins over these rules.
+# Distribution metadata stays: importlib.metadata and plugin entry-point
+# discovery need it at runtime even when ordinary module imports work.
 GLOBAL_SITE_PACKAGES = (
-    "**/*.dist-info",
-    "**/*.egg-info",
     "**/*.pyi",
     "PySide*/**/examples",
     "PySide*/**/include",
@@ -75,16 +72,18 @@ GLOBAL_RUNTIME = (
     "**/pkgconfig",
 )
 
+# Metadata removal is explicit in the release/minimal presets. Projects that
+# use those presets can still protect individual distributions with keep rules.
+METADATA_SITE_PACKAGES = ("**/*.dist-info", "**/*.egg-info")
+
 # Named rule bundles add to the global rules above. ``safe`` adds nothing.
-# ``release`` is kept as an alias for existing configurations: distribution
-# metadata became a global rule, so it no longer has anything of its own.
-# ``minimal`` adds payload that is optional at runtime and can break a machine
-# or an application that actually uses it, so it is never enabled by default.
+# ``minimal`` also removes optional runtime payload, so neither aggressive
+# preset is enabled by default.
 PRESETS = {
     "safe": {"site_packages": (), "runtime": ()},
-    "release": {"site_packages": (), "runtime": ()},
+    "release": {"site_packages": METADATA_SITE_PACKAGES, "runtime": ()},
     "minimal": {
-        "site_packages": (
+        "site_packages": METADATA_SITE_PACKAGES + (
             # Qt wheels disagree about where the payload lives: PySide on
             # Windows keeps it beside the package, PySide on POSIX nests it
             # under ``Qt``, and PyQt nests it under ``Qt5``/``Qt6`` everywhere.

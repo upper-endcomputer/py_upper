@@ -161,15 +161,15 @@ strip_native = false
 
 [tool.py_upper.trim]
 # 全局规则由代码内置，任何 preset 和配置都会生效：
-#   site-packages: **/*.dist-info、**/*.egg-info、**/*.pyi、
+#   site-packages: **/*.pyi、
 #                  PySide*/PyQt* 的 examples/include，
 #                  以及 PySide*/shiboken* 顶层的 scripts/support/doc/docs/lib
 #                  （PySide6/Qt/lib 是运行时库目录，不会被删除）；
 #   runtime:       **/idlelib、**/test、**/tests、**/include、**/pkgconfig。
-# 这里只写这个项目额外要删的路径。`*_keep` 优先于全局规则，确实要保留
-# importlib.metadata 数据或 Tk 时，用 keep 把对应路径保护起来。
-# 预设："safe"（默认）只使用全局规则和下面的规则；"release" 是兼容别名
-# （安装元数据已经是全局规则）；"minimal" 再移除 opengl32sw.dll、
+# 默认保留 dist-info/egg-info：版本查询和插件 entry points 会在运行时读取它们。
+# 这里只写这个项目额外要删的路径。`*_keep` 优先于全局规则和预设。
+# 预设："safe"（默认）只使用全局规则和下面的规则；"release" 显式删除
+# dist-info/egg-info；"minimal" 在 release 之上再移除 opengl32sw.dll、
 # qdirect2d/qminimal 平台插件、Qt 翻译和 WebP/TIFF 图片插件。minimal 用
 # `**/` 同时覆盖 Windows 平铺、PySide6/Qt、PyQt5/Qt5 和 PyQt6/Qt6 布局；
 # 它需要目标机器有可用的 OpenGL 驱动，且应用不依赖这些可选插件/翻译。

@@ -8,14 +8,14 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from .config import CACHE, Target, pbs_release, pbs_sdk_dir, python_version
 from .fs import copy_tree_contents, sha256
-from .net import download, http_json
+from .net import download, http_json, http_text
 
 
-PBS_RELEASE_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{tag}"
+PBS_RELEASE_URL = "https://github.com/astral-sh/python-build-standalone/releases/download/{tag}"
 # uv maintains the exact build index for every python-build-standalone release.
 # Upstream reorganises its source tree without notice: the file moved from
 # crates/uv-python to crates/uv-python-managed in uv commit 00e49e7e, which
@@ -71,10 +71,28 @@ def asset_python_version(name: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _asset_from_release(asset: dict[str, Any]) -> PBSAsset:
-    name = str(asset.get("name") or "").strip()
-    url = str(asset.get("browser_download_url") or asset.get("url") or "").strip()
-    return PBSAsset(name=name, url=url, sha256=str(asset.get("sha256") or "").strip() or None)
+def release_assets(checksums: str, tag: str) -> list[PBSAsset]:
+    """Read the public release inventory and hashes without the GitHub API."""
+    base_url = PBS_RELEASE_URL.format(tag=quote(tag, safe=""))
+    assets: dict[str, PBSAsset] = {}
+    for number, line in enumerate(checksums.splitlines(), 1):
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"([a-fA-F0-9]{64}) [ *]([A-Za-z0-9_][A-Za-z0-9_+.-]*)", line)
+        if not match:
+            raise RuntimeError(f"Invalid PBS SHA256SUMS for release {tag} at line {number}")
+        digest, name = match.groups()
+        if name in assets:
+            raise RuntimeError(f"Duplicate PBS SHA256SUMS entry for release {tag}: {name}")
+        assets[name] = PBSAsset(name, f"{base_url}/{quote(name, safe='')}", digest.lower())
+    if not assets:
+        raise RuntimeError(f"Empty PBS SHA256SUMS for release {tag}")
+    return list(assets.values())
+
+
+def _release_assets(fetch_text: Callable[[str], str], tag: str) -> list[PBSAsset]:
+    url = PBS_RELEASE_URL.format(tag=quote(tag, safe="")) + "/SHA256SUMS"
+    return release_assets(fetch_text(url), tag)
 
 
 def is_matching_asset(name: str, target: Target, pyver: str, *, kind: str) -> bool:
@@ -90,20 +108,19 @@ def is_matching_asset(name: str, target: Target, pyver: str, *, kind: str) -> bo
     raise ValueError(f"Unknown PBS asset kind: {kind}")
 
 
-def matching_assets(release: dict[str, Any], target: Target, pyver: str, *, kind: str) -> list[dict[str, Any]]:
+def matching_assets(assets: list[PBSAsset], target: Target, pyver: str, *, kind: str) -> list[PBSAsset]:
     return [
-        asset for asset in (release.get("assets") or [])
-        if isinstance(asset, dict) and is_matching_asset(asset.get("name") or "", target, pyver, kind=kind)
+        asset for asset in assets
+        if is_matching_asset(asset.name, target, pyver, kind=kind)
     ]
 
 
-def available_python_versions(release: dict[str, Any], target: Target, *, kind: str) -> list[str]:
+def available_python_versions(assets: list[PBSAsset], target: Target, *, kind: str) -> list[str]:
     values = {
         version
-        for asset in (release.get("assets") or [])
-        if isinstance(asset, dict)
-        for version in [asset_python_version(str(asset.get("name") or ""))]
-        if version and is_matching_asset(str(asset.get("name") or ""), target, version, kind=kind)
+        for asset in assets
+        for version in [asset_python_version(asset.name)]
+        if version and is_matching_asset(asset.name, target, version, kind=kind)
     }
     return sorted(values, key=lambda x: tuple(int(part) for part in x.split(".")))
 
@@ -181,21 +198,21 @@ def asset_flavor(name: str) -> str:
     return ""
 
 
-def _best_sdk(assets: list[dict[str, Any]], runtime_name: str) -> dict[str, Any]:
+def _best_sdk(assets: list[PBSAsset], runtime_name: str) -> PBSAsset:
     """The SDK matching the runtime's build flavour, best optimisation first."""
     flavor = asset_flavor(runtime_name)
     candidates = assets
     if flavor:
-        candidates = [asset for asset in assets if asset_flavor(str(asset.get("name") or "")) == flavor]
+        candidates = [asset for asset in assets if asset_flavor(asset.name) == flavor]
         if not candidates:
             raise RuntimeError(
                 f"No PBS SDK asset shares the {flavor} flavour of runtime {runtime_name}.\n"
-                f"SDK assets offered for this release: {', '.join(str(asset.get('name')) for asset in assets)}"
+                f"SDK assets offered for this release: {', '.join(asset.name for asset in assets)}"
             )
-    return max(candidates, key=lambda asset: ("pgo+lto-full" in str(asset.get("name") or ""), str(asset.get("name") or "")))
+    return max(candidates, key=lambda asset: ("pgo+lto-full" in asset.name, asset.name))
 
 
-def no_asset_error(release_tag: str, target: Target, pyver: str, release: dict[str, Any], *, missing_runtime: bool, missing_sdk: bool) -> RuntimeError:
+def no_asset_error(release_tag: str, target: Target, pyver: str, assets: list[PBSAsset], *, missing_runtime: bool, missing_sdk: bool) -> RuntimeError:
     missing = []
     if missing_runtime:
         missing.append("install_only_stripped runtime")
@@ -206,30 +223,31 @@ def no_asset_error(release_tag: str, target: Target, pyver: str, release: dict[s
         f"Requested Python: {pyver}\n"
         f"PBS release: {release_tag}\n"
         f"Target: {target.triple}\n"
-        f"Available runtime Python versions: {', '.join(available_python_versions(release, target, kind='runtime')) or 'none'}\n"
-        f"Available SDK Python versions: {', '.join(available_python_versions(release, target, kind='sdk')) or 'none'}\n"
+        f"Available runtime Python versions: {', '.join(available_python_versions(assets, target, kind='runtime')) or 'none'}\n"
+        f"Available SDK Python versions: {', '.join(available_python_versions(assets, target, kind='sdk')) or 'none'}\n"
         "Set [tool.py_upper.pbs].release to a release containing the requested exact Python version; "
         "py_upper will not silently substitute another version."
     )
 
 
-def resolve_pbs_inputs(fetch_json: Callable[[str], Any], configured_tag: str, target: Target, pyver: str) -> PBSInputs:
+def resolve_pbs_inputs(
+    fetch_json: Callable[[str], Any], configured_tag: str, target: Target, pyver: str,
+    *, fetch_text: Callable[[str], str],
+) -> PBSInputs:
     """Resolve one exact PBS runtime + SDK pair.
 
     Automatic mode uses the uv-generated exact runtime metadata to determine the
-    build tag, then requests only that tagged GitHub release to locate the matching
-    full SDK. It never enumerates the GitHub /releases collection.
+    build tag. Both modes select the SDK from that release's public SHA256SUMS,
+    avoiding the authenticated/rate-limited GitHub API entirely.
     """
     if configured_tag:
-        release = fetch_json(PBS_RELEASE_API.format(tag=configured_tag))
-        if not isinstance(release, dict):
-            raise RuntimeError(f"Unexpected PBS release response for {configured_tag}")
-        runtime_assets = matching_assets(release, target, pyver, kind="runtime")
-        sdk_assets = matching_assets(release, target, pyver, kind="sdk")
+        assets = _release_assets(fetch_text, configured_tag)
+        runtime_assets = matching_assets(assets, target, pyver, kind="runtime")
+        sdk_assets = matching_assets(assets, target, pyver, kind="sdk")
         if not runtime_assets or not sdk_assets:
-            raise no_asset_error(configured_tag, target, pyver, release, missing_runtime=not runtime_assets, missing_sdk=not sdk_assets)
-        runtime = _asset_from_release(runtime_assets[0])
-        sdk = _asset_from_release(_best_sdk(sdk_assets, runtime.name))
+            raise no_asset_error(configured_tag, target, pyver, assets, missing_runtime=not runtime_assets, missing_sdk=not sdk_assets)
+        runtime = runtime_assets[0]
+        sdk = _best_sdk(sdk_assets, runtime.name)
         return PBSInputs(configured_tag, runtime, sdk, "release")
 
     data = _load_metadata(fetch_json)
@@ -254,13 +272,11 @@ def resolve_pbs_inputs(fetch_json: Callable[[str], Any], configured_tag: str, ta
     if not tag:
         raise RuntimeError(f"PBS runtime metadata has no release build tag: {runtime.url}")
 
-    release = fetch_json(PBS_RELEASE_API.format(tag=tag))
-    if not isinstance(release, dict):
-        raise RuntimeError(f"Unexpected PBS release response for {tag}")
-    sdk_assets = matching_assets(release, target, pyver, kind="sdk")
+    assets = _release_assets(fetch_text, tag)
+    sdk_assets = matching_assets(assets, target, pyver, kind="sdk")
     if not sdk_assets:
-        raise no_asset_error(tag, target, pyver, release, missing_runtime=False, missing_sdk=True)
-    sdk = _asset_from_release(_best_sdk(sdk_assets, runtime.name))
+        raise no_asset_error(tag, target, pyver, assets, missing_runtime=False, missing_sdk=True)
+    sdk = _best_sdk(sdk_assets, runtime.name)
     return PBSInputs(tag, runtime, sdk, "metadata")
 
 
@@ -368,7 +384,7 @@ def _validate_layout(root: Path, target: Target) -> tuple[Path, dict]:
 
 
 def resolve_inputs(target: Target) -> PBSInputs:
-    return resolve_pbs_inputs(http_json, pbs_release(), target, python_version())
+    return resolve_pbs_inputs(http_json, pbs_release(), target, python_version(), fetch_text=http_text)
 
 
 def ensure_pbs_sdk(target: Target) -> Path:

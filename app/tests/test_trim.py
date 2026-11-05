@@ -120,8 +120,8 @@ def test_policy_accepts_one_pattern_and_merges_command_line_entries():
 def test_missing_trim_section_still_applies_the_global_rules():
     policy = TrimPolicy.from_config({})
 
-    assert "**/*.dist-info" in policy.site_packages
-    assert "**/*.egg-info" in policy.site_packages
+    assert "**/*.dist-info" not in policy.site_packages
+    assert "**/*.egg-info" not in policy.site_packages
     assert "**/*.pyi" in policy.site_packages
     assert "PySide*/**/examples" in policy.site_packages
     assert "PySide*/**/include" in policy.site_packages
@@ -153,7 +153,7 @@ def test_global_rules_are_not_duplicated_by_presets_or_config():
     assert policy.runtime.count("**/idlelib") == 1
 
 
-def test_global_rules_trim_metadata_and_stubs(tmp_path):
+def test_global_rules_trim_development_payload_and_keep_metadata(tmp_path):
     root = tmp_path / "site-packages"
     files = {
         "pkg/__init__.py": b"",
@@ -181,8 +181,8 @@ def test_global_rules_trim_metadata_and_stubs(tmp_path):
 
     assert (root / "pkg" / "__init__.py").exists()
     assert not (root / "pkg" / "module.pyi").exists()
-    assert not (root / "pkg-1.0.dist-info").exists()
-    assert not (root / "pkg-1.0.egg-info").exists()
+    assert (root / "pkg-1.0.dist-info" / "METADATA").exists()
+    assert (root / "pkg-1.0.egg-info" / "PKG-INFO").exists()
     assert not (root / "PySide6" / "Qt" / "include").exists()
     assert not (root / "PySide6" / "Qt" / "examples").exists()
     assert not (root / "PySide6" / "scripts").exists()
@@ -195,7 +195,8 @@ def test_global_rules_trim_metadata_and_stubs(tmp_path):
     assert (root / "shiboken6" / "libshiboken6.abi3.so").exists()
 
 
-def test_keep_can_restore_distribution_metadata(tmp_path):
+@pytest.mark.parametrize("preset", ["release", "minimal"])
+def test_keep_protects_distribution_metadata_from_explicit_trim(tmp_path, preset):
     root = tmp_path / "site-packages"
     metadata = root / "pkg-1.0.dist-info" / "METADATA"
     metadata.parent.mkdir(parents=True)
@@ -205,6 +206,7 @@ def test_keep_can_restore_distribution_metadata(tmp_path):
     module.write_bytes(b"")
 
     policy = TrimPolicy.from_config({
+        "preset": preset,
         "site_packages_keep": ["pkg-1.0.dist-info/**"],
     })
     trim_tree(root, policy.site_packages, policy.site_packages_keep)
@@ -261,13 +263,70 @@ def test_site_optimizer_applies_the_site_patterns(tmp_path, monkeypatch):
     assert result["removed_dirs"] == 1
 
 
-def test_release_preset_is_an_alias_because_metadata_is_global():
+def test_release_preset_explicitly_removes_distribution_metadata():
     policy = TrimPolicy.from_config({"preset": "release"})
     safe = TrimPolicy.from_config({"preset": "safe"})
 
-    assert policy == safe
+    assert policy != safe
     assert "**/*.dist-info" in policy.site_packages
     assert "**/*.egg-info" in policy.site_packages
+
+
+@pytest.mark.parametrize("metadata_kind", ["dist-info", "egg-info"])
+@pytest.mark.parametrize("config", [
+    {},
+    {"preset": "safe"},
+    {"preset": "release", "site_packages_keep": ["trim_metadata_demo-1.2.3.*-info/**"]},
+    {"preset": "minimal", "site_packages_keep": ["trim_metadata_demo-1.2.3.*-info/**"]},
+])
+def test_trim_preserves_runtime_version_and_plugin_discovery(tmp_path, monkeypatch, metadata_kind, config):
+    """Installed metadata is runtime input even when no module imports it."""
+    from importlib import metadata
+
+    site = tmp_path / "site-packages"
+    distribution = site / ("trim_metadata_demo-1.2.3." + metadata_kind)
+    distribution.mkdir(parents=True)
+    metadata_file = "METADATA" if metadata_kind == "dist-info" else "PKG-INFO"
+    (distribution / metadata_file).write_text(
+        "Metadata-Version: 2.1\nName: trim-metadata-demo\nVersion: 1.2.3\n",
+        encoding="utf-8",
+    )
+    (distribution / "entry_points.txt").write_text(
+        "[py_upper.tests.plugins]\njson_probe = json:loads\n", encoding="utf-8"
+    )
+    policy = TrimPolicy.from_config(config)
+
+    trim_tree(site, policy.site_packages, policy.site_packages_keep)
+
+    discovered = list(metadata.Distribution.discover(path=[str(site)]))
+    assert len(discovered) == 1
+    assert discovered[0].version == "1.2.3"
+    monkeypatch.syspath_prepend(str(site))
+    assert metadata.version("trim-metadata-demo") == "1.2.3"
+    (entry,) = discovered[0].entry_points
+    assert entry.group == "py_upper.tests.plugins"
+    assert entry.name == "json_probe"
+    assert entry.load()('{"result": 42}') == {"result": 42}
+
+
+@pytest.mark.parametrize("preset", ["release", "minimal"])
+def test_explicit_metadata_trim_removes_both_installed_formats(tmp_path, preset):
+    from importlib import metadata
+
+    site = tmp_path / "site-packages"
+    for suffix, name in (("dist-info", "METADATA"), ("egg-info", "PKG-INFO")):
+        distribution = site / ("trim_metadata_demo-1.2.3." + suffix)
+        distribution.mkdir(parents=True)
+        (distribution / name).write_text(
+            "Metadata-Version: 2.1\nName: trim-metadata-demo\nVersion: 1.2.3\n",
+            encoding="utf-8",
+        )
+    policy = TrimPolicy.from_config({"preset": preset})
+
+    trim_tree(site, policy.site_packages, policy.site_packages_keep)
+
+    assert list(metadata.Distribution.discover(path=[str(site)])) == []
+    assert not list(site.iterdir())
 
 
 def test_minimal_preset_adds_the_optional_payload_rules():
@@ -398,8 +457,9 @@ def test_a_command_line_preset_overrides_the_configured_one():
 
     assert "*/opengl32sw.dll" not in policy.site_packages
     assert "**/tkinter" not in policy.runtime
-    # The global rules survive the preset override; only minimal's additions go.
-    assert "**/*.dist-info" in policy.site_packages
+    # The safe override retains metadata and removes minimal's optional rules.
+    assert "**/*.dist-info" not in policy.site_packages
+    assert "**/*.egg-info" not in policy.site_packages
     assert "**/idlelib" in policy.runtime
 
 
@@ -419,7 +479,8 @@ def test_template_declares_the_trim_interface():
     # Universal payload lives in the code, not in every project's config.
     assert trim["site_packages"] == []
     assert trim["runtime"] == []
-    assert "**/*.dist-info" in GLOBAL_SITE_PACKAGES
+    assert "**/*.dist-info" not in GLOBAL_SITE_PACKAGES
+    assert "**/*.egg-info" not in GLOBAL_SITE_PACKAGES
     assert "**/*.pyi" in GLOBAL_SITE_PACKAGES
     assert "PySide*/**/examples" in GLOBAL_SITE_PACKAGES
     assert "PyQt*/**/include" in GLOBAL_SITE_PACKAGES

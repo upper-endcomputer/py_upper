@@ -140,6 +140,21 @@ python tools/build.py --release
 
 `build/cache/` 保存上一次构建的 Cython 产物与目标扩展，只有变化的模块会重新编译。`[tool.py_upper.build]` 的 `jobs`（默认 `0` = 每 CPU 一个任务）控制并行度，`incremental = false` 强制全量重编译，`--clean` 会连同缓存一起清掉。
 
+## 换电脑部署
+
+- 运行已打包应用时，复制整个 `dist/<name>.app`（macOS）或 `dist/<name>/`
+  （Windows/Linux），包括 runtime、site-packages、bundle 和资源；只复制 exe 不完整。
+  目标操作系统与 CPU 架构必须和构建 target 一致，目标机不需要开发 Python。
+- 换开发电脑重新构建时，还要迁移本地 `app/pyproject.toml`；它不在 Git 中。
+  模板的 dependencies 为空，不会恢复原电脑的应用依赖。用 `--doctor` 检查新机器工具链。
+- launcher 通过操作系统获取真实安装路径，支持从其他工作目录、PATH 或符号链接启动；
+  安装目录可以只读，egg 缓存写入用户目录。默认 `safe` 保留版本查询和插件发现所需的元数据。
+- 应用扩展直接链接自定义 native 库时使用 `--no-egg`，让扩展和依赖一起参加闭包与重定位。
+  egg 中的扩展在独立缓存目录加载，验证会拒绝其不支持的自定义链接，避免构建机路径泄漏。
+- CI 的本地 E2E 现在包含迁移启动：中文安装/缓存路径、改名、空缓存、清空开发环境、
+  隐藏原仓库和包内容不变检查；POSIX 还把安装目录设为只读。Windows/Linux 的最终兼容性
+  仍需在目标系统原生运行验证，交叉构建的静态通过不代表运行通过。
+
 ## Target Python / PBS
 
 PBS 模式只需要配置一个精确的目标 Python 版本。Windows 目标的发布 runtime 用 python.org 官方 embeddable ZIP，PBS full SDK 只用于编译与依赖解析；其他平台继续用 PBS `install_only_stripped` runtime。精确版本必须同时有对应官方 ZIP 与 PBS SDK（模板用 `3.13.5`；`3.11.13` 没有官方 ZIP）。
@@ -150,7 +165,7 @@ provider = "pbs"
 python = "3.13.5"
 ```
 
-`[tool.py_upper.pbs].release` 可选。省略时，py_upper 使用轻量的精确版本 metadata 获取对应 PBS build tag，然后只请求该 release 来确认 runtime 与 full SDK；不会枚举巨大的 `/releases` 列表。
+`[tool.py_upper.pbs].release` 可选。省略时，py_upper 使用精确版本 metadata 获取对应 PBS build tag，再读取该 release 的公开 `SHA256SUMS` 清单选择 full SDK 并验证下载。指定 release 时，runtime 与 SDK 都从同一份清单选择。整个过程不调用 GitHub API，不需要登录 GitHub、安装 `gh` 或配置 token。
 
 如需完全固定 release：
 
@@ -162,6 +177,10 @@ release = "20241016"
 实际解析的 Runtime/SDK、wheel 集合和校验值可写入 `py_upper.lock.json`。`--locked` 只使用锁文件与本地缓存，不进行新的依赖解析。
 
 PBS 网络请求对临时 HTTP 408/425/429/5xx 有有限次重试，并使用 `.part` 下载文件避免半截 archive 被当成完整缓存。
+
+Windows 新机器可直接运行 `python tools/build.py`。若旧版本在下载 SDK 时出现
+`api.github.com` 的 `HTTP Error 403` / `API rate limit exceeded`，更新构建工具后重试即可，
+无需先登录；若错误来自公开下载地址、代理或 TLS，则仍需按报错检查网络，构建不会吞掉错误。
 
 ## 第三方依赖
 
@@ -268,18 +287,18 @@ Linux / macOS 不需要各写一套规则。
 
 ## 裁剪接口（`[tool.py_upper.trim]`）
 
-Qt 裁剪只删除 import 能证明的负载。还有一类任何应用都不需要的负载由代码内置的
-全局规则直接删除，不用写进配置文件：
+Qt 裁剪只删除 import 能证明的负载。开发负载由代码内置的全局规则删除，
+不用写进配置文件：
 
-- `site-packages`：`**/*.dist-info`、`**/*.egg-info`（pip /
-  `importlib.metadata` 的安装元数据）、`**/*.pyi`（类型存根），以及
+- `site-packages`：`**/*.pyi`（类型存根），以及
   `PySide*/`、`PyQt*/` 下的 `examples` 和 `include`；
 - `runtime`：`**/idlelib`、`**/test`、`**/tests`、`**/include`、
   `**/pkgconfig`（CPython 的开发工具、测试和 C 头文件）。
 
 这些规则对 Windows / macOS / Linux 一致，先于 preset 和项目配置生效。`keep`
-仍然优先：确实要保留 `importlib.metadata` 数据、某个包自带的 tests 或 Tk 时，
-用 `site_packages_keep` / `runtime_keep` 把路径保护起来。Tk/Tcl 是否保留取决于
+仍然优先。默认 `safe` 保留 `dist-info` / `egg-info`，使版本查询和插件 entry points
+在部署后仍然可用。要保护某个包自带的 tests 或 Tk 时，用
+`site_packages_keep` / `runtime_keep`。Tk/Tcl 是否保留取决于
 应用，所以不放进全局规则，Qt 应用可以在配置里显式删除：
 
 ```toml
@@ -299,7 +318,7 @@ runtime_keep = []
 `app/pyproject.toml`；`opengl32sw.dll`、`qoffscreen` 等运行时兜底仍由 Qt 裁剪
 单独保留。
 
-`preset = "minimal"`（或单次 `--trim-preset minimal`）在全局规则和 safe 之外再删除
+`preset = "minimal"`（或单次 `--trim-preset minimal`）在全局规则之外删除安装元数据，以及
 `opengl32sw.dll`（约 20 MB）、`qdirect2d` / `qminimal` 平台插件、Qt 的
 `translations/*.qm`，以及 `qwebp` / `qtiff` 图片插件。规则不绑定宿主布局：
 `PySide*/**/...` 与 `PyQt*/**/...` 同时命中 Windows 平铺的
@@ -313,9 +332,9 @@ runtime_keep = []
 单元测试覆盖；完整构建只在 Windows x86_64 上实测，macOS/Linux 需在对应宿主
 执行一次 `[1/6]`…`[6/6]`。
 
-`preset = "release"` 仍可识别，但只是兼容别名：`dist-info` / `egg-info` 已经是
-全局规则，所以它和 `safe` 没有区别。删除安装元数据后，运行时调用
-`importlib.metadata.version("...")` 或 `pkg_resources.require("...")` 会失去数据；
+`preset = "release"` 显式删除 `dist-info` / `egg-info`，不再与 `safe` 等价。
+删除安装元数据后，运行时调用
+`importlib.metadata.version("...")`、插件 entry points 或 `pkg_resources.require("...")` 会失去数据；
 确认应用不依赖它们，或者用 `site_packages_keep` 保住对应分发。
 
 ## 加密 egg（默认开启）

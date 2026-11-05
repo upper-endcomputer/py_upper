@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def test_smoke_modules_include_entry_and_direct_dependencies(tmp_path, monkeypatch):
     import py_upper.verify as smoke
@@ -56,3 +58,48 @@ def test_windows_pbs_stage_smoke_uses_sdk_interpreter(tmp_path, monkeypatch):
     assert calls[0][0][0] == str(sdk_python)
     assert "PYTHONHOME" not in calls[0][1]["env"]
     assert calls[0][1]["env"]["PYTHONPATH"].endswith("site-packages")
+
+
+@pytest.mark.parametrize("member", ["module.pyd", "py_upper_bundles/py_upper_demo.pyd"])
+def test_egg_cannot_hide_custom_native_dependencies(tmp_path, monkeypatch, member):
+    from py_upper import verify
+    from py_upper.config import TARGETS
+    from py_upper.egg import EggConfig, pack_egg, remove_packed_files
+    from py_upper.native import deps
+    from test_native_deployment import _pe
+
+    monkeypatch.setattr(deps, "_dumpbin_dependencies", lambda path, env=None: [])
+    site = tmp_path / "site-packages"
+    _pe(site / member, ["vendor_driver.dll"])
+    config = EggConfig()
+    egg = pack_egg(site, tmp_path / "py_upper.dat", [member], config)
+    remove_packed_files(site, [member])
+
+    checks = verify._verify_egg_native_dependencies(egg, config.key_hex, TARGETS["windows-x86_64"], tmp_path / "runtime")
+
+    assert len(checks) == 1
+    assert checks[0][0] is False
+    assert "vendor_driver.dll" in checks[0][1]
+    assert "--no-egg" in checks[0][1]
+
+
+def test_egg_windows_runtime_dependency_must_be_bundled(tmp_path, monkeypatch):
+    from py_upper import verify
+    from py_upper.config import TARGETS
+    from py_upper.egg import EggConfig, pack_egg
+    from py_upper.native import deps
+    from test_native_deployment import _pe
+
+    monkeypatch.setattr(deps, "_dumpbin_dependencies", lambda path, env=None: [])
+    site = tmp_path / "site-packages"
+    _pe(site / "module.pyd", ["vcruntime140.dll", "kernel32.dll"])
+    config = EggConfig()
+    egg = pack_egg(site, tmp_path / "py_upper.dat", ["module.pyd"], config)
+    runtime = tmp_path / "runtime"
+    target = TARGETS["windows-x86_64"]
+
+    assert not all(ok for ok, _ in verify._verify_egg_native_dependencies(egg, config.key_hex, target, runtime))
+    _pe(runtime / "vcruntime140.dll")
+    assert not all(ok for ok, _ in verify._verify_egg_native_dependencies(egg, config.key_hex, target, runtime))
+    _pe(runtime / "python313.dll", ["vcruntime140.dll"])
+    assert all(ok for ok, _ in verify._verify_egg_native_dependencies(egg, config.key_hex, target, runtime))

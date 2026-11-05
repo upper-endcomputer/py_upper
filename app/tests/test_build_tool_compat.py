@@ -1270,33 +1270,28 @@ def test_network_retries_transient_gateway_errors(monkeypatch):
     assert len(calls) == 2
 
 
-def test_github_api_requests_carry_the_workflow_token(monkeypatch):
-    """Anonymous api.github.com requests are rate limited per source address.
-
-    The hosted runners share their addresses with every other job on the
-    platform, so the PBS release lookup needs the token Actions exports.
-    """
+def test_public_build_downloads_ignore_github_credentials(tmp_path, monkeypatch):
+    """Public downloads must work identically with absent or stale login state."""
+    import io
     from py_upper import net
 
     seen: list[dict[str, str]] = []
 
-    class Response:
-        def __enter__(self): return self
-        def __exit__(self, *args): return False
-        def read(self, *args): return b"{}"
-
     def fake(request, timeout):
         seen.append(dict(request.headers))
-        return Response()
+        return io.BytesIO(b"{}")
 
     monkeypatch.setattr(net.urllib.request, "urlopen", fake)
-    monkeypatch.setenv("GITHUB_TOKEN", "token-value")
+    monkeypatch.setenv("GITHUB_TOKEN", "unused-stale-token")
+    monkeypatch.setenv("GH_TOKEN", "unused-stale-token")
 
-    net.http_json("https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250818")
     net.http_json("https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python-managed/download-metadata.json")
+    net.http_text("https://github.com/astral-sh/python-build-standalone/releases/download/20250818/SHA256SUMS")
+    net.download("https://github.com/astral-sh/python-build-standalone/releases/download/20250818/archive", tmp_path / "archive")
 
-    assert seen[0]["Authorization"] == "Bearer token-value"
-    assert "Authorization" not in seen[1]
+    assert len(seen) == 3
+    assert all("Authorization" not in headers for headers in seen)
+    assert (tmp_path / "archive").read_bytes() == b"{}"
 
 
 def test_local_runtime_manifest_round_trip(tmp_path):

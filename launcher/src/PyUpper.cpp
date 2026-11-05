@@ -31,6 +31,7 @@
 #endif
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
+#include <mach-o/dyld.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -125,6 +126,29 @@ std::string path_to_utf8(const fs::path& path) { return path.u8string(); }
 fs::path path_from_utf8(const std::string& text) { return fs::path(text); }
 std::string path_to_utf8(const fs::path& path) { return path.string(); }
 #endif
+
+// Environment paths use the same Unicode representation as the filesystem.
+// The narrow Windows CRT environment uses the local code page, not UTF-8.
+fs::path environment_path(const char* name) {
+#ifdef _WIN32
+    const std::wstring key = W(name);
+    std::vector<wchar_t> buffer(MAX_PATH);
+    for (;;) {
+        SetLastError(ERROR_SUCCESS);
+        DWORD length = GetEnvironmentVariableW(key.c_str(), buffer.data(), (DWORD)buffer.size());
+        if (length == 0) {
+            DWORD error = GetLastError();
+            if (error == ERROR_SUCCESS || error == ERROR_ENVVAR_NOT_FOUND) return fs::path();
+            throw std::runtime_error("GetEnvironmentVariableW failed: " + std::to_string(error));
+        }
+        if (length < buffer.size()) return fs::path(std::wstring(buffer.data(), length));
+        buffer.resize(length);
+    }
+#else
+    const char* value = std::getenv(name);
+    return value ? fs::path(value) : fs::path();
+#endif
+}
 
 void set_env(const std::string& name, const std::string& value) {
 #ifdef _WIN32
@@ -222,14 +246,30 @@ void report_fatal(const std::string& message) {
     show_error("py_upper", clip_for_dialog(message));
 }
 
-fs::path exe_dir(const std::string& exe) {
-    // argv[0] can be relative ("./Upper"), which would leave a "." component
-    // in the parent chain and misplace the bundle root. Normalise first.
-    std::error_code ec;
-    auto absolute = fs::absolute(path_from_utf8(exe), ec);
-    if (ec) absolute = fs::absolute(path_from_utf8(exe));
-    auto canonical = fs::weakly_canonical(absolute, ec);
-    return (ec ? absolute : canonical).parent_path();
+fs::path executable_path() {
+    // argv[0] may be a bare PATH name or supplied by another launcher. Only
+    // the OS knows which image was loaded; every bundle path derives from it.
+#ifdef _WIN32
+    std::vector<wchar_t> buffer(MAX_PATH);
+    for (;;) {
+        DWORD length = GetModuleFileNameW(nullptr, buffer.data(), (DWORD)buffer.size());
+        if (length == 0) {
+            throw std::runtime_error("GetModuleFileNameW failed: " + std::to_string(GetLastError()));
+        }
+        if (length < buffer.size()) return fs::canonical(fs::path(std::wstring(buffer.data(), length)));
+        buffer.resize(buffer.size() * 2);
+    }
+#elif defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> buffer(size);
+    if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
+        throw std::runtime_error("_NSGetExecutablePath failed");
+    }
+    return fs::canonical(buffer.data());
+#else
+    return fs::canonical("/proc/self/exe");
+#endif
 }
 
 // The file layout a launcher built without an embedded entry resolves, which is
@@ -489,23 +529,23 @@ struct RuntimeGuard {
 // cache is content-addressed by the decrypted archive, so a rebuilt egg gets a
 // fresh directory and a warm start reuses the old one without rewriting it.
 fs::path bundle_cache_root() {
-    const char* override = std::getenv("PY_UPPER_EGG_CACHE");
-    if (override && *override) return path_from_utf8(override);
+    const fs::path override = environment_path("PY_UPPER_EGG_CACHE");
+    if (!override.empty()) return override;
 #ifdef _WIN32
-    const char* local = std::getenv("LOCALAPPDATA");
-    if (local && *local) return path_from_utf8(local) / "py_upper" / "cache" / "eggs";
-    const char* profile = std::getenv("USERPROFILE");
-    if (profile && *profile) {
-        return path_from_utf8(profile) / "AppData" / "Local" / "py_upper" / "cache" / "eggs";
+    const fs::path local = environment_path("LOCALAPPDATA");
+    if (!local.empty()) return local / "py_upper" / "cache" / "eggs";
+    const fs::path profile = environment_path("USERPROFILE");
+    if (!profile.empty()) {
+        return profile / "AppData" / "Local" / "py_upper" / "cache" / "eggs";
     }
 #elif defined(__APPLE__)
-    const char* home = std::getenv("HOME");
-    if (home && *home) return path_from_utf8(home) / "Library" / "Caches" / "py_upper" / "eggs";
+    const fs::path home = environment_path("HOME");
+    if (!home.empty()) return home / "Library" / "Caches" / "py_upper" / "eggs";
 #else
-    const char* xdg = std::getenv("XDG_CACHE_HOME");
-    if (xdg && *xdg) return path_from_utf8(xdg) / "py_upper" / "eggs";
-    const char* home = std::getenv("HOME");
-    if (home && *home) return path_from_utf8(home) / ".cache" / "py_upper" / "eggs";
+    const fs::path xdg = environment_path("XDG_CACHE_HOME");
+    if (!xdg.empty()) return xdg / "py_upper" / "eggs";
+    const fs::path home = environment_path("HOME");
+    if (!home.empty()) return home / ".cache" / "py_upper" / "eggs";
 #endif
     std::error_code ec;
     fs::path fallback = fs::temp_directory_path(ec);
@@ -698,17 +738,9 @@ RuntimeLoad load_python(const fs::path& home) {
         r.error = r.error.empty() ? reason : reason + "\n" + r.error;
     }
     r.stdlib = home / "Lib";
-    // The embedded launcher configures its own module search paths, so the
-    // runtime ZIP must not also activate python.org's isolated ._pth handling;
-    // with it enabled CPython ignores site-packages entirely.
-    for (const auto& e : fs::directory_iterator(home)) {
-        auto name = path_to_utf8(e.path().filename());
-        if (e.is_regular_file() && name.rfind("python", 0) == 0 && name.find("._pth") != std::string::npos) {
-            std::error_code rename_ec;
-            fs::rename(e.path(), e.path().string() + ".disabled", rename_ec);
-            break;
-        }
-    }
+    // PyConfig.home and module_search_paths explicitly select our layout.
+    // Leave python.org's ._pth intact for direct python.exe use; launching an
+    // installed application must never rename files in its runtime directory.
     // Windows CPython keeps its dynamic stdlib extensions (zlib, _ssl, _socket,
     // ...) in DLLs; without it on the module search path the packaged app
     // cannot import them.
@@ -769,10 +801,11 @@ int PyUpper::run(const std::vector<std::string>& argv) {
             report_fatal("Launcher started without an executable path");
             return 1;
         }
-        const std::string exe = argv.front();
-        const fs::path root = exe_dir(exe);
-        const std::string stem = path_to_utf8(path_from_utf8(exe).stem());
         attach_parent_console();
+        const fs::path executable = executable_path();
+        const std::string exe = path_to_utf8(executable);
+        const fs::path root = executable.parent_path();
+        const std::string stem = path_to_utf8(executable.stem());
 
 #ifdef _WIN32
         const fs::path home = root / "runtime";

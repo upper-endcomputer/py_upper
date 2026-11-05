@@ -18,11 +18,12 @@ from .config import (
 from .egg import (
     EGG_DIR, EGG_NAME, egg_config, egg_loader_source, read_egg_members, read_egg_meta,
 )
-from .egg_loader import MAGIC, keystream_xor
+from .egg_loader import MAGIC, _safe_member, keystream_xor
 from .manifest import read_manifest, validate_manifest
+from .native.deps import _system_dependency, dependency_names
 from .native.inspect import (
     PE_SUBSYSTEM, PE_SUBSYSTEM_CONSOLE, PE_SUBSYSTEM_GUI, inspect,
-    target_format, verify_arch,
+    native_files, target_format, verify_arch,
 )
 from .python_build import (
     merged_bundle_relative, merged_groups, module_name, selected_sources,
@@ -88,6 +89,54 @@ def _verify_egg_bundle(
             checks.append((True, f"arch bundle {member}={target.arch}"))
         except Exception as exc:
             checks.append((False, f"arch bundle {member}: {exc}"))
+    return checks
+
+
+def _verify_egg_native_dependencies(egg_path: Path, key_hex: str, target: Target,
+                                    runtime: Path) -> list[tuple[bool, str]]:
+    """Packed extensions load from a cache, outside the bundle's native tree.
+
+    Their custom linked libraries cannot use site-packages-relative paths.
+    Refuse that unsupported layout explicitly; --no-egg lets the normal
+    native closure relocate the extension and its dependencies together.
+    """
+    checks = []
+    preloaded = set()
+    if target.os == "windows":
+        # load_python loads every python*.dll before any cached application
+        # bundle. Only their transitive DLL dependencies are already available;
+        # a random DLL elsewhere in site-packages is not on that search path.
+        libraries = {path.name.lower(): path for path in runtime.glob("*.dll")}
+        pending = [name for name in libraries if name.startswith("python")]
+        while pending:
+            name = pending.pop()
+            if name in preloaded:
+                continue
+            preloaded.add(name)
+            pending.extend(dep.lower() for dep in dependency_names(libraries[name])
+                           if dep.lower() in libraries and dep.lower() not in preloaded)
+    with tempfile.TemporaryDirectory(prefix="py_upper-egg-check-") as tmp:
+        root = Path(tmp)
+        with zipfile.ZipFile(io.BytesIO(_egg_payload(egg_path, key_hex))) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                destination = root / _safe_member(member.filename)
+                destination.resolve().relative_to(root.resolve())
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(archive.read(member))
+        for binary in native_files(root, target):
+            verify_arch(binary, target)
+            for name in dependency_names(binary):
+                if _system_dependency(name, target):
+                    continue
+                if target.os == "windows" and name.lower() in preloaded:
+                    continue
+                checks.append((False,
+                    f"egg native dependency {binary.relative_to(root)}: {name}; "
+                    "use --no-egg for application extensions with custom linked libraries"))
+    if not checks:
+        checks.append((True, "egg native dependencies portable"))
     return checks
 
 
@@ -303,6 +352,8 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
             loader = egg_loader_source().encode("utf-8")
             checks.append((loader in executable.read_bytes(), "embedded egg loader"))
     runtime_root = resources / "runtime" if target.os == "macos" else root / "runtime"
+    if egg_members is not None:
+        checks.extend(_verify_egg_native_dependencies(egg_path, egg.key_hex, target, runtime_root))
     if bool(optimize_config().get("remove_runtime_pip", True)):
         checks.append((not runtime_pip_payloads(runtime_root), "runtime pip/ensurepip removed"))
     if target.os == "windows" and runtime_spec(target).provider == "pbs":

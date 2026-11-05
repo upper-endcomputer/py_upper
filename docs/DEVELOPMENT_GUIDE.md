@@ -77,6 +77,16 @@ Build Tool 不需要预装 Cython：缺失时会自动装到 `build/host-tools/c
 
 ### 2.3 网络
 
+运行 `python tools/build.py` 不要求登录 GitHub，也不读取 `GH_TOKEN` / `GITHUB_TOKEN`
+或 Git 的凭据。自动选择 PBS release 时先读取 uv 的公开精确版本索引，再读取 release
+附带的 `SHA256SUMS`；显式指定 release 则直接读取该清单。SDK 文件名和 SHA256 来自
+同一份清单，下载完成后先校验再解包；缺失版本、无效清单和校验失败都直接报错。
+Windows 的发布 runtime 仍从 python.org 下载，编译 SDK 仍使用 PBS。
+
+旧版构建若在 `api.github.com` 上报 `HTTP Error 403` / `API rate limit exceeded`，
+更新构建工具后重试，不必先登录 GitHub。新链路不访问该 API，也不会在出错时回退到它。
+CI 同样不再向构建步骤注入 GitHub token，使用与新机器一致的匿名下载路径。
+
 PBS SDK、Windows python.org embeddable ZIP 与 PyPI wheel 都走 HTTPS。国内网络建议给本地构建设镜像（不影响 CI）：
 
 ```bash
@@ -369,6 +379,15 @@ no_index = true
 
 打包时会扫描 site-packages 里的原生文件，递归解析依赖并复制缺失库，macOS 上把 install name 改写成 `@loader_path/...` 并重新 ad-hoc 签名。找不到的依赖是**硬错误**（不会静默产出坏包），可用 `[tool.py_upper.native].exclude` 显式丢弃可选组件。
 
+runtime 的 libpython、stdlib 扩展也参加闭包；找到已在包内的库后继续递归检查。
+文件发现按目标格式的文件头进行，覆盖 Linux `.so.N`、SONAME 符号链接和无后缀 ELF。
+Windows 的 `vcruntime140*.dll` 属于需随包解析的运行库，不再假设目标电脑已安装 VC runtime。
+Linux 仍要求库的 RPATH/运行环境符合目标系统契约；仅在文件树中找到库不等于动态加载器能加载。
+
+自带的原生输入保持散文件，只有本次编译出的扩展进入 egg。扩展若直接链接自定义库，
+当前 egg 独立缓存布局不能保证这些相对链接有效，`--verify` 会明确失败并提示 `--no-egg`；
+关闭 egg 后按正常闭包处理，不能靠构建机已有的库冒充可部署产物。
+
 ---
 
 ## 9. Qt 应用
@@ -456,18 +475,18 @@ qt_platforms = ["windows", "cocoa", "xcb", "wayland", "offscreen"]
 
 ### 9.4 通用裁剪接口（`[tool.py_upper.trim]`）
 
-按 import 裁剪只能处理 Qt 能通过 import 证明的负载。另外一类负载任何应用都不需要，
-由代码内置的全局规则直接删除，不写进配置：
+按 import 裁剪只能处理 Qt 能通过 import 证明的负载。开发负载由代码内置的
+全局规则直接删除，不写进配置：
 
-- `site-packages`：`**/*.dist-info`、`**/*.egg-info`（pip /
-  `importlib.metadata` 的安装元数据）、`**/*.pyi`（类型存根），以及
+- `site-packages`：`**/*.pyi`（类型存根），以及
   `PySide*/`、`PyQt*/` 下的 `examples` 和 `include`；
 - `runtime`：`**/idlelib`、`**/test`、`**/tests`、`**/include`、
   `**/pkgconfig`（CPython 的开发工具、测试和 C 头文件）。
 
 全局规则先于 preset 和项目配置生效，Windows / macOS / Linux 行为一致。`keep`
-仍然优先；确实要保留 `importlib.metadata` 数据、某个包自带的 tests 或 Tk 时，
-用 `site_packages_keep` / `runtime_keep` 把路径保护起来。
+仍然优先。默认 `safe` 保留 `dist-info` / `egg-info`：版本查询和插件 entry points
+都依赖这些运行时数据。需要保留某个包自带的 tests 或 Tk 时，用
+`site_packages_keep` / `runtime_keep` 把路径保护起来。
 
 Tk/Tcl 是否保留取决于应用，所以留在配置里按项目选择：
 
@@ -497,8 +516,8 @@ runtime_keep = []
   避免配置错误删到裁剪根之外；
 - 裁剪只作用于 staging 的构建副本，不改 `runtimes/`、wheel 缓存或 `app/src`。
 
-`preset` 仍有三档：`safe`（默认）只使用全局规则加显式规则；`release` 是兼容
-别名（安装元数据已经是全局规则，所以与 safe 相同）；`minimal` 再展开
+`preset` 有三档：`safe`（默认）只使用全局规则加显式规则；`release` 显式删除
+安装元数据；`minimal` 在 release 之上再展开
 `opengl32sw.dll`、`qdirect2d`/`qminimal` 平台插件、`translations/*.qm`、
 `qwebp`/`qtiff` 图片插件和 Tk/Tcl runtime 目录。预设模式与显式模式合并后去重，
 `keep` 仍然优先；未知预设名在构建开始前报错。也可以只在本次构建使用
@@ -521,8 +540,8 @@ WebP/TIFF 解码；默认保持 `safe`。完整构建只在 Windows x86_64 上�
 macOS/Linux 需要在对应宿主执行一次全量构建确认。
 
 删除 `dist-info` / `egg-info` 后，运行时调用 `importlib.metadata.version(...)` 或
-`pkg_resources.require(...)` 会失去数据。需要这些元数据的项目用
-`site_packages_keep` 保住对应分发，例如：
+`pkg_resources.require(...)` 和插件 entry points 会失去数据。默认 safe 保留它们；
+选择 release/minimal 的项目用 `site_packages_keep` 保住对应分发，例如：
 
 ```toml
 site_packages_keep = ["pkg-1.0.dist-info/**"]
@@ -694,6 +713,12 @@ AboutWindow 的「关闭」按钮 ─CommandBinding→ MainViewModel.hide_about_
 
 ### 10.1 入口解析
 
+安装根由操作系统报告的真实可执行路径派生（Windows `GetModuleFileNameW`、macOS
+`_NSGetExecutablePath`、Linux `/proc/self/exe`），不使用调用方可任意指定的 `argv[0]`。
+因此从 PATH、不同工作目录或符号链接启动仍能找到同一 runtime；导出的 executable
+和 Python 的 `sys.executable` 也是该绝对路径。Windows 缓存路径用宽字符环境 API 读取。
+launcher 不修改安装目录中的 `python*._pth`；显式 PyConfig 路径生效，原 sidecar 保持原样。
+
 入口程序**编译在 launcher 里**。打包时 `package.write_embedded_source()` 生成 `py_upper_embedded.cpp`（入口程序 + smoke 程序的 C++ raw string 字面量），CMake 通过 `-DPY_UPPER_EMBEDDED_SOURCE=` 把它编进 launcher，并定义 `PY_UPPER_HAS_EMBEDDED_SOURCE` 让 `PyUpper.cpp` 知道符号存在。入口本来就是从 `[tool.py_upper].entry` 生成的那三行，没有第二份手写副本，改个名字（`Upper.app` → `Renamed.app`、`Upper.exe` → `Renamed.exe`）也不用动任何东西。
 
 产物因此**不再有 `.int` 文件**：老布局里的 `<App>.int`、改名安全副本 `_py_upper_static.int`、以及构建验证数据 `<App>.smoke.int` 都是同一个程序的冗余副本，现在都只在 launcher 里存在一份。`--verify` 断言两件事：产物里没有 `.int` sidecar，且 launcher 二进制里能读到 `entry_source()` 的字节——后者是"编译进去的入口就是配置里那个入口"的证明，文件存在性检查做不到这点。
@@ -763,6 +788,11 @@ CI（`.github/workflows/validate.yml`）在**每个原生平台**都跑：
 ```
 
 原生集成 job 从模板生成 `app/pyproject.toml` 时会把仓库自身示例应用的依赖集合填进 `[project] dependencies`（模板里是空列表），否则集成运行没有 PySide6 可用；纯测试与聚合 job 只需要文件存在，直接复制模板。E2E 夹具同样自己重写这一段依赖。
+
+本地 E2E 还会复制产物到含中文和空格的目录，改名后隐藏构建仓库，从无开发 PATH、
+新用户缓存和无关工作目录分别运行真实入口与 launcher smoke，并比较包内文件摘要。
+POSIX 测试把复制的安装目录设为只读；Windows 测试保留 `_pth` 并验证启动未改名或删除它。
+用 `PY_UPPER_E2E=1 python -m pytest app/tests/test_e2e_local.py -q` 运行这组验证。
 
 触发范围只有 develop：`push` 与 `pull_request` 都带 `branches: [develop]`（`pull_request` 过滤的是 base 分支），`workflow_dispatch` 保留给失败重跑。`feature_*` / `fix_*` 临时分支上的中间提交不跑矩阵——它们的验证由合并后的 develop 承担，一次功能开发不会在临时分支上白烧十几轮全平台 job。确实要单独验证某个分支时用 `gh workflow run validate.yml --ref <branch>` 手动触发。
 
