@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import struct
 from pathlib import Path
 
 import pytest
@@ -11,12 +12,40 @@ from py_upper import egg
 from py_upper.native import bundle, deps
 
 
-def _elf(path: Path, machine: int = 62) -> Path:
+def _elf(path: Path, machine: int = 62, file_type: int = 3) -> Path:
     data = bytearray(64)
     data[:6] = b"\x7fELF\x02\x01"
+    data[16:18] = file_type.to_bytes(2, "little")
     data[18:20] = machine.to_bytes(2, "little")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+    return path
+
+
+def _macho(path: Path, file_type: int = 6) -> Path:
+    data = bytearray(32)
+    data[:4] = bytes.fromhex("cffaedfe")
+    data[4:8] = (0x0100000C).to_bytes(4, "little")
+    data[12:16] = file_type.to_bytes(4, "little")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def _fat_macho(path: Path, slices: list[bytes], endian: str = ">", fat64: bool = False) -> Path:
+    magic = 0xCAFEBABF if fat64 else 0xCAFEBABE
+    table = bytearray(struct.pack(endian + "II", magic, len(slices)))
+    # Headers beyond the initial read exercise slice seeking, not accidental
+    # parsing of bytes already read as part of the fat header.
+    offset = 8192
+    payload = bytearray(offset)
+    for cpu, content in zip((0x01000007, 0x0100000C), slices):
+        fields = (cpu, 0, offset, len(content), 0)
+        table += struct.pack(endian + ("IIQQII" if fat64 else "IIIII"), *(fields + (0,) if fat64 else fields))
+        payload.extend(content)
+        offset += len(content)
+    payload[:len(table)] = table
+    path.write_bytes(payload)
     return path
 
 
@@ -75,6 +104,89 @@ def test_native_discovery_uses_target_format_instead_of_filename_suffix(tmp_path
     _elf(tmp_path / "symbols.dSYM" / "Contents" / "Resources" / "DWARF" / "helper")
 
     assert bundle._native_files(tmp_path, TARGETS["linux-x86_64"]) == sorted(expected)
+
+
+def test_native_discovery_skips_relocatable_objects(tmp_path):
+    elf_object = _elf(tmp_path / "config" / "python.o", file_type=1)
+    macho_object = _macho(tmp_path / "config" / "python-mac.o", file_type=1)
+    macho_library = _macho(tmp_path / "libpython.dylib")
+
+    from py_upper.native.inspect import inspect
+
+    assert inspect(elf_object).loadable is False
+    assert inspect(macho_object).loadable is False
+    assert bundle._native_files(tmp_path, TARGETS["linux-x86_64"]) == []
+    assert bundle._native_files(tmp_path, TARGETS["macos-arm64"]) == [macho_library]
+
+
+@pytest.mark.parametrize("endian,fat64", [(">", False), ("<", False), (">", True), ("<", True)])
+def test_native_discovery_checks_universal_slices(tmp_path, endian, fat64):
+    from py_upper.native.inspect import inspect, verify_arch
+
+    obj = _macho(tmp_path / "object", file_type=1).read_bytes()
+    dylib = _macho(tmp_path / "library").read_bytes()
+    bitcode = b"\xde\xc0\x17\x0b" + bytes(28)
+    objects = _fat_macho(tmp_path / "python.o", [obj, obj], endian, fat64)
+    bitcodes = _fat_macho(tmp_path / "lto.o", [bitcode, bitcode], endian, fat64)
+    library = _fat_macho(tmp_path / "universal.dylib", [dylib, dylib], endian, fat64)
+
+    assert not inspect(objects).loadable
+    assert not inspect(bitcodes).loadable
+    assert inspect(library).loadable
+    assert verify_arch(library, TARGETS["macos-arm64"]).arch == "universal"
+    found = bundle._native_files(tmp_path, TARGETS["macos-arm64"])
+    assert objects not in found and bitcodes not in found and library in found
+
+
+@pytest.mark.parametrize("data", [bytes.fromhex("cffaedfe"), bytes.fromhex("cafebabe00000002")])
+def test_native_discovery_ignores_truncated_headers(tmp_path, data):
+    (tmp_path / "truncated").write_bytes(data)
+    assert bundle._native_files(tmp_path, TARGETS["macos-arm64"]) == []
+
+
+@pytest.mark.parametrize("name", ["libssl.so.3", "libcrypto.so.3", "libsqlite3.so.0", "libbz2.so.1.0"])
+def test_linux_stdlib_dependencies_still_require_a_complete_runtime(closure_workspace, monkeypatch, name):
+    library = _elf(closure_workspace / "runtime" / "lib" / "python3.13" / "lib-dynload" / "module.so")
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env: [name] if path == library else [])
+    with pytest.raises(RuntimeError, match=name):
+        bundle.bundle_native_dependencies(closure_workspace, TARGETS["linux-x86_64"])
+
+
+def test_linux_e2e_fixture_copies_transitive_libraries_with_relative_rpaths(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import test_e2e_local as e2e
+
+    runtime = tmp_path / "runtime"
+    extension = _elf(runtime / "lib" / "python3.13" / "lib-dynload" / "_ssl.so")
+    host = tmp_path / "host libs"
+    ssl = _elf(host / "libssl.so.3")
+    crypto = _elf(host / "libcrypto.so.3")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout=f"libssl.so.3 => {ssl} (0x1)\n"
+                                     f"libcrypto.so.3 => {crypto} (0x2)\n"
+                                     "libc.so.6 => /lib/libc.so.6 (0x3)\n")
+
+    monkeypatch.setattr(e2e.subprocess, "run", run)
+    e2e._complete_linux_runtime(runtime, TARGETS["linux-x86_64"])
+
+    assert (runtime / "lib" / ssl.name).read_bytes() == ssl.read_bytes()
+    assert (runtime / "lib" / crypto.name).read_bytes() == crypto.read_bytes()
+    assert not (runtime / "lib" / "libc.so.6").exists()
+    assert ["patchelf", "--set-rpath", "$ORIGIN/../..", str(extension)] in calls
+    assert ["patchelf", "--set-rpath", "$ORIGIN", str(runtime / "lib" / ssl.name)] in calls
+
+
+def test_linux_e2e_fixture_reports_missing_host_dependencies(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import test_e2e_local as e2e
+
+    _elf(tmp_path / "lib" / "python3.13" / "lib-dynload" / "_ssl.so")
+    monkeypatch.setattr(e2e.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="libssl.so.3 => not found\n"))
+    with pytest.raises(RuntimeError, match="E2E host runtime dependency missing.*libssl"):
+        e2e._complete_linux_runtime(tmp_path, TARGETS["linux-x86_64"])
 
 
 def test_scan_tree_checks_versioned_elf_dependencies(tmp_path, monkeypatch):

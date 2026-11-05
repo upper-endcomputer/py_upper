@@ -13,6 +13,10 @@ class BinaryInfo:
     # PE only: IMAGE_OPTIONAL_HEADER.Subsystem.  None for every other format and
     # for truncated images where the optional header is not fully readable.
     subsystem: int | None = None
+    # Relocatable object files can have a native image header without being
+    # loadable by the target process.  Discovery keeps this bit separate from
+    # the format and architecture so callers can still inspect their headers.
+    loadable: bool = True
 
 
 PE_MACHINE = {0x8664: "x86_64", 0xAA64: "arm64", 0x14C: "x86"}
@@ -45,6 +49,13 @@ _FAT_BIG_MAGIC = 0xCAFEBABE
 _FAT_LITTLE_MAGIC = 0xBEBAFECA
 _FAT64_BIG_MAGIC = 0xCAFEBABF
 _FAT64_LITTLE_MAGIC = 0xBFBAFECA
+
+# Executable, fixed VM library, preload, dylib, dynamic linker and bundle.
+# MH_OBJECT / MH_DSYM and LLVM bitcode are compiler/debug inputs, not images
+# the application can load (including universal Python config/python.o).
+_MACH_LOADABLE_FILETYPES = frozenset({2, 3, 5, 6, 7, 8, 11})
+# ET_EXEC and ET_DYN; exclude relocatable objects and core dumps.
+_ELF_LOADABLE_TYPES = frozenset({2, 3})
 
 
 def _pe_has_arm64ec_section(data: bytes, pe: int) -> bool:
@@ -82,20 +93,53 @@ def _mach_arches(data: bytes, magic: int) -> set[str]:
     return {MACH_CPU.get(cputype, f"0x{cputype:08x}")}
 
 
-def _fat_arches(data: bytes, magic: int) -> set[str]:
+def _mach_loadable(data: bytes, magic: int) -> bool:
+    if len(data) < 16:
+        raise ValueError("Truncated Mach-O header")
+    endian = "<" if magic in _MACH_LITTLE_MAGICS else ">"
+    file_type = struct.unpack_from(endian + "I", data, 12)[0]
+    return file_type in _MACH_LOADABLE_FILETYPES
+
+
+def _fat_entries(data: bytes, magic: int) -> list[tuple[int, int, int]]:
     little = magic in {_FAT_LITTLE_MAGIC, _FAT64_LITTLE_MAGIC}
     endian = "<" if little else ">"
+    if len(data) < 8:
+        raise ValueError("Truncated Mach-O universal header")
     nfat_arch = struct.unpack_from(endian + "I", data, 4)[0]
     is_64 = magic in {_FAT64_BIG_MAGIC, _FAT64_LITTLE_MAGIC}
     entry_size = 32 if is_64 else 20
-    if len(data) < 8 + nfat_arch * entry_size:
+    if not nfat_arch or len(data) < 8 + nfat_arch * entry_size:
         raise ValueError(f"Truncated Mach-O universal header: {len(data)} bytes")
-    arches: set[str] = set()
+    entries = []
     for index in range(nfat_arch):
         offset = 8 + index * entry_size
         cputype = struct.unpack_from(endian + "I", data, offset)[0]
-        arches.add(MACH_CPU.get(cputype, f"0x{cputype:08x}"))
-    return arches
+        start, size = struct.unpack_from(endian + ("QQ" if is_64 else "II"), data, offset + 8)
+        entries.append((cputype, start, size))
+    return entries
+
+
+def _fat_arches(data: bytes, magic: int) -> set[str]:
+    return {MACH_CPU.get(cpu, f"0x{cpu:08x}") for cpu, _, _ in _fat_entries(data, magic)}
+
+
+def _fat_loadable(path: Path, data: bytes, magic: int) -> bool:
+    entries = _fat_entries(data, magic)
+    file_size = path.stat().st_size
+    loadable = []
+    with path.open("rb") as stream:
+        for _, start, size in entries:
+            if start < 8 or size < 4 or start + size > file_size:
+                raise ValueError(f"Invalid Mach-O slice bounds: {path}")
+            stream.seek(start)
+            header = stream.read(min(size, 16))
+            slice_magic = struct.unpack_from(">I", header)[0]
+            loadable.append(
+                slice_magic in _MACH_LITTLE_MAGICS | _MACH_BIG_MAGICS
+                and _mach_loadable(header, slice_magic)
+            )
+    return all(loadable)
 
 
 def inspect(path: Path) -> BinaryInfo:
@@ -123,9 +167,15 @@ def inspect(path: Path) -> BinaryInfo:
     if len(data) >= 4:
         magic = struct.unpack_from(">I", data, 0)[0]
         if magic in _MACH_LITTLE_MAGICS | _MACH_BIG_MAGICS:
-            return BinaryInfo(path, "Mach-O", next(iter(_mach_arches(data, magic))))
+            loadable = _mach_loadable(data, magic)
+            return BinaryInfo(
+                path,
+                "Mach-O",
+                next(iter(_mach_arches(data, magic))),
+                loadable=loadable,
+            )
         if magic in {_FAT_BIG_MAGIC, _FAT_LITTLE_MAGIC, _FAT64_BIG_MAGIC, _FAT64_LITTLE_MAGIC}:
-            return BinaryInfo(path, "Mach-O universal", "universal")
+            return BinaryInfo(path, "Mach-O universal", "universal", loadable=_fat_loadable(path, data, magic))
     if len(data) >= 20 and data[:4] == b"\x7fELF":
         # e_ident[5] selects the ELF byte order. e_machine is at offset 18.
         if data[5] == 1:
@@ -134,9 +184,15 @@ def inspect(path: Path) -> BinaryInfo:
             endian = ">"
         else:
             raise ValueError(f"Invalid ELF byte order: {path}")
+        elf_type = struct.unpack_from(endian + "H", data, 16)[0]
         machine = struct.unpack_from(endian + "H", data, 18)[0]
         elf = {62: "x86_64", 183: "arm64"}
-        return BinaryInfo(path, "ELF", elf.get(machine, f"0x{machine:04x}"))
+        return BinaryInfo(
+            path,
+            "ELF",
+            elf.get(machine, f"0x{machine:04x}"),
+            loadable=elf_type in _ELF_LOADABLE_TYPES,
+        )
     raise ValueError(f"Unsupported or invalid native binary: {path}")
 
 
@@ -169,7 +225,7 @@ def native_files(root: Path, target) -> list[Path]:
             continue
         # Runtime trees can carry foreign-format executable templates. They
         # are data on this platform and cannot enter its dependency graph.
-        if info.format.startswith(expected):
+        if info.loadable and info.format.startswith(expected):
             result.append(path)
     return sorted(set(result))
 

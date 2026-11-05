@@ -1093,16 +1093,12 @@ def test_native_dependency_parser_excludes_own_macho_id(monkeypatch, tmp_path):
 def test_macho_arm64_and_universal_validation(tmp_path):
     from py_upper.config import TARGETS
     from py_upper.native.inspect import inspect, verify_arch
+    from test_native_deployment import _macho, _fat_macho
 
-    single = tmp_path / "arm.dylib"
-    single.write_bytes(bytes.fromhex("cffaedfe0c0000010000000000000000"))
+    single = _macho(tmp_path / "arm.dylib")
     assert inspect(single).arch == "arm64"
 
-    universal = tmp_path / "fat.dylib"
-    data = bytearray(bytes.fromhex("cafebabe")) + (2).to_bytes(4, "big")
-    for cpu in (0x01000007, 0x0100000C):
-        data += cpu.to_bytes(4, "big") + (0).to_bytes(4, "big") + (0).to_bytes(4, "big") + (0).to_bytes(4, "big") + (0).to_bytes(4, "big")
-    universal.write_bytes(data)
+    universal = _fat_macho(tmp_path / "fat.dylib", [single.read_bytes(), single.read_bytes()])
     assert verify_arch(universal, TARGETS["macos-arm64"]).arch == "universal"
 
 

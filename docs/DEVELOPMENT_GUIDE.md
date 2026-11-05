@@ -384,6 +384,11 @@ runtime 的 libpython、stdlib 扩展也参加闭包；找到已在包内的库�
 Windows 的 `vcruntime140*.dll` 属于需随包解析的运行库，不再假设目标电脑已安装 VC runtime。
 Linux 仍要求库的 RPATH/运行环境符合目标系统契约；仅在文件树中找到库不等于动态加载器能加载。
 
+可重定位 ELF/Mach-O 对象、universal 容器里的 LLVM bitcode 和调试镜像属于编译输入，
+不进入加载依赖闭包。使用 `local` runtime 时，需连同标准库扩展依赖的非系统库一起提供；
+复制宿主 Python 的 stdlib 目录并不等于完整运行时。Linux E2E 夹具用 `ldd` 收集可信宿主
+解释器的依赖，再用 `patchelf` 改为包内相对搜索路径；生产缺库检查不因此放宽。
+
 自带的原生输入保持散文件，只有本次编译出的扩展进入 egg。扩展若直接链接自定义库，
 当前 egg 独立缓存布局不能保证这些相对链接有效，`--verify` 会明确失败并提示 `--no-egg`；
 关闭 egg 后按正常闭包处理，不能靠构建机已有的库冒充可部署产物。

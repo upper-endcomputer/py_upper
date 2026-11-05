@@ -96,7 +96,7 @@ def _mac_aliases(roots: list[Path]) -> dict[str, Path]:
                 info = inspect(path)
             except (OSError, ValueError):
                 continue
-            if not info.format.startswith("Mach-O"):
+            if not info.loadable or not info.format.startswith("Mach-O"):
                 continue
             install_name = _mac_install_name(path)
             if not install_name:

@@ -1,4 +1,6 @@
-## 未发布：首次构建无需 GitHub 登录
+## v0.17.25
+
+### 首次构建无需 GitHub 登录
 
 Windows 新机器下载 runtime/SDK 时，公开资源的选择绕到了 `api.github.com`。
 匿名 API 限流会返回 403；CI 注入 `GITHUB_TOKEN` 只解决了 CI 的额度，未解决新机器问题。
@@ -11,7 +13,7 @@ Windows 新机器下载 runtime/SDK 时，公开资源的选择绕到了 `api.gi
 校验、解包成功；无 token 的 Windows x64 交叉构建通过。未把 macOS 上的下载与交叉构建
 等同于 Windows 本机运行验证；目标机网络与原生启动仍需对应环境复测。
 
-## 未发布：换机部署可靠性
+### 换机部署可靠性
 
 本机 290 个原有测试和静态验证全过，仍复现了 PATH 启动错找 runtime、默认 safe
 裁剪抹掉版本/插件元数据两个问题。launcher 现在从操作系统获取真实可执行路径，
@@ -27,6 +29,14 @@ Windows 缓存路径走 Unicode API，并删除启动时改名 `_pth` 的副作�
 安装目录摘要不变，POSIX 还覆盖只读目录。全量单测 323 passed / 5 skipped，
 macOS 完整构建、迁移后的真实 Qt headless 启动及 Windows x64 交叉构建通过。
 Windows/Linux 原生运行尚待对应宿主验证，不把交叉编译成功当作换机启动成功。
+
+后续 CI 暴露两处问题：Linux E2E 复制了宿主 Python 标准库，却漏带其非系统依赖；
+macOS 把 universal `python.o` 当成加载镜像，切片后遇到 LLVM bitcode 才报错。
+现在夹具通过 `ldd` 复制依赖并用 `patchelf` 设置包内相对 RPATH；生产缺库门禁保持严格。
+镜像识别读取 ELF/Mach-O 类型及 universal 内部切片，编译对象和 bitcode 不进入闭包、
+install-name 别名或包架构检查；不再为了合成测试头而放行无效文件类型。
+本地复验：单测 361 passed / 5 skipped；macOS 完整构建、签名与两项迁移 E2E 通过。
+远端全平台结果按后续提交的 CI 记录确认。
 
 ## v0.17.24
 

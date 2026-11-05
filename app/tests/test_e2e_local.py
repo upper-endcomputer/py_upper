@@ -16,6 +16,8 @@ import pytest
 from py_upper.compat import tomllib
 from py_upper.config import host_target
 from py_upper.native.bundle import ad_hoc_sign
+from py_upper.native.deps import _system_dependency
+from py_upper.native.inspect import native_files
 from py_upper.toolchain import resolve_toolchain
 
 
@@ -51,6 +53,45 @@ def _host_libpython() -> Path:
         if candidate.is_file():
             return candidate
     raise RuntimeError("Host libpython not found; tried: " + ", ".join(str(path) for path in candidates))
+
+
+def _complete_linux_runtime(runtime: Path, target) -> None:
+    """Copy the host interpreter's non-system dependencies into the fixture.
+
+    Unlike PBS, setup-python's interpreter depends on distribution libraries.
+    ldd is used only on these trusted, native host inputs and includes their
+    transitive dependencies. Production closure rules must not be weakened to
+    compensate for an incomplete test runtime.
+    """
+    lib = runtime / "lib"
+    dependencies: dict[str, Path] = {}
+    for binary in native_files(runtime, target):
+        result = subprocess.run(["ldd", str(binary)], capture_output=True, text=True, check=True)
+        for line in result.stdout.splitlines():
+            if "=>" not in line:
+                continue
+            name, resolved = (part.strip() for part in line.split("=>", 1))
+            if resolved == "not found":
+                raise RuntimeError(f"E2E host runtime dependency missing: {binary}: {name}")
+            if _system_dependency(name, target):
+                continue
+            source = Path(resolved.rsplit(" (", 1)[0])
+            if not source.is_absolute() or not source.is_file():
+                raise RuntimeError(f"Invalid ldd dependency: {binary}: {line}")
+            previous = dependencies.get(name)
+            if previous is not None and previous.resolve() != source.resolve():
+                raise RuntimeError(f"Conflicting E2E host runtime dependency: {name}")
+            dependencies[name] = source
+    for name, source in dependencies.items():
+        destination = lib / name
+        if not destination.exists():
+            shutil.copyfile(source, destination)
+        elif destination.read_bytes() != source.read_bytes():
+            raise RuntimeError(f"Conflicting E2E runtime library: {destination}")
+    for binary in native_files(runtime, target):
+        relative = os.path.relpath(lib, binary.parent)
+        rpath = "$ORIGIN" if relative == "." else "$ORIGIN/" + relative
+        subprocess.run(["patchelf", "--set-rpath", rpath, str(binary)], check=True)
 
 
 def _make_local_runtime(repo: Path) -> str:
@@ -128,7 +169,9 @@ def _make_local_runtime(repo: Path) -> str:
             # the copy ("code signature invalid") and the launcher cannot load
             # the runtime it was just handed.
             ad_hoc_sign(bundled_libpython)
-        shutil.copytree(stdlib, runtime / "lib" / f"python{major_minor}", symlinks=True, ignore=ignore)
+        shutil.copytree(stdlib, runtime / "lib" / f"python{major_minor}", symlinks=target.os != "linux", ignore=ignore)
+        if target.os == "linux":
+            _complete_linux_runtime(runtime, target)
         executable_name = f"python{major_minor}"
 
     shutil.copyfile(runtime / ("python.exe" if target.os == "windows" else f"bin/{executable_name}"), sdk / "bin" / executable_name)

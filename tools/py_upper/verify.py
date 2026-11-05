@@ -398,7 +398,7 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
             info = inspect(path)
         except (OSError, ValueError):
             continue
-        if not info.format.startswith(target_container):
+        if not info.loadable or not info.format.startswith(target_container):
             continue
         checked += 1
         try:

@@ -1,41 +1,43 @@
-## Unreleased — anonymous runtime/SDK downloads
+## 0.17.25
 
-### Problem / Root cause
+### Problem
 - Cold builds selected the public PBS SDK through `api.github.com`. Anonymous API rate limits could stop a Windows first build with HTTP 403 even while release downloads were reachable. CI's injected `GITHUB_TOKEN` masked that dependency.
+- A packaged app launched by its bare PATH name searched for runtime relative to the caller's working directory and exited before startup.
+- Default safe trimming deleted distribution metadata, breaking runtime version queries and entry-point discovery.
+- Native closure missed versioned ELF libraries, runtime libraries and transitive dependencies already inside the package. Windows VC runtime DLLs were incorrectly treated as OS-provided.
+- Native files moved into the encrypted egg could escape dependency validation, and the Windows launcher renamed installed `_pth` files at startup.
+
+### Root cause
+- Executable-path discovery, installed metadata and native closure assumed the build machine. Public SDK selection also depended on the GitHub API quota.
+- Native-image discovery treated ELF/Mach-O object files as loadable images; the Linux local-runtime fixture omitted host Python dependencies.
 
 ### Changes
 - `tools/py_upper/pbs.py` selects exact runtime/SDK assets from the release's public `SHA256SUMS`, with SDK hashes checked before extraction. Automatic release selection still uses uv's public exact-version index; no GitHub API or login is involved in either mode.
 - `tools/py_upper/net.py` adds plain-text retrieval and removes implicit GitHub credential use. `runtime.py` reuses the common PBS resolver; CI removes the obsolete build token injection.
 - Regression tests cover absent/stale credentials with the API unavailable, all seven targets, explicit releases, old Windows shared SDK pairing, malformed checksums, version mismatch and corrupt downloads. Download errors remain visible.
 - README and development guide explain anonymous first builds and the old API 403 failure.
-
-### Verification
-- Unit suite: 348 passed, 5 skipped with a 60-second hard timeout. Python compile checks and `git diff --check` pass.
-- Fresh temporary cache, no GitHub credentials, and assertions rejecting any API request or Authorization header: all seven targets resolve; Windows x86, x64 and ARM64 Python 3.13.5 SDKs and python.org runtimes download and extract successfully, including SDK checksum verification.
-- Public checksum manifests from 20230507, 20241016 and 20250723 parse successfully. Explicit releases also resolve Windows/macOS assets without the API.
-- Windows x64 Zig cross build passes without GitHub tokens; native Windows execution remains unverified on this macOS host.
-
-## Unreleased — deployment portability
-
-### Problem
-- A packaged app launched by its bare PATH name searched for runtime relative to the caller's working directory and exited before startup.
-- Default safe trimming deleted distribution metadata, breaking runtime version queries and entry-point discovery.
-- Native closure missed versioned ELF libraries, runtime libraries and transitive dependencies already inside the package. Windows VC runtime DLLs were incorrectly treated as OS-provided.
-- Native files moved into the encrypted egg could escape dependency validation, and the Windows launcher renamed installed `_pth` files at startup.
-
-### Changes
 - `launcher/src/PyUpper.cpp` derives all paths from the OS-reported executable, reads Windows environment paths through Unicode APIs, and leaves installed runtime files untouched.
 - `tools/py_upper/trim.py` preserves metadata under the default `safe` preset. Explicit `release`/`minimal` presets still remove it; keep rules remain authoritative.
 - `tools/py_upper/native/{inspect,deps,bundle}.py` share format-based discovery, scan runtime libraries, follow bundled dependencies, preserve SONAME aliases and reuse byte-identical external libraries without masking real basename collisions. Missing VC runtime DLLs now fail packaging.
 - `tools/py_upper/egg.py` keeps versioned and suffixless application native inputs visible to closure. `verify.py` inspects native entries inside the egg; unsupported custom links fail with a `--no-egg` remedy because cached extensions cannot rely on paths relative to site-packages.
+- Native closure CI follow-up: loadable-image discovery excludes ELF/Mach-O relocatable objects and checks universal slices, including LLVM bitcode in Python's `config/python.o`. Alias lookup and package verification share that classification. The Linux local-runtime E2E fixture copies its host interpreter's non-system dependencies and relocates RPATHs with `patchelf`; production missing-library checks remain strict.
 - `test_launcher_deployment.py`, `test_native_deployment.py`, `test_trim.py`, `test_verify.py` and `test_e2e_local.py` cover the failures and relocation with a new user cache, Unicode paths, an unrelated cwd, a hidden source checkout, a renamed executable and an unchanged installed bundle. POSIX also exercises read-only installation directories.
-- Updated README, development guide and configuration-template comments. Application name/version/local configuration are unchanged.
+- Updated README, development guide and configuration-template comments. Version is 0.17.25; application name and machine-specific settings are unchanged.
 
 ### Verification
-- Unit suite: 323 passed, 5 skipped, under a 60-second hard timeout; Python compile checks and `git diff --check` pass.
+- Anonymous-download regression suite: 348 passed, 5 skipped with a 60-second hard timeout. Python compile checks and `git diff --check` pass.
+- Fresh temporary cache, no GitHub credentials, and assertions rejecting any API request or Authorization header: all seven targets resolve; Windows x86, x64 and ARM64 Python 3.13.5 SDKs and python.org runtimes download and extract successfully, including SDK checksum verification.
+- Public checksum manifests from 20230507, 20241016 and 20250723 parse successfully. Explicit releases also resolve Windows/macOS assets without the API.
+- Windows x64 Zig cross build passes without GitHub tokens; native Windows execution remains unverified on this macOS host.
+- Initial portability regression suite: 323 passed, 5 skipped, under a 60-second hard timeout; Python compile checks and `git diff --check` pass.
 - macOS arm64 full build and static verification pass. The real Qt application also starts from a copied read-only Unicode path with a fresh cache and clean PATH (`GUI OK offscreen`); files remain unchanged.
 - Local end-to-end build/lock/relocation and app-native closure tests: 2 passed (62.11 s). `codesign --verify --deep --strict dist/Upper.app` also passes.
 - Windows x64 Zig cross build and static verification pass. Native execution on Windows/Linux is not verified in this local macOS run; their CI jobs run the added regression tests.
+- CI follow-up: 361 unit tests pass (5 skipped); macOS full build, runtime/launcher smoke, strict code-signature verification and both relocation E2E tests pass. Full remote platform verification follows the pushed commit.
+
+### Impact
+- Public runtime/SDK downloads need no GitHub login. Default safe trimming preserves installed metadata, and missing native dependencies remain hard errors.
+- Linux local-runtime E2E requires patchelf. This version precedes the UTF-8 and Linux Qt closure fixes recorded in their respective versions.
 
 ## 0.17.24
 
