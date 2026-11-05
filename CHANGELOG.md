@@ -1,3 +1,21 @@
+## 0.17.27
+
+### Problem
+- Full Linux Qt builds could not resolve GLib, zlib, zstd, D-Bus and Fontconfig even though local-runtime relocation tests passed.
+
+### Root cause
+- Closure discovery indexed only package files and explicit paths, omitting the host loader cache. Copied libraries and their callers also needed relative loader search paths.
+
+### Changes
+- Linux Qt closure follow-up: native builds collect missing non-system libraries from `ldconfig`, reject foreign architectures and CPU-specific hwcaps variants, and recursively bundle their dependencies. Only newly copied libraries and their callers receive required relative search paths; existing RPATH/RUNPATH entries and inheritance are preserved. Cross builds and package verification never resolve dependencies from the host cache.
+- The version moves to 0.17.27; README and the configuration template are synchronized.
+
+### Verification
+- Linux library collection follow-up: 369 unit tests pass on macOS (6 skipped), 370 on Linux ARM64 (5 skipped), including a compiled transitive library chain that loads after its original directory is hidden. The same functional code passed all 14 jobs in CI run 42023763182 (commit b92368a), including all seven native build targets and artifact aggregation. The versioned commit is revalidated separately.
+
+### Impact
+- Native Linux collection requires ldconfig and patchelf. Build releases on the oldest supported distribution because copied host libraries also set the ABI requirement; cross builds and static verification never use the host cache.
+
 ## 0.17.26
 
 ### Problem

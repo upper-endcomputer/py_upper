@@ -8,7 +8,10 @@ from pathlib import Path
 
 from ..config import BUILD, app_name, native_exclude_patterns, optimize_config
 from ..fs import copy_file_contents, sha256
-from .deps import Dependency, DependencyResolver, _mac_install_name, _system_dependency, dependency_names
+from .deps import (
+    Dependency, DependencyResolver, _mac_install_name, _system_dependency,
+    dependency_names, elf_dynamic_entries, linux_host_libraries,
+)
 from .inspect import inspect, is_debug_artifact, native_files as _native_files, verify_arch
 
 
@@ -125,6 +128,36 @@ def _strip_native(path: Path, target) -> None:
         raise RuntimeError(f"strip failed for {path}: {(result.stderr or result.stdout).strip()}")
 
 
+def _relocate_linux_dependencies(dependencies: list[Dependency], copied: set[Path]) -> None:
+    """Wire newly bundled libraries into the existing ELF search paths."""
+    affected = copied | {dep.owner for dep in dependencies if dep.resolved in copied}
+    if not affected:
+        return
+    patchelf = shutil.which("patchelf")
+    if not patchelf:
+        raise RuntimeError("Bundling external Linux libraries requires patchelf")
+    for owner in sorted(affected):
+        entries = elf_dynamic_entries(owner)
+        has_runpath = any(kind == "RUNPATH" for kind, _ in entries)
+        tag = "RUNPATH" if has_runpath else "RPATH"
+        existing = [part for kind, value in entries if kind == tag for part in value.split(":")]
+        required = []
+        for dep in dependencies:
+            if dep.owner != owner or dep.resolved is None or dep.external:
+                continue
+            if "/" in dep.name:
+                subprocess.run([patchelf, "--replace-needed", dep.name, dep.resolved.name, str(owner)], check=True)
+            relative = Path(os.path.relpath(dep.resolved.parent, owner.parent)).as_posix()
+            required.append("$ORIGIN" if relative == "." else "$ORIGIN/" + relative)
+        combined = list(dict.fromkeys(existing + required))
+        if combined == existing:
+            continue
+        # Keep RPATH inheritance for libraries that already use it. RUNPATH is
+        # the default for new paths; no wheel-provided entries are discarded.
+        force = ["--force-rpath"] if not has_runpath and any(kind == "RPATH" for kind, _ in entries) else []
+        subprocess.run([patchelf, *force, "--set-rpath", ":".join(combined), str(owner)], check=True)
+
+
 def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = None) -> list[Dependency]:
     """Resolve and embed the native dependency closure of the application payload."""
     root = root.resolve()
@@ -150,6 +183,8 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
     resolver = DependencyResolver(search_roots, aliases)
 
     seen: set[Path] = set()
+    copied: set[Path] = set()
+    host_libraries: dict[str, Path] | None = None
     dependencies: list[Dependency] = []
     while queue:
         source = queue.pop(0).resolve()
@@ -161,6 +196,10 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
             if _system_dependency(dep_name, target):
                 continue
             resolved = resolver.resolve(dep_name, source)
+            if resolved is None and target.os == "linux" and "/" not in dep_name:
+                if host_libraries is None:
+                    host_libraries = linux_host_libraries(target)
+                resolved = host_libraries.get(dep_name.lower())
             if resolved is None:
                 dependencies.append(Dependency(source, dep_name, None, True))
                 continue
@@ -180,7 +219,9 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
                 else:
                     copy_file_contents(resolved, destination)
                     resolver.index.add(destination)
+                    print(f"Native dependency: bundled {resolved} as {destination.relative_to(root)}")
                 resolved = destination.resolve()
+                copied.add(resolved)
             # A library already inside runtime/resources still has its own
             # dependencies. Stopping at "found in bundle" hides broken chains
             # until a clean machine first tries to load them.
@@ -210,13 +251,15 @@ def bundle_native_dependencies(root: Path, target, env: dict[str, str] | None = 
               "in app/pyproject.toml."
         )
 
-    # Linux RPATH rewriting is opt-in. Many wheels intentionally carry multiple
-    # RPATH entries; replacing them unconditionally can break otherwise valid
-    # third-party packages. The bundle copier already preserves existing RPATHs.
+    # Full RPATH replacement remains opt-in. The mandatory relocation below
+    # only adds paths needed by newly bundled libraries and keeps existing ones.
     if target.os == "linux" and shutil.which("patchelf") and bool(optimize_config().get("rewrite_rpath", False)):
         for binary in seen:
             if binary.suffix.lower() == ".so":
                 subprocess.run(["patchelf", "--set-rpath", "$ORIGIN", str(binary)], check=True)
+
+    if target.os == "linux":
+        _relocate_linux_dependencies(dependencies, copied)
 
     if target.os == "macos" and shutil.which("install_name_tool"):
         native_images = [path for path in seen if inspect(path).format.startswith("Mach-O")]

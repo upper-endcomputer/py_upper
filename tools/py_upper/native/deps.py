@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .inspect import inspect as inspect_binary, native_files, verify_arch
-from ..config import python_version
+from ..config import host_target, python_version
 
 
 @dataclass(frozen=True)
@@ -126,21 +126,54 @@ def _mac_dependencies(path: Path) -> list[str]:
     return result
 
 
-def _elf_dependencies(path: Path) -> list[str]:
+def elf_dynamic_entries(path: Path) -> list[tuple[str, str]]:
     readelf = shutil.which("readelf")
     if readelf:
-        p = subprocess.run([readelf, "-d", str(path)], capture_output=True, text=True, check=True)
-        result: list[str] = []
-        for line in p.stdout.splitlines():
-            m = re.search(r"Shared library: \[([^]]+)\]", line)
-            if m:
-                result.append(m.group(1))
-        return result
-    objdump = shutil.which("objdump")
-    if objdump:
-        p = subprocess.run([objdump, "-p", str(path)], capture_output=True, text=True, check=True)
-        return [m.group(1) for line in p.stdout.splitlines() if (m := re.search(r"NEEDED\s+(.+)", line))]
-    return []
+        command = [readelf, "-d", str(path)]
+        pattern = r"\((NEEDED|RPATH|RUNPATH)\).*?\[([^]]*)\]"
+    else:
+        objdump = shutil.which("objdump")
+        if not objdump:
+            raise RuntimeError("ELF dependency inspection requires readelf or objdump (binutils)")
+        command = [objdump, "-p", str(path)]
+        pattern = r"^\s*(NEEDED|RPATH|RUNPATH)\s+(.*)$"
+    output = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    return [match.groups() for line in output.splitlines() if (match := re.search(pattern, line))]
+
+
+def _elf_dependencies(path: Path) -> list[str]:
+    return [value for kind, value in elf_dynamic_entries(path) if kind == "NEEDED"]
+
+
+def linux_host_libraries(target) -> dict[str, Path]:
+    """Read the native loader cache without executing any input binary.
+
+    Host libraries are packaging inputs only. Verification never consults this
+    index, and cross builds must supply their target libraries explicitly.
+    """
+    if target.os != "linux" or target != host_target():
+        return {}
+    ldconfig = shutil.which("ldconfig") or shutil.which("ldconfig", path="/sbin:/usr/sbin")
+    if not ldconfig:
+        raise RuntimeError("Collecting Linux host libraries requires ldconfig")
+    output = subprocess.run([ldconfig, "-p"], capture_output=True, text=True, check=True).stdout
+    result: dict[str, Path] = {}
+    for line in output.splitlines():
+        match = re.match(r"\s*(\S+)\s+\(([^)]*)\)\s+=>\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        name, properties, filename = match.groups()
+        # A builder's CPU-specific glibc-hwcaps variant may not execute on the
+        # destination CPU even though its ELF architecture matches.
+        if "hwcap" in properties.lower() or _system_dependency(name, target):
+            continue
+        path = Path(filename)
+        if not path.is_absolute() or not path.is_file():
+            continue  # ldconfig can retain stale entries after package removal.
+        info = inspect_binary(path)
+        if info.format == "ELF" and info.loadable and info.arch == target.arch:
+            result.setdefault(name.lower(), path)
+    return result
 
 
 def dependency_names(path: Path, env: dict[str, str] | None = None) -> list[str]:

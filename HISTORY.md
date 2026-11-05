@@ -1,3 +1,12 @@
+## v0.17.27
+
+迁移 E2E 全过后，Linux 完整 Qt 构建暴露 GLib、zlib、zstd、D-Bus、Fontconfig
+等非系统依赖没有进入产物。现在原生构建通过 ldconfig 定位同架构普通库并递归复制，
+不把它们扩进系统库白名单。新增库及调用者补齐相对搜索路径，同时保留 wheel 原有
+RPATH/RUNPATH 与继承语义；交叉目标与静态验证不会借用宿主缓存。
+回归覆盖真实 ELF 传递链：隐藏原库目录后，通过产物内相对路径加载并调用成功。
+macOS 单测 369 passed / 6 skipped，Linux ARM64 370 passed / 5 skipped；相同功能代码已在 CI 42023763182（b92368a）通过全部 14 个 job，包含七个原生构建目标与产物聚合；版本化提交另行复验。
+
 ## v0.17.26
 
 第二轮 CI 的 macOS 两架构已通过，Linux 迁移到中文目录后仍无法导入 encodings。

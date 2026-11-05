@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import struct
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,9 +89,118 @@ def closure_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle, "BUILD", tmp_path / "build")
     monkeypatch.setattr(bundle, "app_name", lambda: "Upper")
     monkeypatch.setattr(bundle, "optimize_config", lambda: {})
+    # These graph tests use header-only files, not executable host libraries.
+    monkeypatch.setattr(bundle, "linux_host_libraries", lambda target: {})
+    monkeypatch.setattr(bundle, "_relocate_linux_dependencies", lambda dependencies, copied: None)
     # Exercise the portable PE parser even on Windows hosts with dumpbin.
     monkeypatch.setattr(deps, "_dumpbin_dependencies", lambda path, env=None: [])
     return root
+
+
+@pytest.mark.parametrize("tool,output", [
+    ("readelf", " 0x1 (NEEDED) Shared library: [libdemo.so.1]\n 0xf (RPATH) Library rpath: [$ORIGIN/old]\n"),
+    ("objdump", " NEEDED libdemo.so.1\n RPATH $ORIGIN/old\n"),
+])
+def test_elf_dynamic_entries_preserve_dependency_and_path_tags(tmp_path, monkeypatch, tool, output):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(deps.shutil, "which", lambda name: name if name == tool else None)
+    monkeypatch.setattr(deps.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=output))
+    assert deps.elf_dynamic_entries(tmp_path / "library") == [
+        ("NEEDED", "libdemo.so.1"), ("RPATH", "$ORIGIN/old"),
+    ]
+
+
+def test_linux_host_cache_filters_foreign_architectures_and_system_libraries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    target = TARGETS["linux-x86_64"]
+    native = _elf(tmp_path / "native" / "libdemo.so.1")
+    foreign = _elf(tmp_path / "foreign" / "libdemo.so.1", machine=183)
+    optimized = _elf(tmp_path / "x86-64-v3" / "libdemo.so.1")
+    libc = _elf(tmp_path / "libc.so.6")
+    monkeypatch.setattr(deps, "host_target", lambda: target)
+    monkeypatch.setattr(deps.shutil, "which", lambda *args, **kwargs: "ldconfig")
+    output = (f'libdemo.so.1 (libc6, hwcap: "x86-64-v3") => {optimized}\n'
+              f"libdemo.so.1 (libc6) => {foreign}\nlibdemo.so.1 (libc6) => {native}\nlibc.so.6 (libc6) => {libc}\n")
+    monkeypatch.setattr(deps.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=output))
+    assert deps.linux_host_libraries(target) == {"libdemo.so.1": native}
+
+
+def test_linux_cross_build_never_reads_host_loader_cache(monkeypatch):
+    monkeypatch.setattr(deps, "host_target", lambda: TARGETS["linux-arm64"])
+    monkeypatch.setattr(deps.subprocess, "run", lambda *args, **kwargs: pytest.fail("queried foreign host"))
+    assert deps.linux_host_libraries(TARGETS["linux-x86_64"]) == {}
+
+
+def test_linux_closure_bundles_host_dependencies_transitively(closure_workspace, monkeypatch):
+    root = closure_workspace
+    owner = _elf(root / "site-packages" / "module.so")
+    host = root.parent / "host"
+    middle = _elf(host / "libmiddle.so.1")
+    leaf = _elf(host / "libleaf.so.2")
+    monkeypatch.setattr(bundle, "linux_host_libraries", lambda target: {middle.name: middle, leaf.name: leaf})
+    graph = {owner.name: [middle.name], middle.name: [leaf.name], leaf.name: ["libc.so.6"]}
+    monkeypatch.setattr(bundle, "dependency_names", lambda path, env: graph.get(path.name, []))
+    result = bundle.bundle_native_dependencies(root, TARGETS["linux-x86_64"])
+    assert [(item.owner.name, item.resolved.name) for item in result] == [
+        (owner.name, middle.name), (middle.name, leaf.name),
+    ]
+    assert (owner.parent / middle.name).read_bytes() == middle.read_bytes()
+    assert (owner.parent / leaf.name).read_bytes() == leaf.read_bytes()
+    assert not (owner.parent / "libc.so.6").exists()
+
+
+@pytest.mark.parametrize("tag,force", [("RPATH", ["--force-rpath"]), ("RUNPATH", [])])
+def test_linux_relocation_appends_paths_without_changing_existing_tag(tmp_path, monkeypatch, tag, force):
+    owner = tmp_path / "libowner.so.1"
+    copied = tmp_path / "deps" / "libchild.so.2"
+    calls = []
+    monkeypatch.setattr(bundle.shutil, "which", lambda name: "patchelf")
+    monkeypatch.setattr(bundle, "elf_dynamic_entries", lambda path: [(tag, "$ORIGIN/old")] if path == owner else [])
+    monkeypatch.setattr(bundle.subprocess, "run", lambda command, **kwargs: calls.append(command))
+    bundle._relocate_linux_dependencies([deps.Dependency(owner, copied.name, copied, False)], {copied})
+    assert calls == [["patchelf", *force, "--set-rpath", "$ORIGIN/old:$ORIGIN/deps", str(owner)]]
+
+
+def test_linux_relocation_leaves_self_contained_wheel_paths_untouched(tmp_path, monkeypatch):
+    monkeypatch.setattr(bundle.subprocess, "run", lambda *args, **kwargs: pytest.fail("modified a self-contained wheel"))
+    bundle._relocate_linux_dependencies([], set())
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="requires native ELF tools")
+def test_linux_bundled_external_chain_loads_after_removing_source(tmp_path, monkeypatch):
+    from py_upper.config import host_target
+
+    required = ("cc", "patchelf", "readelf")
+    if not all(shutil.which(tool) for tool in required):
+        pytest.skip("requires cc, patchelf and readelf")
+    root = tmp_path / "package"
+    site = root / "site-packages"
+    host = tmp_path / "host"
+    site.mkdir(parents=True)
+    host.mkdir()
+    leaf = host / "libfixture_leaf.so.1"
+    middle = host / "libfixture_middle.so.1"
+    owner = site / "module.so"
+    for output, code, links in [
+        (leaf, "int fixture_leaf(void) { return 7; }", []),
+        (middle, "int fixture_leaf(void); int fixture_middle(void) { return fixture_leaf(); }", ["-l:" + leaf.name]),
+        (owner, "int fixture_middle(void); int application(void) { return fixture_middle(); }", ["-l:" + middle.name, "-Wl,-rpath,$ORIGIN/old"]),
+    ]:
+        source = output.with_suffix(".c")
+        source.write_text(code, encoding="utf-8")
+        subprocess.run(["cc", "-shared", "-fPIC", str(source), "-L" + str(host), *links,
+                        "-Wl,-soname," + output.name, "-o", str(output)], check=True, timeout=10)
+    monkeypatch.setattr(bundle, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(bundle, "app_name", lambda: "Upper")
+    monkeypatch.setattr(bundle, "optimize_config", lambda: {})
+    monkeypatch.setattr(bundle, "linux_host_libraries", lambda target: {leaf.name: leaf, middle.name: middle})
+    bundle.bundle_native_dependencies(root, host_target())
+    assert ("RUNPATH", "$ORIGIN/old:$ORIGIN") in deps.elf_dynamic_entries(owner)
+    host.rename(tmp_path / "hidden-host")
+    script = "import ctypes,sys; assert ctypes.CDLL(sys.argv[1]).application() == 7"
+    subprocess.run([sys.executable, "-I", "-c", script, str(owner)], check=True, cwd=tmp_path, timeout=10)
 
 
 def test_native_discovery_uses_target_format_instead_of_filename_suffix(tmp_path):

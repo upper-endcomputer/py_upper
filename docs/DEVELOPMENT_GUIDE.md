@@ -47,7 +47,7 @@ Target Contract（目标契约：OS / 架构 / Python 版本 / ABI / wheel 标�
 |---|---|---|
 | macOS（arm64 / x86_64） | macOS | Xcode Command Line Tools（`clang`）、`cmake`、`ninja` |
 | Windows（x86 / x86_64 / arm64） | Windows | Visual Studio Build Tools（含 C++）、`cmake`；无 VS 的 macOS/Linux 宿主可用 Zig 交叉构建 |
-| Linux（x86_64 / arm64） | Linux | `gcc`/`g++`、`cmake`、`ninja`、`binutils`（可选 `patchelf`） |
+| Linux（x86_64 / arm64） | Linux | `gcc`/`g++`、`cmake`、`ninja`、`binutils`；采集外部库时需要 `ldconfig`、`patchelf` |
 
 交叉目标（例如在 macOS 上打 Linux 包）可以 build/verify，但不会冒充在当前机器运行；带平台标记的第三方依赖需要目标平台的宿主，见 §8.1。
 
@@ -365,7 +365,7 @@ pip 的 `--platform` / `--python-version` **只影响 wheel 兼容标签**，环
 
 ### 8.2 Linux 兼容基线
 
-`manylinux` 接受字符串或列表（从新到旧）。列表是必要的：PySide6 的 x86_64 wheel 是 `manylinux_2_34`，aarch64 是 `manylinux_2_39`。列表同时决定发布包的最低 glibc。
+`manylinux` 接受字符串或列表（从新到旧）。列表是必要的：PySide6 的 x86_64 wheel 是 `manylinux_2_34`，aarch64 是 `manylinux_2_39`。它约束 wheel 的 glibc 基线；完整产物还受 runtime、编译输出和采集的宿主库 ABI 约束，发布构建应在支持的最低发行版上执行。
 
 ### 8.3 离线 / 内网
 
@@ -383,6 +383,11 @@ runtime 的 libpython、stdlib 扩展也参加闭包；找到已在包内的库�
 文件发现按目标格式的文件头进行，覆盖 Linux `.so.N`、SONAME 符号链接和无后缀 ELF。
 Windows 的 `vcruntime140*.dll` 属于需随包解析的运行库，不再假设目标电脑已安装 VC runtime。
 Linux 仍要求库的 RPATH/运行环境符合目标系统契约；仅在文件树中找到库不等于动态加载器能加载。
+原生 Linux 构建还会从 `ldconfig -p` 读取缺失的非系统库（例如 GLib、zlib、zstd、
+D-Bus、Fontconfig），筛选目标架构并排除 CPU 专用 hwcaps 变体，复制后继续检查传递依赖。
+交叉构建不借用宿主库；静态验证始终只检查产物。新增库及其调用者用 `patchelf`
+补齐包内相对搜索路径，保留已有 RPATH/RUNPATH 条目与继承语义。未引入外部库的
+wheel 不受影响；`rewrite_rpath=true` 才显式请求整体替换。库或必要工具缺失会明确失败。
 
 可重定位 ELF/Mach-O 对象、universal 容器里的 LLVM bitcode 和调试镜像属于编译输入，
 不进入加载依赖闭包。使用 `local` runtime 时，需连同标准库扩展依赖的非系统库一起提供；
