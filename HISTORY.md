@@ -1,3 +1,16 @@
+## v0.17.28
+
+版本提交整理后的 CI 42138274797 在调度 macOS ARM64 时直接取消，所有步骤均未执行，
+注解为 `The configuration 'macos-14-arm64-us-default' is not supported`。
+GitHub Actions 已于 2026 年 11 月 2 日退役 macOS 14 镜像，官方公告为
+`actions/runner-images#15226`；工作流仍指向旧 runner，导致产物聚合无法继续。
+
+将 macOS ARM64 构建宿主改为 `macos-15`，保留七个目标及完整原生验证链。
+源码语法检查改用 `compileall`，去掉 shell 文件列表展开并消除对应的 ShellCheck 警告。
+同步版本、README、配置模板和变更记录，继续采用带版本号的 `<background>:` 提交与 tag。
+本地单测 369 passed / 6 skipped，工作流 lint 与语法检查通过；版本 0.17.28 完整构建与
+启动通过。新 runner 的实际执行由该提交的 CI 确认。
+
 ## v0.17.27
 
 迁移 E2E 全过后，Linux 完整 Qt 构建暴露 GLib、zlib、zstd、D-Bus、Fontconfig

@@ -34,7 +34,7 @@ jobs:
         run: python -c "import shutil; shutil.copyfile('app/pyproject.toml.example', 'app/pyproject.toml')"
       - name: Verify Build Tool imports
         run: |
-          python -m py_compile $(find tools/py_upper -name '*.py' -print)
+          python -m compileall -q tools/py_upper
           python -c "import sys; sys.path.insert(0, 'tools'); import py_upper.config; import py_upper.compat; print(sys.version)"
       - name: Run compatibility tests
         run: |
@@ -73,7 +73,7 @@ jobs:
           - os: macos-15-intel
             target: macos-x86_64
             run: true
-          - os: macos-14
+          - os: macos-15
             target: macos-arm64
             run: true
     runs-on: ${{ matrix.os }}

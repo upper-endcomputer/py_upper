@@ -1,3 +1,23 @@
+## 0.17.28
+
+### Problem
+- The macOS ARM64 job was cancelled before any step ran: `The configuration 'macos-14-arm64-us-default' is not supported`. This also prevented artifact aggregation.
+
+### Root cause
+- GitHub Actions retired its macOS 14 images on November 2, 2026 (`actions/runner-images#15226`); the workflow still selected `macos-14` for the ARM64 target.
+
+### Changes
+- `.github/workflows/validate.yml` selects the supported `macos-15` ARM64 runner. All seven targets, test stages and headless launch checks remain in the matrix.
+- The build-tool syntax check uses `compileall` directly, removing unquoted shell expansion of the source-file list and its ShellCheck warning.
+- The version moves to 0.17.28; README and the configuration template are synchronized.
+
+### Verification
+- The failure is recorded by CI run 42138274797, job 127631856573, with no executed steps and an unsupported-runner annotation.
+- Local unit suite: 369 passed, 6 skipped, with a 60-second hard timeout. `actionlint`, build-tool compilation and `git diff --check` pass; the macOS bundle is built and launched with version 0.17.28. The replacement runner is verified by the new commit's native CI job.
+
+### Impact
+- The macOS ARM64 build host moves from macOS 14 to macOS 15. Application and build-tool source code are unchanged.
+
 ## 0.17.27
 
 ### Problem
