@@ -1,3 +1,19 @@
+## v0.17.29
+
+Windows x86_64 构建在 `[4/6] Package + native dependency closure` 失败，报
+`Unresolved native dependencies: runtime\_msi.pyd: Cabinet.dll, msi.dll`。
+`_msi.pyd` 是 Python 3.8-3.12 嵌入式运行时自带的扩展，依赖 System32 的 Windows Installer
+与 Cabinet API；`WINDOWS_HOST_LIBRARIES` 没有把这两个 DLL 视作系统库，原生闭包于是把操作
+系统提供的依赖当成缺失的 wheel 负载。Python 3.13 的嵌入式运行时不再携带 `_msi.pyd`，所以
+固定 3.13.5 的 CI 没有暴露这条路径。
+
+修复是在 Windows 宿主库白名单中登记 `msi.dll` 与 `cabinet.dll`，并新增一条以 `_msi.pyd`
+为根的闭包回归测试。本机 `python tools/build.py --target windows-x86_64 --egg` 从 `[1/6]`
+到 `[6/6]` 全绿，55 个原生二进制检查通过，`READY: dist/Upper`；打包应用 headless 启动
+输出 `Hello from py_upper` / `GUI OK offscreen`，交互启动能创建标题为 `Upper` 的响应窗口。
+单测 361 passed / 12 skipped，另有 3 条因本机没有 MSVC `cl.exe` 的启动器探针夹具报环境
+错误。版本同步到 0.17.29。
+
 ## v0.17.28
 
 版本提交整理后的 CI 42138274797 在调度 macOS ARM64 时直接取消，所有步骤均未执行，

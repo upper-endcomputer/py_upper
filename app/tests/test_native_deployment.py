@@ -414,6 +414,19 @@ def test_vc_runtime_is_a_required_bundle_dependency(closure_workspace, name):
         bundle.bundle_native_dependencies(root, TARGETS["windows-x86_64"])
 
 
+def test_windows_installer_apis_are_system_provided(closure_workspace):
+    """CPython 3.8-3.12 ship ``_msi.pyd`` in the embeddable runtime.
+
+    It imports ``msi.dll`` and ``Cabinet.dll`` from System32. Treating those as
+    wheel payload makes every Windows package with those Python lines fail the
+    native closure even though the OS provides both libraries.
+    """
+    root = closure_workspace
+    _pe(root / "runtime" / "_msi.pyd", ["msi.dll", "Cabinet.dll"])
+
+    assert bundle.bundle_native_dependencies(root, TARGETS["windows-x86_64"]) == []
+
+
 def test_closure_resolves_vc_runtime_from_bundled_python(closure_workspace):
     root = closure_workspace
     extension = _pe(root / "site-packages" / "extension.pyd", ["VCRUNTIME140.dll"])

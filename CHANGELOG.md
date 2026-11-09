@@ -1,3 +1,25 @@
+## 0.17.29
+
+### Problem
+- Windows builds using the Python 3.8-3.12 embeddable runtimes stopped at `[4/6] Package + native dependency closure` with `Unresolved native dependencies: runtime\_msi.pyd: Cabinet.dll, msi.dll`.
+
+### Root cause
+- CPython's `_msi` extension ships in those embeddable runtimes and imports the Windows Installer (`msi.dll`) and cabinet (`Cabinet.dll`) APIs from System32. `WINDOWS_HOST_LIBRARIES` listed neither DLL, so the closure counted OS-provided libraries as missing wheel payloads. Python 3.13's embeddable runtime no longer ships `_msi.pyd`, which is why the pinned 3.13.5 CI jobs never exercised the case.
+
+### Changes
+- `tools/py_upper/native/deps.py` marks `msi.dll` and `cabinet.dll` as Windows host libraries. Both continue to load from the operating system and are never copied into the bundle.
+- `app/tests/test_native_deployment.py` adds a closure test with a runtime `_msi.pyd` importing both DLLs; it fails with the old list and passes with the new one.
+- The version moves to 0.17.29; README and the configuration template are synchronized.
+
+### Verification
+- `python tools/build.py --target windows-x86_64 --egg`: `[1/6]` through `[6/6]` pass, 55 native binaries checked, `READY: dist/Upper`.
+- Packaged headless launch prints `Hello from py_upper` and `GUI OK offscreen` and exits 0.
+- Interactive launch creates a responsive top-level window titled `Upper`.
+- `python -m pytest app/tests -q`: 361 passed, 12 skipped; 3 environment-only errors remain because this host has no MSVC `cl.exe` for the launcher-probe fixtures. `git diff --check` passes.
+
+### Impact
+- Windows packages built on Python 3.8-3.12 no longer fail the native closure over two System32 DLLs. The fix is metadata only: no DLL is bundled and runtime behavior is unchanged.
+
 ## 0.17.28
 
 ### Problem
