@@ -46,6 +46,15 @@ if(WIN32)
   else()
     target_compile_definitions(PyUpper PRIVATE PY_UPPER_CONSOLE)
   endif()
+  if(MSVC)
+    # CPython 3.8's pyerrors.h aliases snprintf to _snprintf unless
+    # HAVE_SNPRINTF is defined, assuming the MSVC CRT predates C99. VS 2015+
+    # provides snprintf, and VS 18 no longer puts _snprintf into namespace
+    # std, so std::snprintf in PyUpper.cpp expanded to std::_snprintf and
+    # failed with C2039. The Zig frontend already passes this define for
+    # MinGW; the native MSVC build needs it here.
+    target_compile_definitions(PyUpper PRIVATE HAVE_SNPRINTF)
+  endif()
   # Static CRT: the launcher must start on a machine without the Visual C++
   # redistributable, and it must not add a second MSVCRT to a process that
   # already hosts the embedded CPython runtime.

@@ -687,6 +687,20 @@ def test_launcher_uses_global_python_symbols_and_smoke_switch():
     assert "PY_UPPER_HAS_EMBEDDED_SOURCE" in cmake
 
 
+def test_launcher_compiles_against_python38_snprintf_alias():
+    """Python 3.8's pyerrors.h aliases snprintf to _snprintf for MSVC.
+
+    The alias assumed the pre-C99 MSVC CRT. VS 2015+ provides snprintf, and
+    VS 18 no longer exposes _snprintf from <cstdio> in namespace std, so the
+    launcher's std::snprintf became std::_snprintf and failed with C2039.
+    HAVE_SNPRINTF must be defined for the native MSVC build; the Zig frontend
+    already passes it for MinGW.
+    """
+    cmake = (Path(__file__).parents[2] / "launcher" / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert "if(MSVC)" in cmake
+    assert "target_compile_definitions(PyUpper PRIVATE HAVE_SNPRINTF)" in cmake
+
+
 def test_launcher_escapes_python_literals_without_a_raw_prefix():
     """A raw literal plus doubled backslashes doubled every Windows separator.
 

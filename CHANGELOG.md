@@ -1,3 +1,23 @@
+## 0.17.32
+
+### Problem
+- With 0.17.31's PBS inventory fix in place, `py38-compat-windows-x86_64` advanced to `[3/6] Target launcher` and failed with `PyUpper.cpp(371): error C2039: '_snprintf': is not a member of 'std'`.
+
+### Root cause
+- CPython 3.8's `Include/pyerrors.h` runs `#if defined(MS_WIN32) && !defined(HAVE_SNPRINTF)`, then defines `snprintf` as `_snprintf` (and `vsnprintf` as `_vsnprintf`) for the pre-C99 MSVC CRT. The launcher's `std::snprintf` therefore expanded to `std::_snprintf`, which VS 18 / MSVC 14.51 no longer exposes from `<cstdio>` in namespace `std`. CPython 3.13's header dropped the alias, so only the 3.8 compatibility job reached this path. The Zig/MinGW frontend already passed `-DHAVE_SNPRINTF`; the native MSVC launcher build did not.
+
+### Changes
+- `launcher/CMakeLists.txt` defines `HAVE_SNPRINTF` for MSVC launcher builds so `pyerrors.h` leaves `snprintf` untouched.
+- `app/tests/test_build_tool_compat.py` pins the definition next to the existing launcher contract checks.
+- Version moves to 0.17.32; README and the configuration template follow.
+
+### Verification
+- `python -m pytest app/tests -q`: 376 passed, 6 skipped; `git diff --check` and `compileall` pass.
+- The Windows 3.8.10 launcher compile is verified by the pushed CI run.
+
+### Impact
+- Native MSVC launchers compile against Python 3.8 headers again. Runtime behavior is unchanged, and the Zig/MinGW path keeps its existing define.
+
 ## 0.17.31
 
 ### Problem

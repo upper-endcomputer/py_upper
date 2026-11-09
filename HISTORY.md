@@ -1,3 +1,20 @@
+## v0.17.32
+
+0.17.31 修复 PBS 资产清单 404 后，`py38-compat-windows-x86_64` 推进到
+`[3/6] Target launcher`，在 `PyUpper.cpp(371)` 报
+`error C2039: '_snprintf': is not a member of 'std'`。
+
+根因是 CPython 3.8 的 `Include/pyerrors.h` 在
+`defined(MS_WIN32) && !defined(HAVE_SNPRINTF)` 条件下把 `snprintf` 宏定义为
+`_snprintf`，面向 C99 之前的 MSVC CRT。启动器源码中的 `std::snprintf` 因此展开成
+`std::_snprintf`，而 VS 18 / MSVC 14.51 的 `<cstdio>` 已不再把它放进 `std` 命名空间。
+CPython 3.13 的头部文件已删除该别名，所以只有 3.8 兼容作业触发。Zig/MinGW 构建路径原本
+就传入 `-DHAVE_SNPRINTF`，原生 MSVC 启动器构建缺少同一编译定义。
+
+修复是在 `launcher/CMakeLists.txt` 中为 MSVC 构建定义 `HAVE_SNPRINTF`，并新增测试锁定
+该契约。版本同步到 0.17.32。本机全量单测 376 passed / 6 skipped，`git diff --check` 与
+`compileall` 通过；Windows 3.8.10 的启动器编译由推送后的 CI 复验。
+
 ## v0.17.31
 
 0.17.30 新增的 `py38-compat-windows-x86_64` 作业在 `[1/6] Runtime + SDK` 失败，
