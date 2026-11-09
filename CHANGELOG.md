@@ -1,3 +1,22 @@
+## 0.17.30
+
+### Problem
+- The Windows packaging matrix only built with Python 3.13.5. Python 3.8-3.12 embeddable runtimes carry `_msi.pyd` and therefore exercise a native-closure path that 3.13 never sees; the 0.17.29 `msi.dll`/`Cabinet.dll` regression escaped CI for exactly that reason.
+
+### Changes
+- `.github/workflows/validate.yml` adds a second `windows-x86_64` matrix entry pinned to runtime Python 3.8.10 and installs `PySide2==5.15.2.1` (PySide6 has no cp38 wheel) so the job builds and runs a real GUI package.
+- The generated configuration now honours `PY_UPPER_CI_RUNTIME_PYTHON`; matrix entries without an override keep the template's 3.13.5.
+- The compatibility artifact is named `py38-compat-windows-x86_64` and stays out of the seven-target release manifest, so release aggregation is unchanged.
+- `app/tests/test_build_tool_compat.py` pins the new matrix entry and configuration hook.
+- `app/pyproject.toml.example` now also lists the PySide2/shiboken2 native payload exclusions (ARM32 `vccorlib140.dll`, 32-bit `ucrtbase.dll`, optional SQL/DesignHelpers plugins) so the 3.8 job can build a real PySide2 GUI package without tripping the payload architecture guard.
+
+### Verification
+- Workflow YAML parses; the matrix expands to eight native entries (seven release targets plus the 3.8 compatibility build); the generation script produces `python = "3.8.10"` and `dependencies = ["PySide2==5.15.2.1"]`.
+- The same runtime/dependency combination completed `[1/6]` through `[6/6]` locally in 0.17.29 and passed the packaged headless launch. The new GitHub Actions job itself needs a push/PR run to confirm runner-level execution.
+
+### Impact
+- CI gains one Windows job and therefore takes longer, by design. A regression that only exists on Python 3.8-3.12 Windows packaging can no longer pass a 3.13-only matrix.
+
 ## 0.17.29
 
 ### Problem

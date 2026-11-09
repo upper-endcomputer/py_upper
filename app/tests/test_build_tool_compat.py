@@ -186,15 +186,17 @@ def test_tracked_pyproject_template_is_complete():
     assert re.fullmatch(r"\d+\.\d+\.\d+", tool["runtime"]["python"])
 
 
-def test_template_drops_the_pyside6_arm64_orphan():
-    """The PySide6 and shiboken6 Windows wheels ship an ARM32 ``vccorlib140.dll``.
+def test_template_drops_the_pyside_arm64_orphan():
+    """The PySide2/PySide6 and shiboken2/shiboken6 wheels ship an ARM32
+    ``vccorlib140.dll``.
 
     Windows on ARM cannot map an ARM32 image at all, and no image in the wheel
     imports it (it is the C++/CX runtime, which Qt does not use), so the payload
     arch guard rightly refuses to ship it. It goes through the documented
-    wheel-defect list rather than relaxing that guard: if PySide6 ever starts
-    importing the file, the closure fails loudly with it missing instead of
-    shipping a bundle that cannot load.
+    wheel-defect list rather than relaxing that guard: if either binding ever
+    starts importing the file, the closure fails loudly with it missing instead
+    of shipping a bundle that cannot load. Both bindings are listed because the
+    Python 3.8 compatibility job builds against PySide2.
     """
     from py_upper.compat import tomllib
     from py_upper.config import APP_CONFIG_EXAMPLE
@@ -203,10 +205,13 @@ def test_template_drops_the_pyside6_arm64_orphan():
     exclude = data["tool"]["py_upper"]["native"]["exclude"]
     assert "PySide6/vccorlib140.dll" in exclude
     assert "shiboken6/vccorlib140.dll" in exclude
+    assert "PySide2/vccorlib140.dll" in exclude
+    assert "shiboken2/vccorlib140.dll" in exclude
 
 
 def test_template_drops_the_32_bit_ucrt_orphan():
-    """The PySide6 and shiboken6 win_amd64 wheels ship a 32-bit ``ucrtbase.dll``.
+    """The PySide2/PySide6 and shiboken2/shiboken6 win_amd64 wheels ship a
+    32-bit ``ucrtbase.dll``.
 
     The UCRT ships with Windows and is on the closure's host-library list
     (``native/deps.py``), so it is never resolved and copied and no bundled
@@ -214,7 +219,8 @@ def test_template_drops_the_32_bit_ucrt_orphan():
     ship it. Like the ARM32 ``vccorlib140.dll``, it goes through the documented
     wheel-defect list instead of relaxing that guard: if a wheel ever starts
     importing the file, the closure still fails loudly rather than shipping a
-    bundle that cannot load.
+    bundle that cannot load. Both bindings are listed because the Python 3.8
+    compatibility job builds against PySide2.
     """
     from py_upper.compat import tomllib
     from py_upper.config import APP_CONFIG_EXAMPLE
@@ -223,6 +229,8 @@ def test_template_drops_the_32_bit_ucrt_orphan():
     exclude = data["tool"]["py_upper"]["native"]["exclude"]
     assert "PySide6/ucrtbase.dll" in exclude
     assert "shiboken6/ucrtbase.dll" in exclude
+    assert "PySide2/ucrtbase.dll" in exclude
+    assert "shiboken2/ucrtbase.dll" in exclude
 
 
 def test_local_configuration_is_git_ignored_but_the_template_is_not():
@@ -280,7 +288,7 @@ def test_ci_triggers_are_scoped_to_develop():
 
     Development happens on feature_* / fix_* branches cut from develop and
     merged back after self-testing; their intermediate commits are not
-    deliverable. A bare ``push:`` runs all fourteen jobs on every one of them.
+    deliverable. A bare ``push:`` runs all fifteen jobs on every one of them.
     ``pull_request`` is kept because the review request aimed at develop is part
     of the merge, and it filters on the base branch.
     """
@@ -291,6 +299,24 @@ def test_ci_triggers_are_scoped_to_develop():
     # reproduced without pushing an empty commit.
     assert triggers["workflow_dispatch"] is None
     assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+
+
+def test_ci_builds_the_oldest_supported_windows_runtime():
+    """Windows Python 3.8-3.12 embeddable runtimes ship ``_msi.pyd``.
+
+    That extension imports ``msi.dll`` and ``Cabinet.dll`` from System32, so
+    the native closure regression only appears on the older runtime line.
+    Keep one real Windows package build on Python 3.8.10; a 3.13-only matrix
+    cannot hide the same regression again.
+    """
+    text = VALIDATION_WORKFLOW.read_text(encoding="utf-8")
+    assert """          - os: windows-2025
+            target: windows-x86_64
+            runtime-python: '3.8.10'
+            run: true""" in text
+    assert "PY_UPPER_CI_RUNTIME_PYTHON: ${{ matrix.runtime-python || '3.13.5' }}" in text
+    assert "dependencies: '[\"PySide2==5.15.2.1\"]'" in text
+    assert "artifact: py38-compat-windows-x86_64" in text
 
 
 def test_vscode_never_watches_the_built_trees():

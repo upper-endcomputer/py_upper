@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py_upper"
-version = "0.17.29"
+version = "0.17.30"
 description = "py_upper standalone Python application"
 requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
@@ -58,22 +58,22 @@ python = "3.13.5"
 manylinux = ["manylinux_2_39", "manylinux_2_34"]
 
 [tool.py_upper.native]
-# PySide6 payload the bundle cannot honour, dropped instead of failing the
-# closure:
+# PySide2/PySide6 payload the bundle cannot honour, dropped instead of failing
+# the closure:
 #   - the macOS wheel links the ODBC/Mimer/PostgreSQL Qt SQL drivers against
 #     build-machine absolute paths and references a QtQuickShapesDesignHelpers
 #     framework it does not ship;
-#   - the Windows wheels ship an ARM32 vccorlib140.dll, in the PySide6 and the
-#     shiboken6 wheel alike. Windows on ARM cannot map an ARM32 image at all,
-#     no image in either wheel imports it (it is the C++/CX runtime, which Qt
-#     does not use), and leaving it in makes the payload arch guard reject the
-#     whole windows-arm64 bundle;
+#   - the Windows wheels ship an ARM32 vccorlib140.dll, in the PySide2/PySide6
+#     and the shiboken2/shiboken6 wheel alike. Windows on ARM cannot map an
+#     ARM32 image at all, no image in either wheel imports it (it is the C++/CX
+#     runtime, which Qt does not use), and leaving it in makes the payload arch
+#     guard reject the whole windows-arm64 bundle;
 #   - the win_amd64 wheels also ship a 32-bit ucrtbase.dll, again in the
-#     PySide6 and the shiboken6 wheel alike. The UCRT belongs to Windows: it is
-#     on the closure's host-library list (native/deps.py), so it is never
-#     resolved and copied, the loader takes it from System32, and no bundled
-#     image can map this copy. Leaving it in makes the arch guard reject the
-#     whole x86_64 bundle.
+#     PySide2/PySide6 and the shiboken2/shiboken6 wheel alike. The UCRT belongs
+#     to Windows: it is on the closure's host-library list (native/deps.py), so
+#     it is never resolved and copied, the loader takes it from System32, and
+#     no bundled image can map this copy. Leaving it in makes the arch guard
+#     reject the whole x86_64 bundle.
 exclude = [
     # macOS and Windows wheels use different PySide6 plugin/qml prefixes, and
     # these optional SQL/design payloads cannot be bundled.
@@ -91,6 +91,22 @@ exclude = [
     "PySide6/vccorlib140.dll",
     "shiboken6/ucrtbase.dll",
     "shiboken6/vccorlib140.dll",
+    # The same wheel defects exist under the PySide2 prefix. Listing both
+    # bindings keeps the template usable with either Qt major.
+    "PySide2/plugins/sqldrivers/*qsqlibase*",
+    "PySide2/plugins/sqldrivers/*qsqlmimer*",
+    "PySide2/plugins/sqldrivers/*qsqlodbc*",
+    "PySide2/plugins/sqldrivers/*qsqloci*",
+    "PySide2/plugins/sqldrivers/*qsqlpsql*",
+    "PySide2/qml/QtQuick/Shapes/DesignHelpers/*",
+    "PySide2/Qt/plugins/sqldrivers/*qsqlmimer*",
+    "PySide2/Qt/plugins/sqldrivers/*qsqlodbc*",
+    "PySide2/Qt/plugins/sqldrivers/*qsqlpsql*",
+    "PySide2/Qt/qml/QtQuick/Shapes/DesignHelpers/*",
+    "PySide2/ucrtbase.dll",
+    "PySide2/vccorlib140.dll",
+    "shiboken2/ucrtbase.dll",
+    "shiboken2/vccorlib140.dll",
 ]
 
 [tool.py_upper.egg]

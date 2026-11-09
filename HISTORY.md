@@ -1,3 +1,22 @@
+## v0.17.30
+
+Windows 打包矩阵此前只用 Python 3.13.5 构建。3.8-3.12 的嵌入式运行时自带
+`_msi.pyd`，会走 3.13 不存在的原生闭包路径，0.17.29 的 `msi.dll` / `Cabinet.dll`
+问题正是这样从 CI 漏过去的。
+
+`native-integration` 新增一个 `windows-x86_64` 矩阵条目，运行时固定 Python 3.8.10，
+依赖改用仍提供 cp38 wheel 的 `PySide2==5.15.2.1`，并执行完整构建与 headless 启动。
+配置生成步骤新增 `PY_UPPER_CI_RUNTIME_PYTHON`，未覆盖的条目继续使用模板的 3.13.5。
+该兼容构建的产物命名为 `py38-compat-windows-x86_64`，不进入七目标发布清单，产物聚合
+逻辑保持不变。模板同时补充 PySide2/shiboken2 的 native exclude（ARM32 `vccorlib140.dll`、
+32 位 `ucrtbase.dll` 及可选 SQL/DesignHelpers 负载），使 3.8 作业可用 PySide2 完成真实打包。
+`test_build_tool_compat.py` 增加测试锁定矩阵条目、配置钩子和两套绑定的排除规则。
+
+工作流 YAML 可解析，矩阵展开为八个原生条目（七个发布目标加一个 3.8 兼容构建），
+配置生成结果为 `python = "3.8.10"` / `dependencies = ["PySide2==5.15.2.1"]`；
+同一运行时与依赖组合已在 0.17.29 本地完成 `[1/6]` 到 `[6/6]` 构建及打包启动验证。
+新增 CI 作业的实际 runner 执行需推送后确认。版本同步到 0.17.30。
+
 ## v0.17.29
 
 Windows x86_64 构建在 `[4/6] Package + native dependency closure` 失败，报

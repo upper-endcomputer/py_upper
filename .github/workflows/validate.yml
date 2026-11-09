@@ -2,7 +2,7 @@ name: py_upper validation
 
 # Only develop runs the matrix. Development happens on feature_* / fix_*
 # branches cut from develop and merged back after self-testing, so their
-# intermediate commits are not deliverable; what needs the fourteen jobs is the
+# intermediate commits are not deliverable; what needs the fifteen jobs is the
 # code that lands in develop and the review requests aimed at it. Branch
 # filters are the whole policy -- a push anywhere else costs nothing.
 on:
@@ -67,6 +67,20 @@ jobs:
           - os: windows-2025
             target: windows-x86_64
             run: true
+          # Python 3.8-3.12 embeddable runtimes ship _msi.pyd, which imports
+          # msi.dll and Cabinet.dll from System32; Python 3.13 does not. Build
+          # the oldest supported Windows runtime so the packaging path that
+          # exposed the native-closure regression stays covered in CI.
+          - os: windows-2025
+            target: windows-x86_64
+            runtime-python: '3.8.10'
+            run: true
+            # PySide6 6.11 has no cp38 wheel, and this job needs a real GUI
+            # payload; PySide2 still publishes a cp38 win_amd64 wheel.
+            dependencies: '["PySide2==5.15.2.1"]'
+            # Keep this compatibility build out of the seven-target release
+            # manifest: it duplicates windows-x86_64 and is not a release artifact.
+            artifact: py38-compat-windows-x86_64
           - os: windows-11-arm
             target: windows-arm64
             run: true
@@ -99,6 +113,9 @@ jobs:
           # The application's own dependency set, unless the matrix entry
           # overrides it because no wheel of it exists for that target.
           PY_UPPER_CI_DEPENDENCIES: ${{ matrix.dependencies || '["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]' }}
+          # The template pins the newest supported runtime. The Windows 3.8
+          # compatibility entry overrides it to exercise the older runtime line.
+          PY_UPPER_CI_RUNTIME_PYTHON: ${{ matrix.runtime-python || '3.13.5' }}
         run: |
           python - <<'PY'
           import os
@@ -106,15 +123,24 @@ jobs:
           from pathlib import Path
 
           dependencies = os.environ['PY_UPPER_CI_DEPENDENCIES']
+          runtime_python = os.environ['PY_UPPER_CI_RUNTIME_PYTHON']
           text = Path('app/pyproject.toml.example').read_text(encoding='utf-8')
-          text, replaced = re.subn(
+          text, runtime_replaced = re.subn(
+              r'^python = "[^"]+"$',
+              f'python = "{runtime_python}"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          assert runtime_replaced == 1, 'app/pyproject.toml.example must declare one runtime Python version'
+          text, dependencies_replaced = re.subn(
               r'^dependencies = \[\]$',
               f'dependencies = {dependencies}',
               text,
               count=1,
               flags=re.M,
           )
-          assert replaced == 1, 'app/pyproject.toml.example must declare an empty dependencies list'
+          assert dependencies_replaced == 1, 'app/pyproject.toml.example must declare an empty dependencies list'
           Path('app/pyproject.toml').write_text(text, encoding='utf-8')
           PY
 
@@ -193,7 +219,7 @@ jobs:
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: py-upper-${{ matrix.target }}
+          name: ${{ matrix.artifact || format('py-upper-{0}', matrix.target) }}
           path: dist/
           if-no-files-found: error
           retention-days: 14
