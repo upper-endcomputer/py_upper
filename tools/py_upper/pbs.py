@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -198,6 +199,23 @@ def asset_flavor(name: str) -> str:
     return ""
 
 
+def is_full_build_asset(name: str) -> bool:
+    """Whether a PBS asset is a full build rather than an install-only runtime.
+
+    A full build carries the build tree, the SDK (headers and import
+    libraries) and an ``install/`` runtime; an install-only archive carries
+    the runtime alone. PBS releases before 20210724 publish full builds only,
+    which is why uv's metadata entry for them points at a full build.
+    """
+    name = str(name).strip()
+    return (
+        name.endswith(".tar.zst")
+        and "install_only" not in name
+        and "debug" not in name
+        and "freethreaded" not in name
+    )
+
+
 def _best_sdk(assets: list[PBSAsset], runtime_name: str) -> PBSAsset:
     """The SDK matching the runtime's build flavour, best optimisation first."""
     flavor = asset_flavor(runtime_name)
@@ -241,7 +259,16 @@ def resolve_pbs_inputs(
     avoiding the authenticated/rate-limited GitHub API entirely.
     """
     if configured_tag:
-        assets = _release_assets(fetch_text, configured_tag)
+        try:
+            assets = _release_assets(fetch_text, configured_tag)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            raise RuntimeError(
+                f"PBS release {configured_tag} publishes no SHA256SUMS. Releases before "
+                "20210724 predate that inventory; leave [tool.py_upper.pbs].release empty "
+                "so the uv metadata index can select the exact full build."
+            ) from exc
         runtime_assets = matching_assets(assets, target, pyver, kind="runtime")
         sdk_assets = matching_assets(assets, target, pyver, kind="sdk")
         if not runtime_assets or not sdk_assets:
@@ -272,7 +299,22 @@ def resolve_pbs_inputs(
     if not tag:
         raise RuntimeError(f"PBS runtime metadata has no release build tag: {runtime.url}")
 
-    assets = _release_assets(fetch_text, tag)
+    try:
+        assets = _release_assets(fetch_text, tag)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        # Old releases predate SHA256SUMS and publish full builds only, so the
+        # metadata entry already points at the only asset carrying the SDK.
+        # It is a runtime too: ensure_pbs_runtime copies its install/ tree.
+        if not is_full_build_asset(runtime.name):
+            raise RuntimeError(
+                f"PBS release {tag} publishes no SHA256SUMS and its metadata asset is "
+                f"not a full build: {runtime.name}\n"
+                "py_upper cannot resolve a matching SDK for this release."
+            ) from exc
+        return PBSInputs(tag, runtime, runtime, "metadata-full")
+
     sdk_assets = matching_assets(assets, target, pyver, kind="sdk")
     if not sdk_assets:
         raise no_asset_error(tag, target, pyver, assets, missing_runtime=False, missing_sdk=True)

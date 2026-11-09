@@ -64,6 +64,10 @@ def ensure_pbs_runtime(target: Target) -> Path:
     source = extract / "python"
     if not source.exists():
         raise RuntimeError(f"Unexpected PBS runtime archive layout: {extract}")
+    # Releases before 20210724 publish full builds only, and their runtime is
+    # the install/ tree; install-only archives carry that tree directly.
+    if (source / "install").is_dir():
+        source = source / "install"
     if out.exists():
         shutil.rmtree(out)
     copy_tree_contents(source, out)

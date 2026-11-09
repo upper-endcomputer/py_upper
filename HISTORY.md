@@ -1,3 +1,24 @@
+## v0.17.31
+
+0.17.30 新增的 `py38-compat-windows-x86_64` 作业在 `[1/6] Runtime + SDK` 失败，
+报 `urllib.error.HTTPError: HTTP Error 404: Not Found`。CPython 3.8.10 只存在于
+python-build-standalone release 20210506，而 20210724 之前的 release 不发布
+`SHA256SUMS`；`resolve_pbs_inputs` 却无条件抓取该清单来挑选 SDK，请求在解析任何资产前
+就 404 了。旧 release 只发布 full build，uv 的 `download-metadata.json` 指向的正是这种
+归档——它同时包含运行时（`install/`）和 SDK（头文件与导入库）。
+
+修复后，release 无 `SHA256SUMS` 且 metadata 资产是 full build（不含 `install_only`、
+`debug`、`freethreaded`）时，同一资产既作 runtime 又作 SDK，来源标记为
+`metadata-full`，下载后仍校验 uv metadata 中的 SHA256。无校验清单却指向 install-only
+资产时给出明确错误；显式配置 20210724 之前的 release 时提示该版本尚无资产清单，应留空
+`[tool.py_upper.pbs].release` 交由 metadata 索引选择。`ensure_pbs_runtime` 同时识别
+full build 的 `python/install` 布局。`test_pbs.py` 新增四条测试覆盖上述路径。
+
+真实网络验证：3.8.10 在 windows-x86_64、macos-x86_64、linux-x86_64 均解析到
+20210506 / `metadata-full`；Windows SDK 下载后 SHA256 与 metadata 一致，并解出
+`install/python.exe` 与 `install/include/Python.h`。`python -m pytest app/tests -q`：
+375 passed，6 skipped。版本同步到 0.17.31。
+
 ## v0.17.30
 
 Windows 打包矩阵此前只用 Python 3.13.5 构建。3.8-3.12 的嵌入式运行时自带

@@ -184,6 +184,83 @@ def test_pbs_auto_resolves_one_release_and_requires_sdk(tmp_path, monkeypatch):
     assert calls == [PBS_RUNTIME_METADATA_URLS[0], checksums_url]
 
 
+def test_pbs_release_without_sha256sums_uses_the_full_build_metadata_asset(tmp_path, monkeypatch):
+    """PBS releases before 20210724 publish no SHA256SUMS and no install-only
+    runtime, so uv's metadata points at the full build, which is also the SDK.
+
+    Python 3.8.10 — the newest Windows version CPython publishes an embeddable
+    ZIP for — only exists in such a release, so the 3.8 compatibility build
+    resolved every asset through this path.
+    """
+    from py_upper import pbs
+    from py_upper.pbs import PBS_RELEASE_URL, metadata_key, resolve_pbs_inputs
+
+    target = _windows_target()
+    tag = "20210506"
+    sdk_name = "cpython-3.8.10-x86_64-pc-windows-msvc-shared-pgo-20210506T0943.tar.zst"
+    metadata = {
+        metadata_key(target, "3.8.10"): {
+            "url": PBS_RELEASE_URL.format(tag=tag) + "/" + sdk_name,
+            "sha256": DIGEST,
+        }
+    }
+    monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
+
+    def fetch_json(candidate):
+        assert candidate in pbs.PBS_RUNTIME_METADATA_URLS
+        return metadata
+
+    def fetch_text(candidate):
+        assert candidate == PBS_RELEASE_URL.format(tag=tag) + "/SHA256SUMS"
+        raise urllib.error.HTTPError(candidate, 404, "Not Found", {}, None)
+
+    result = resolve_pbs_inputs(fetch_json, "", target, "3.8.10", fetch_text=fetch_text)
+
+    assert result.tag == tag
+    assert result.source == "metadata-full"
+    assert result.runtime.name == sdk_name
+    assert result.sdk == result.runtime
+    assert result.sdk.sha256 == DIGEST
+
+
+def test_pbs_missing_checksums_rejects_an_install_only_metadata_asset(tmp_path, monkeypatch):
+    """An install-only archive cannot stand in for the SDK, so a release that
+    has neither SHA256SUMS nor a full-build metadata entry must fail loudly."""
+    from py_upper import pbs
+    from py_upper.pbs import PBS_RELEASE_URL, metadata_key, resolve_pbs_inputs
+
+    target = _target()
+    tag = "20241016"
+    runtime_name = "cpython-3.11.10+20241016-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    metadata = {
+        metadata_key(target, "3.11.10"): {
+            "url": PBS_RELEASE_URL.format(tag=tag) + "/" + runtime_name,
+            "sha256": DIGEST,
+        }
+    }
+    monkeypatch.setattr(pbs, "_METADATA_CACHE", tmp_path / "uv-download-metadata.json")
+
+    def fetch_text(candidate):
+        raise urllib.error.HTTPError(candidate, 404, "Not Found", {}, None)
+
+    with pytest.raises(RuntimeError, match="not a full build"):
+        resolve_pbs_inputs(lambda _: metadata, "", target, "3.11.10", fetch_text=fetch_text)
+
+
+def test_pbs_explicit_old_release_without_checksums_is_actionable():
+    from py_upper.pbs import PBS_RELEASE_URL, resolve_pbs_inputs
+
+    def fetch_text(candidate):
+        assert candidate == PBS_RELEASE_URL.format(tag="20210506") + "/SHA256SUMS"
+        raise urllib.error.HTTPError(candidate, 404, "Not Found", {}, None)
+
+    with pytest.raises(RuntimeError, match="predate that inventory"):
+        resolve_pbs_inputs(
+            lambda _: pytest.fail("explicit releases must not fetch metadata"),
+            "20210506", _target(), "3.8.10", fetch_text=fetch_text,
+        )
+
+
 def test_pbs_metadata_index_falls_back_when_uv_moves_the_file(tmp_path, monkeypatch):
     """uv reorganised its tree once (crates/uv-python -> crates/uv-python-managed)
     and the old raw URL started returning 404, which took down every build with a
@@ -490,3 +567,53 @@ def test_windows_embed_version_without_official_zip_fails_with_the_version(tmp_p
     monkeypatch.setattr(runtime, "download", download_missing)
     with pytest.raises(RuntimeError, match="3.11.13.*no official embeddable ZIP.*windows-arm64"):
         runtime.ensure_windows_embed_runtime(target)
+
+
+def test_pbs_runtime_copies_the_install_tree_of_a_full_build(tmp_path, monkeypatch):
+    """A full build keeps the runtime in ``python/install``.
+
+    Old releases publish only full builds, so the runtime asset and the SDK
+    asset are the same archive. Copying ``python/`` wholesale would put
+    ``bin/`` one level too deep and the packaged runtime would not start.
+    """
+    import shutil
+    import tarfile
+
+    from py_upper import pbs, runtime
+    from py_upper.config import TARGETS
+
+    target = TARGETS["macos-x86_64"]
+    out = tmp_path / "runtime"
+    fixture = tmp_path / "fixture"
+    archive = tmp_path / "full-build.tar.gz"
+    files = {
+        "python/PYTHON.json": "{}",
+        "python/install/bin/python3.8": "",
+        "python/install/lib/python3.8/os.py": "",
+        "python/build/object.obj": "",
+    }
+    with tarfile.open(archive, "w:gz") as tar:
+        for name, content in files.items():
+            path = fixture / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            tar.add(path, arcname=name)
+
+    asset = pbs.PBSAsset(archive.name, "https://example.invalid/" + archive.name)
+    monkeypatch.setattr(runtime, "target_runtime_dir", lambda _: out)
+    monkeypatch.setattr(runtime, "CACHE", tmp_path / "cache")
+    monkeypatch.setattr(runtime, "python_version", lambda: "3.8.10")
+    monkeypatch.setattr(runtime, "resolve_inputs", lambda _: pbs.PBSInputs("20210506", asset, asset, "metadata-full"))
+
+    def copy_fixture(url, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(archive, destination)
+
+    monkeypatch.setattr(runtime, "download", copy_fixture)
+
+    assert runtime.ensure_pbs_runtime(target) == out
+    assert (out / "bin" / "python3.8").is_file()
+    assert not (out / "install").exists()
+    assert not (out / "build").exists()
+    marker = json.loads((out / runtime.RUNTIME_MARKER).read_text(encoding="utf-8"))
+    assert marker["asset"] == archive.name

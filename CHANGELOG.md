@@ -1,3 +1,25 @@
+## 0.17.31
+
+### Problem
+- The 0.17.30 `py38-compat-windows-x86_64` job failed at `[1/6] Runtime + SDK` with `urllib.error.HTTPError: HTTP Error 404: Not Found`. CPython 3.8.10 only exists in python-build-standalone release 20210506, and releases before 20210724 publish no `SHA256SUMS` file.
+
+### Root cause
+- `resolve_pbs_inputs` unconditionally fetched `<release>/SHA256SUMS` to select an SDK matching the runtime. Old PBS releases carry no inventory, so that request 404'd before any asset was resolved. Those releases publish full builds only, and uv's `download-metadata.json` entry already points at the full build — an archive that contains both the runtime (`install/`) and the SDK (headers and import libraries).
+
+### Changes
+- When a release publishes no `SHA256SUMS` and the metadata asset is a full build (not `install_only`, `debug` or `freethreaded`), py_upper uses that one asset as both runtime and SDK with `source="metadata-full"`. The SHA256 from uv metadata is still verified after download.
+- An install-only metadata asset in a checksum-less release now raises an actionable error instead of being mistaken for an SDK.
+- An explicitly configured pre-20210724 release reports that it predates the inventory and instructs the user to leave `[tool.py_upper.pbs].release` empty so the metadata index can select the full build.
+- `ensure_pbs_runtime` descends into the `python/install` tree of a full build; install-only archive handling is unchanged.
+- `app/tests/test_pbs.py` adds four tests covering the metadata fallback, rejection of install-only assets, the explicit-release error and the full-build runtime layout.
+
+### Verification
+- Real network resolution for 3.8.10 selects tag 20210506 with `metadata-full` on windows-x86_64, macos-x86_64 and linux-x86_64; the Windows SDK downloads, matches the metadata SHA256 and yields `install/python.exe` and `install/include/Python.h`.
+- `python -m pytest app/tests -q`: 375 passed, 6 skipped.
+
+### Impact
+- PBS releases before 20210724 can now supply both runtime and SDK. Current releases keep the existing checksum-verified inventory path, and Windows runtime selection is unchanged.
+
 ## 0.17.30
 
 ### Problem
