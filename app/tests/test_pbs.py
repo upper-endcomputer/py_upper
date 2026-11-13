@@ -569,51 +569,38 @@ def test_windows_embed_version_without_official_zip_fails_with_the_version(tmp_p
         runtime.ensure_windows_embed_runtime(target)
 
 
-def test_pbs_runtime_copies_the_install_tree_of_a_full_build(tmp_path, monkeypatch):
-    """A full build keeps the runtime in ``python/install``.
+def test_pbs_runtime_reuses_the_sdk_install_tree_of_a_full_build(tmp_path, monkeypatch):
+    """Old releases publish a .tar.zst full build as both runtime and SDK.
 
-    Old releases publish only full builds, so the runtime asset and the SDK
-    asset are the same archive. Copying ``python/`` wholesale would put
-    ``bin/`` one level too deep and the packaged runtime would not start.
+    ``ensure_pbs_sdk`` already unpacks it with a zstd-capable tar. Reusing its
+    ``install/`` tree keeps the runtime path away from ``tarfile``, which only
+    reads gzip, and avoids extracting the same archive twice.
     """
-    import shutil
-    import tarfile
-
     from py_upper import pbs, runtime
     from py_upper.config import TARGETS
 
     target = TARGETS["macos-x86_64"]
     out = tmp_path / "runtime"
-    fixture = tmp_path / "fixture"
-    archive = tmp_path / "full-build.tar.gz"
-    files = {
-        "python/PYTHON.json": "{}",
-        "python/install/bin/python3.8": "",
-        "python/install/lib/python3.8/os.py": "",
-        "python/build/object.obj": "",
-    }
-    with tarfile.open(archive, "w:gz") as tar:
-        for name, content in files.items():
-            path = fixture / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-            tar.add(path, arcname=name)
-
-    asset = pbs.PBSAsset(archive.name, "https://example.invalid/" + archive.name)
+    sdk = tmp_path / "sdk"
+    (sdk / "install" / "bin").mkdir(parents=True)
+    (sdk / "install" / "bin" / "python3.8").write_text("", encoding="utf-8")
+    (sdk / "install" / "lib" / "python3.8").mkdir(parents=True)
+    (sdk / "install" / "lib" / "python3.8" / "os.py").write_text("", encoding="utf-8")
+    (sdk / "build").mkdir()
+    (sdk / "build" / "object.obj").write_text("", encoding="utf-8")
+    asset = pbs.PBSAsset(
+        "cpython-3.8.10-x86_64-apple-darwin-pgo+lto-20210506T0943.tar.zst",
+        "https://example.invalid/full.tar.zst",
+    )
     monkeypatch.setattr(runtime, "target_runtime_dir", lambda _: out)
-    monkeypatch.setattr(runtime, "CACHE", tmp_path / "cache")
     monkeypatch.setattr(runtime, "python_version", lambda: "3.8.10")
     monkeypatch.setattr(runtime, "resolve_inputs", lambda _: pbs.PBSInputs("20210506", asset, asset, "metadata-full"))
-
-    def copy_fixture(url, destination):
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(archive, destination)
-
-    monkeypatch.setattr(runtime, "download", copy_fixture)
+    monkeypatch.setattr(runtime, "ensure_pbs_sdk", lambda _: sdk)
+    monkeypatch.setattr(runtime, "download", lambda *_: pytest.fail("must not unpack the full build again"))
 
     assert runtime.ensure_pbs_runtime(target) == out
     assert (out / "bin" / "python3.8").is_file()
     assert not (out / "install").exists()
     assert not (out / "build").exists()
     marker = json.loads((out / runtime.RUNTIME_MARKER).read_text(encoding="utf-8"))
-    assert marker["asset"] == archive.name
+    assert marker["asset"] == asset.name

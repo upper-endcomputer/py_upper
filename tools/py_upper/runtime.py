@@ -52,6 +52,26 @@ def ensure_pbs_runtime(target: Target) -> Path:
             pass
 
     inputs = resolve_inputs(target)
+    if inputs.source == "metadata-full":
+        # Releases before 20210724 publish no install-only runtime. Their full
+        # build is the SDK as well, and ensure_pbs_sdk already unpacked it with
+        # a zstd-capable tar: reuse its install/ tree instead of feeding the
+        # .tar.zst archive to tarfile, which only reads gzip. This also avoids
+        # downloading and extracting the same archive twice.
+        sdk = ensure_pbs_sdk(target)
+        source = sdk / "install"
+        if not source.is_dir():
+            raise RuntimeError(f"PBS full-build SDK has no install runtime tree: {source}")
+        if out.exists():
+            shutil.rmtree(out)
+        copy_tree_contents(source, out)
+        marker.write_text(json.dumps({
+            "format": 1, "provider": "pbs", "tag": inputs.tag, "asset": inputs.runtime.name,
+            "url": inputs.runtime.url, "sha256": inputs.runtime.sha256 or "",
+            "target": target.key, "python": python_version(),
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return out
+
     archive = CACHE / "pbs" / inputs.tag / target.key / inputs.runtime.name
     download(inputs.runtime.url, archive)
     actual = sha256(archive)
@@ -64,10 +84,6 @@ def ensure_pbs_runtime(target: Target) -> Path:
     source = extract / "python"
     if not source.exists():
         raise RuntimeError(f"Unexpected PBS runtime archive layout: {extract}")
-    # Releases before 20210724 publish full builds only, and their runtime is
-    # the install/ tree; install-only archives carry that tree directly.
-    if (source / "install").is_dir():
-        source = source / "install"
     if out.exists():
         shutil.rmtree(out)
     copy_tree_contents(source, out)

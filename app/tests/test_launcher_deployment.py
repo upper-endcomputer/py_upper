@@ -32,7 +32,10 @@ def launcher_probe(tmp_path_factory):
     if os.name == "nt":
         from test_third_party import _windows_extension_compiler
 
-        compiler, _library, env = _windows_extension_compiler()
+        try:
+            compiler, _library, env = _windows_extension_compiler()
+        except RuntimeError as exc:
+            pytest.skip(f"MSVC is required to compile the launcher probe: {exc}")
         command = [compiler, "/nologo", "/std:c++17", "/EHsc", "/utf-8", "/I" + include,
                    "/I" + str(launcher), str(source), "/Fe:" + str(probe),
                    "/Fo:" + str(root / "probe.obj"), "/link", "user32.lib"]

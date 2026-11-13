@@ -1,3 +1,16 @@
+## v0.17.33
+
+`metadata-full` 路径把旧 PBS release 的同一个 `.tar.zst` full build 同时当作 runtime 和 SDK，
+但 `ensure_pbs_runtime` 仍用只支持 gzip 的 `tarfile` 解压，Linux/macOS 固定 3.8.10 时在
+`[1/6] Runtime + SDK` 报 `ReadError: not a gzip file`。Windows 的 3.8 兼容作业使用
+python.org embeddable ZIP，因此没有暴露该问题；回归测试又用了 `.tar.gz` 夹具。
+
+修复后，`metadata-full` 直接复用 `ensure_pbs_sdk` 已用 zstd-capable tar 解出的 `install/`
+树作为运行时，既避免 `tarfile` 读取 zstd，也避免同一归档下载、解压两次。测试夹具改为真实
+`.tar.zst` 资产并断言运行时不走 `download`。同时 `test_launcher_deployment.py` 在没有 MSVC
+`cl.exe` 时改为 skip，不再产生 3 个 error。版本同步到 0.17.33。
+本地全量单测 367 passed / 15 skipped / 0 errors；Windows 3.8.10 全量构建、打包与启动验证通过。
+
 ## v0.17.32
 
 0.17.31 修复 PBS 资产清单 404 后，`py38-compat-windows-x86_64` 推进到
