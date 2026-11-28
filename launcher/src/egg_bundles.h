@@ -21,7 +21,8 @@
 // decrypting costs one squeeze pass. That is exactly the two passes this
 // function already paid before authentication existed (decrypt, then digest the
 // plaintext for the cache key), because the tag replaces that plaintext digest
-// as the cache key. Authentication is therefore free in wall-clock terms.
+// as the cache key.
+// 两次遍历的结构相近不代表认证耗时为零；实际成本需在目标机器上测量。
 
 #include "sha3.h"
 

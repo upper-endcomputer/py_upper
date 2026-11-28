@@ -19,7 +19,7 @@ The launcher carries ``egg_loader.py`` and installs it before importing the
 application entry. On Windows, extension modules are mapped straight from
 memory with ``_memimporter`` (the py2exe MemoryModule helper vendored under
 ``vendor/memimporter``). Linux and macOS have no portable equivalent, so the
-loader decrypts into a private temporary directory and puts that on
+loader decrypts into a private content-addressed cache and puts that on
 ``sys.path``. Both paths run the same source modules from the same archive, so
 the pack format and the import order do not depend on the platform.
 
