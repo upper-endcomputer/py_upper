@@ -19,7 +19,8 @@ int main() {
     fs::create_directories(base / "merged-old");
     fs::create_directories(base / "merged-previous");
     fs::create_directories(base / "merged-current");
-    fs::last_write_time(base / "merged-old", fs::file_time_type::min());
+    fs::last_write_time(base / "merged-old",
+        fs::file_time_type::clock::now() - std::chrono::hours(24));
     {
         CacheLease active(base / ".lease-merged-old", false);
         if (!active.valid()) return 1;
@@ -48,5 +49,9 @@ int main() {
             pytest.skip('C++ compiler unavailable')
         command = [compiler, '-std=c++17', '-I' + include, '-I' + str(launcher), str(source), '-o', str(output)]
         command += ['-framework', 'CoreFoundation'] if sys.platform == 'darwin' else ['-ldl']
-    subprocess.run(command, env=env, cwd=tmp_path, check=True, capture_output=True, timeout=30)
-    subprocess.run([str(output)], cwd=tmp_path, check=True, capture_output=True, timeout=10)
+    for args, timeout in [(command, 30), ([str(output)], 10)]:
+        result = subprocess.run(args, env=env, cwd=tmp_path, capture_output=True,
+                                text=True, errors='replace', timeout=timeout)
+        if result.returncode:
+            pytest.fail(f'{args[0]} exited with {result.returncode}\n'
+                        f'{result.stdout}\n{result.stderr}', pytrace=False)
