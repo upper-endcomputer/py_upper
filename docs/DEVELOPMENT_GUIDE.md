@@ -973,3 +973,15 @@ macOS 正式发布会在入 egg 前签名应用扩展，散落的可加载 Mach-
 同一 workflow 与 Git ref 的新运行取消旧运行，避免过时提交占用全平台 runner；不同 PR/ref 互不取消。Python 3.8–3.13 仍分别执行导入与兼容测试，中文维护检查只在 Python 3.13 行执行一次。Linux 系统构建依赖与 libEGL 合并为一次 apt 安装；原生单元测试、真实 E2E、doctor、打包启动及七目标产物汇总保留。
 
 对应模块回归使用 `test_wheels.py` 与 `test_release.py`；后者同时覆盖 Linux 安装包、macOS 公证和 Mach-O 签名。现有缓存按系统、架构、目标及配置摘要隔离，本轮不调整键以继续复用缓存。
+
+### 三平台发布覆盖
+
+发布回归统一位于 `app/tests/test_release.py`，不再使用仅限 Linux 的测试文件名。
+
+| 平台 | 当前发布能力 | 发布单元测试 | 原生 CI 目标 |
+| --- | --- | --- | --- |
+| Windows | 独立目录与 EXE；正式发布可用 signtool 签署 EXE/DLL/PYD | 三种架构的候选文件选择、缺少工具/证书、签名失败传播 | x86、x86_64、ARM64，额外 Windows x86_64 / Python 3.8 |
+| macOS | `.app`；codesign、ZIP 公证和 staple | Mach-O 识别、x86_64/ARM64 公证 Accepted/Invalid 分支 | x86_64、ARM64 |
+| Linux | 独立目录；CPack TGZ/DEB/RPM | 缺少 RPM 工具、按目标发布与清单 | x86_64、ARM64 |
+
+三平台均执行单元测试、真实本地 E2E 和完整应用构建。正式应用 GUI 冒烟在 Windows x86_64/ARM64、macOS 双架构和 Linux x86_64 启用；Windows x86 和 Linux ARM64 不执行该 GUI 步骤。签名、公证单元测试使用 mock，不代表真实 Windows 证书或 Apple Developer ID 已验收；当前 CI 未配置正式签名身份。Windows MSI/安装向导和 macOS DMG/PKG 自动生成目前未实现。

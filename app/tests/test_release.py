@@ -45,8 +45,9 @@ def test_release_replaces_only_target_artifacts(tmp_path, monkeypatch):
     assert (result / 'release-manifest.json').is_file()
 
 
+@pytest.mark.parametrize('target', ['macos-x86_64', 'macos-arm64'])
 @pytest.mark.parametrize('status', ['Accepted', 'Invalid'])
-def test_notarization_submits_zip_and_checks_status(tmp_path, monkeypatch, status):
+def test_notarization_submits_zip_and_checks_status(tmp_path, monkeypatch, status, target):
     """验证公证提交使用 ZIP 且根据返回状态决定成功或失败。"""
     app = tmp_path / 'Product.app'
     app.mkdir()
@@ -59,11 +60,11 @@ def test_notarization_submits_zip_and_checks_status(tmp_path, monkeypatch, statu
         return SimpleNamespace(stdout='{"status": "' + status + '"}')
     monkeypatch.setattr(release.subprocess, 'run', run)
     if status == 'Accepted':
-        release.sign_release(TARGETS['macos-arm64'], 'Test', 'Profile', output=app)
+        release.sign_release(TARGETS[target], 'Test', 'Profile', output=app)
         assert any('staple' in c for c in calls)
     else:
         with pytest.raises(RuntimeError, match='not accepted'):
-            release.sign_release(TARGETS['macos-arm64'], 'Test', 'Profile', output=app)
+            release.sign_release(TARGETS[target], 'Test', 'Profile', output=app)
         assert not any('staple' in c for c in calls)
     submit = next(c for c in calls if 'submit' in c)
     assert submit[3].endswith('.zip')
@@ -82,3 +83,53 @@ def test_signing_detects_extensionless_macho(tmp_path, monkeypatch):
     monkeypatch.setattr(release.subprocess, 'run', lambda cmd, **kw: calls.append(cmd))
     release.sign_macos_files([text, native], 'Identity')
     assert len(calls) == 1 and calls[0][-1] == str(native)
+
+
+@pytest.mark.parametrize('target', ['windows-x86', 'windows-x86_64', 'windows-arm64'])
+def test_windows_signing_uses_candidate_native_files(tmp_path, monkeypatch, target):
+    """三种 Windows 架构都只签候选包内原生文件；mock 验证命令，不证明真实证书有效。"""
+    candidate = tmp_path / '候选 包'
+    candidate.mkdir()
+    native_names = ['Upper.EXE', 'runtime/python.dll', 'site-packages/extension.pyd']
+    for name in native_names + ['data.json']:
+        path = candidate / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'fixture')
+    outside = tmp_path / 'old.exe'
+    outside.write_bytes(b'old')
+    monkeypatch.setenv('APPBUILD_SIGN_CERT', 'test certificate.pfx')
+    monkeypatch.setattr(release.shutil, 'which', lambda name: name)
+    calls = []
+    def run(command, *, check):
+        """记录签名对象和失败传播参数，避免实际调用宿主签名程序。"""
+        assert check is True
+        calls.append(command)
+    monkeypatch.setattr(release.subprocess, 'run', run)
+    assert release.sign_release(TARGETS[target], output=candidate) == 0
+    assert {command[-1] for command in calls} == {str(candidate / name) for name in native_names}
+    assert all(command[:-1] == ['signtool', 'sign', '/fd', 'SHA256', '/a', '/f', 'test certificate.pfx'] for command in calls)
+
+
+@pytest.mark.parametrize('missing', ['tool', 'certificate'])
+def test_windows_signing_requires_tool_and_certificate(monkeypatch, tmp_path, missing):
+    """缺少签名工具或证书时必须失败，不能把未签名候选包报告为成功。"""
+    monkeypatch.setattr(release.shutil, 'which', lambda name: None if missing == 'tool' else name)
+    monkeypatch.delenv('APPBUILD_SIGN_CERT', raising=False)
+    if missing != 'certificate':
+        monkeypatch.setenv('APPBUILD_SIGN_CERT', 'test.pfx')
+    with pytest.raises(RuntimeError, match='signtool and APPBUILD_SIGN_CERT'):
+        release.sign_release(TARGETS['windows-x86_64'], output=tmp_path)
+
+
+def test_windows_signing_propagates_failure(tmp_path, monkeypatch):
+    """signtool 失败向 CLI 传播，阻止后续发布步骤。"""
+    (tmp_path / 'Upper.exe').write_bytes(b'fixture')
+    monkeypatch.setenv('APPBUILD_SIGN_CERT', 'test.pfx')
+    monkeypatch.setattr(release.shutil, 'which', lambda name: name)
+    def fail(command, *, check):
+        """模拟签名程序拒绝证书后的非零退出。"""
+        assert check is True
+        raise subprocess.CalledProcessError(1, command)
+    monkeypatch.setattr(release.subprocess, 'run', fail)
+    with pytest.raises(subprocess.CalledProcessError):
+        release.sign_release(TARGETS['windows-x86_64'], output=tmp_path)
