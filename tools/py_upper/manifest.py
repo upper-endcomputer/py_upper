@@ -1,3 +1,5 @@
+# 中文维护说明：生成规范化文件清单并验证摘要；清单路径必须相对受控根目录。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import hashlib

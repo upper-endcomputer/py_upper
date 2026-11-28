@@ -1,3 +1,5 @@
+# 中文维护说明：写入构建来源、源码摘要与有效选项；不记录原始配置中的密钥。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Build provenance, deliberately excluding configuration secrets."""
 from __future__ import annotations
 

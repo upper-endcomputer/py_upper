@@ -1,3 +1,4 @@
+# 中文维护说明：配置 launcher 编译、平台库与嵌入源码；Windows 运行库和子系统必须与发布契约一致。
 cmake_minimum_required(VERSION 3.25)
 project(PyUpperLauncher LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)

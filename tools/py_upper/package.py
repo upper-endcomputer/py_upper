@@ -1,3 +1,5 @@
+# 中文维护说明：构建 launcher、组装候选包并生成发布清单；验证与发布替换由上层顺序协调。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Packaging: build the launcher, assemble the bundle and record the release manifest."""
 from __future__ import annotations
 
@@ -171,6 +173,7 @@ def _embedded_literal(source: str, what: str) -> str:
     return f'R"{RAW_STRING_DELIMITER}({source}){RAW_STRING_DELIMITER}"'
 
 
+# 两段数组仅避免成品出现明文连续密钥；密钥仍随客户端交付，不是秘密保管。
 def masked_key_arrays(key_hex: str) -> tuple:
     """Split an egg key into a masked byte array and its mask.
 
@@ -327,6 +330,7 @@ def _optimize_runtime(path: Path, trim=None) -> dict[str, int]:
     return optimize_runtime_tree(path, trim)
 
 
+# 先移走旧目录，再发布新目录；失败恢复只覆盖 rename 异常，不构成断电事务。
 def _publish(assembly: Path, source: Path, destination: Path) -> Path:
     """Move a finished bundle to its published path in a single rename.
 
@@ -354,6 +358,7 @@ def _publish(assembly: Path, source: Path, destination: Path) -> Path:
     return destination
 
 
+# 仅执行本机目标解释器，避免交叉构建误运行不同架构二进制。
 def _precompile_linux_stdlib(bundle: Path, target: Target) -> None:
     """Build target bytecode before publication; the launcher stays read-only.
 

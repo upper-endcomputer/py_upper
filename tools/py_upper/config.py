@@ -1,3 +1,5 @@
+# 中文维护说明：把应用 TOML 转为目标平台、ABI、路径和有效构建选项；路径以选定应用根为准。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import os

@@ -1,3 +1,5 @@
+# 中文维护说明：维护可观察属性及订阅回调；解除订阅是视图销毁时的必要步骤。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """
 Observable property system for MVVM
 支持属性变化通知和数据绑定

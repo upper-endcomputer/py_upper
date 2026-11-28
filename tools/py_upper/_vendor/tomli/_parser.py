@@ -1,3 +1,5 @@
+# 中文维护说明：解析 TOML 文档并报告语法错误；此文件随 tomli 上游维护，保留版权与兼容行为。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2021 Taneli Hukkinen

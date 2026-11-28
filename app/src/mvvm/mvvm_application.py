@@ -1,3 +1,5 @@
+# 中文维护说明：保存模型、视图和服务的注册关系；停止时逐项尝试清理并汇总失败。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """MVVM Application Container
 协调 Model、View 和 ViewModel 的交互
 """

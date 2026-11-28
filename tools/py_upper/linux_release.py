@@ -1,3 +1,5 @@
+# 中文维护说明：将已验证候选目录交给 CPack 生成 Linux 安装包；全部请求格式成功后才发布归档。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Linux installer generation from the verified bundle, using CPack."""
 from __future__ import annotations
 import re

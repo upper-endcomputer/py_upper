@@ -1,3 +1,5 @@
+# 中文维护说明：定义 app/src/mvvm/views 包的导出边界；保留导出对象身份，避免在包初始化时引入额外运行副作用。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """View Layer - 框架层（ViewBase 与两种绑定）。
 
 具体窗口（MainWindow/AboutWindow）各自成模块，Qt 名字在它们真正建窗口的

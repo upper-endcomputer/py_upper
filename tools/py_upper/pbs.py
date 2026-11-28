@@ -1,3 +1,5 @@
+# 中文维护说明：解析 PBS 运行时和 SDK 资产并验证解包布局；宿主工具与目标产物不可混用。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """PBS (python-build-standalone) resolution: release metadata, assets, runtime and SDK."""
 from __future__ import annotations
 

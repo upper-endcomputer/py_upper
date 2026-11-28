@@ -1,3 +1,8 @@
+/**
+ * @file actctx.h
+ * @brief 声明激活上下文函数指针及共享状态；运行时检查可用性后才调用系统 API。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 #include <windows.h>
 #include <stdio.h>
 #include <olectl.h>

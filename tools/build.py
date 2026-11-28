@@ -1,3 +1,5 @@
+# 中文维护说明：解析构建命令并协调候选包验证、签名与发布；构建写入使用工作区互斥。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import argparse
@@ -103,6 +105,10 @@ def main(argv=None) -> int:
                 [sys.executable, str(Path(__file__).resolve()), *argv],
                 env=env,
             ).returncode
+    # 帮助由 argparse 输出并退出，不会进入写入阶段；无需等待构建互斥。
+    arguments = sys.argv[1:] if argv is None else argv
+    if "--help" in arguments or "-h" in arguments:
+        return _main(argv)
     from py_upper.workspace_lock import workspace_lock
     try:
         with workspace_lock(ROOT):

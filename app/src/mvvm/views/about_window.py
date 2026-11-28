@@ -1,3 +1,5 @@
+# 中文维护说明：构造关于窗口并绑定状态；窗口关闭与释放时解除对应订阅。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """「关于」窗口：绑定 MainViewModel，自己不做任何业务判断。"""
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+# 中文维护说明：解析 TOML 日期、时间和数字的正则匹配；保持时区与浮点解析的上游语义。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2021 Taneli Hukkinen

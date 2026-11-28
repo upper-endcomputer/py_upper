@@ -1,3 +1,5 @@
+# 中文维护说明：验证候选目录组装和发布替换；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 import json
 
 from py_upper.config import TARGETS, project_version

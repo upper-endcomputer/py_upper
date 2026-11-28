@@ -1,3 +1,8 @@
+/**
+ * @file MemoryModule.h
+ * @brief 声明内存 PE 加载器句柄和回调；加载与释放必须使用配对接口，遵守上游许可。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 /*
  * Memory DLL loading code
  * Version 0.0.4

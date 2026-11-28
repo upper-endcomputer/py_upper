@@ -1,3 +1,5 @@
+# 中文维护说明：选择原生 MSVC、Unix 或 Zig 工具链；编译器架构与目标 Python ABI 必须一致。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import os

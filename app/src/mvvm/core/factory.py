@@ -1,3 +1,5 @@
+# 中文维护说明：集中创建可观察属性与 ViewModel；重导出必须保持同一类对象身份。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Factories: property factory for declarative ViewModel fields and the
 ViewModelFactory that centralizes construction."""
 from __future__ import annotations

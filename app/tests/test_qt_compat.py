@@ -1,3 +1,5 @@
+# 中文维护说明：验证Qt binding 延迟导入和统一接口；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """utils.qt_compat: one binding-neutral import surface, no binding at import time.
 
 The shim exists so application code never names PySide6 or PyQt directly. That

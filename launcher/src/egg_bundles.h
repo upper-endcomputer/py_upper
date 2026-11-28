@@ -1,3 +1,8 @@
+/**
+ * @file egg_bundles.h
+ * @brief 在 CPython 初始化前认证并提取合并 bundle；校验成员范围和归档结构后才交给加载器。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 #pragma once
 
 // Reads the merged application bundles out of an authenticated egg without a

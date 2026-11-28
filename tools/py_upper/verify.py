@@ -1,3 +1,5 @@
+# 中文维护说明：检查清单、架构与依赖并执行目标 import 和 launcher smoke；成功范围以实际运行步骤为准。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Verification: static package checks plus the target-runtime and launcher smoke tests."""
 from __future__ import annotations
 

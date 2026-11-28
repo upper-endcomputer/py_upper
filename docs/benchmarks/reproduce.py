@@ -1,3 +1,5 @@
+# 中文维护说明：复现合并模式构建与 headless 启动采样；会生成 UpperCloseout 产物，运行时需独占工作区。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 import json,os,re,shutil,subprocess,time,statistics,math
 from pathlib import Path
 root=Path.cwd();work=root/'.tmp/closeout';app=work/'app';app.mkdir(exist_ok=True)

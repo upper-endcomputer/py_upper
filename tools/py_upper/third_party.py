@@ -1,3 +1,5 @@
+# 中文维护说明：按目标 ABI 获取 wheel 并安装到暂存目录；跨目标宿主 marker 求值存在边界。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import hashlib

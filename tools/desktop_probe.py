@@ -1,3 +1,5 @@
+# 中文维护说明：在指定真实 Qt 平台测量窗口 exposed 并保存截图；不得把 offscreen 当成物理显示延迟。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Run with a Python containing the app's Qt binding; never substitutes offscreen."""
 from __future__ import annotations
 import argparse

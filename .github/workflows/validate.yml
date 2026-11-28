@@ -1,3 +1,4 @@
+# 中文维护说明：验证 develop 的宿主兼容与原生目标；headless 检查不代替签名公证和真实桌面验收。
 name: py_upper validation
 
 # Only develop runs the matrix. Development happens on feature_* / fix_*
@@ -34,6 +35,7 @@ jobs:
         run: python -c "import shutil; shutil.copyfile('app/pyproject.toml.example', 'app/pyproject.toml')"
       - name: Verify Build Tool imports
         run: |
+          python tools/check_comments.py
           python -m compileall -q tools/py_upper
           python -c "import sys; sys.path.insert(0, 'tools'); import py_upper.config; import py_upper.compat; print(sys.version)"
       - name: Run compatibility tests

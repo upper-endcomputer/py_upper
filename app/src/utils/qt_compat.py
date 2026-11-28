@@ -1,3 +1,5 @@
+# 中文维护说明：延迟选择可用 Qt binding 并统一 Signal、Slot 与事件循环入口；不在导入适配模块时加载全部 Qt。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Qt binding abstraction: PySide6, PySide2, PyQt6, PyQt5 behind one import.
 
 Applications import Qt classes from here:

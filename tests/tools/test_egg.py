@@ -1,3 +1,5 @@
+# 中文维护说明：验证归档认证、读取和缓存安全边界；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import errno
@@ -870,3 +872,17 @@ def test_egg_without_a_manifest_is_refused(tmp_path):
         EncryptedEggImporter(egg, key, "extract")
     with pytest.raises(ValueError, match="manifest is missing"):
         read_egg_manifest(egg, KEY)
+
+
+def test_loader_chinese_comments_preserve_executable_tokens():
+    """中文注释可嵌入，但不能顺带改写协议字符串或执行语义。"""
+    import ast
+    from py_upper.egg import _ascii_loader_comments
+
+    source = '# 中文维护说明\nVALUE = "# literal"  # 行尾说明\n'
+    converted = _ascii_loader_comments(source)
+    converted.encode('ascii')
+    assert ast.dump(ast.parse(source)) == ast.dump(ast.parse(converted))
+    assert len(source.splitlines()) == len(converted.splitlines())
+    literal = 'VALUE = "中文运行字符串"\n'
+    assert _ascii_loader_comments(literal) == literal

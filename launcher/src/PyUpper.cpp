@@ -1,3 +1,8 @@
+/**
+ * @file PyUpper.cpp
+ * @brief 定位运行时、认证应用归档、注册合并模块并启动 CPython；解释器初始化前的失败需走原生诊断。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 #include "PyUpper.h"
 #include "egg_bundles.h"
 // Including Python.h must not drag the CPython import library into the link.
@@ -595,6 +600,7 @@ fs::path bundle_cache_root() {
 
 // Lock files live outside entries and are never unlinked: replacing a lock
 // inode would allow a reader and cleaner to lock different objects.
+// 使用共享句柄或 flock 保护正在使用的版本；析构释放租约，淘汰方请求独占访问。
 struct CacheLease {
 #ifdef _WIN32
     HANDLE handle = INVALID_HANDLE_VALUE;
@@ -667,6 +673,7 @@ fs::path usable_cache_root() {
 // accumulate forever, each holding the extracted extension bundles (~1 MB).
 // Best effort: another running instance may still be using an older entry, and
 // a leftover directory only costs disk space.
+// 除当前版本外保留最近版本；遇到活跃租约时允许暂时超过容量，优先保护运行实例。
 void prune_bundle_cache(const fs::path& base, const std::string& keep) {
     std::error_code ec;
     std::vector<std::pair<fs::file_time_type, fs::path>> entries;
@@ -956,6 +963,7 @@ RuntimeLoad load_python(const fs::path& home) {
 
 }  // namespace
 
+// 初始化顺序约束：解包并注册内建模块必须先于 CPython 初始化，不能挪入 Python 入口。
 int PyUpper::run(const std::vector<std::string>& argv) {
     auto previous_phase = std::chrono::steady_clock::now();
     const bool timing = std::getenv("PY_UPPER_STARTUP_TIMING") != nullptr;

@@ -1,3 +1,8 @@
+/**
+ * @file actctx.c
+ * @brief 保存并激活 Windows DLL 的激活上下文；扩展加载后恢复原上下文，避免串扰。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 #include "actctx.h"
 
 HANDLE PyWin_DLLhActivationContext=NULL;

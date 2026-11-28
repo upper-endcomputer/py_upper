@@ -1,3 +1,5 @@
+# 中文维护说明：生成认证归档及加载器配置；打包内嵌密钥仅增加读取成本，不能承担授权安全。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Encrypted application egg: packing, key handling and the loader source.
 
 The application's own Python modules and compiled extensions are packed into a
@@ -344,6 +346,26 @@ def remove_packed_files(site: Path, files) -> None:
             pass
 
 
+def _ascii_loader_comments(text: str) -> str:
+    """将注释转为 ASCII 转义文本，保留行数、缩进和全部运行 token。
+
+    中文仍保存在源码；只在嵌入阶段转换 COMMENT token，字符串和标识符
+    不作替换，继续交给后续 ASCII 与分隔符检查拒绝不受支持的输入。
+    """
+    import io
+    import tokenize
+
+    lines = text.splitlines(keepends=True)
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        if token.type == tokenize.COMMENT and not token.string.isascii():
+            row, start = token.start
+            end = token.end[1]
+            line = lines[row - 1]
+            lines[row - 1] = (line[:start] + token.string.encode("ascii", "backslashreplace").decode("ascii")
+                              + line[end:])
+    return "".join(lines)
+
+
 def egg_loader_source() -> str:
     """The loader text the launcher embeds.
 
@@ -352,6 +374,7 @@ def egg_loader_source() -> str:
     silently producing a broken launcher.
     """
     text = (Path(__file__).resolve().parent / "egg_loader.py").read_text(encoding="utf-8")
+    text = _ascii_loader_comments(text)
     try:
         text.encode("ascii")
     except UnicodeEncodeError as exc:

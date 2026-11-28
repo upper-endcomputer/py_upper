@@ -1,3 +1,4 @@
+# 中文维护说明：应用配置模板；复制到本地配置后修改产品信息与依赖，不直接硬编码个人环境。
 # py_upper application configuration.
 #
 # This file is the tracked template for the bundled example application. Copy

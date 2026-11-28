@@ -1,3 +1,5 @@
+# 中文维护说明：通过统一 Qt 适配层创建应用并运行事件循环；复用现存实例时保持对象归属。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Qt application bootstrap using the detected Qt binding.
 
 Replaces the pcs_upper utils/qt fork: all Qt names resolve through

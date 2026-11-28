@@ -1,3 +1,5 @@
+# 中文维护说明：记录和检查 runtime、SDK 与 wheel 输入；依赖可重放不等于产物字节级可复现。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import hashlib

@@ -1,9 +1,12 @@
+# 中文维护说明：通过操作系统文件锁拒绝并发写入；退出后由系统释放锁，锁文件本身可以保留。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """OS-owned workspace lock; process exit releases it, including after a crash."""
 from contextlib import contextmanager
 from pathlib import Path
 import os
 
 
+# 锁由 OS 持有而非 PID 文本判断；进程崩溃后无需清理“陈旧 PID”才能恢复构建。
 @contextmanager
 def workspace_lock(root: Path):
     directory = root / '.tmp'

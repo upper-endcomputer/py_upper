@@ -1,3 +1,5 @@
+# 中文维护说明：验证真实 C++ 缓存租约和淘汰行为；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Exercise the actual C++ cache lease and eviction helpers."""
 from __future__ import annotations
 

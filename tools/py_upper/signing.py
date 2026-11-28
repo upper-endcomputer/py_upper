@@ -1,3 +1,5 @@
+# 中文维护说明：按镜像类型签署 Mach-O 与嵌套 bundle；扩展入 egg 前签名，应用封签在最后。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Sign loadable Mach-O images, including extension images before egg packing."""
 from __future__ import annotations
 

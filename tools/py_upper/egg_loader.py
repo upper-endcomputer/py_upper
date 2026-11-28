@@ -1,3 +1,5 @@
+# 中文维护说明：验证并加载应用归档；缓存需校验内容并持有租约，防止运行实例被淘汰。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 # py_upper encrypted egg loader.
 #
 # The loader is deliberately plain ASCII and uses only single quoted strings:
@@ -193,6 +195,7 @@ def _cache_lease_path(root, name):
     return os.path.join(directory, name)
 
 
+# 租约必须覆盖实际使用期；清理方只有拿到独占锁才能删除对应版本。
 def _cache_lease(path, exclusive=False):
     if os.name == 'nt':
         import ctypes
@@ -218,6 +221,7 @@ def _cache_lease(path, exclusive=False):
     return handle.close
 
 
+# 淘汰旧版本前检查活跃租约；锁文件本身保留，防止不同进程锁住不同 inode。
 def _prune_cache(cache_root, keep_name):
     # Only entries this loader owns. `merged-*` belongs to the launcher, which
     # extracts the extension bundles before Py_Initialize and is using that

@@ -1,3 +1,5 @@
+# 中文维护说明：实现属性和命令绑定；双向绑定必须提供明确的读回路径。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """
 View Layer - Pure UI Components with MVVM Data Binding
 """

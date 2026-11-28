@@ -1,3 +1,5 @@
+# 中文维护说明：区分源码开发与打包运行的资源路径；安装目录可能只读，不用于保存用户数据。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import os

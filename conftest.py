@@ -1,3 +1,5 @@
+# 中文维护说明：为测试提供统一导入路径和假 Qt fixture；假对象验证装配，不能替代真实平台运行。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import sys

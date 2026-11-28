@@ -1,3 +1,5 @@
+# 中文维护说明：选择 runtime 提供方并准备目标解释器；只裁剪复制树，不破坏共享原始 runtime。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Target runtime: provider dispatch, PBS acquisition and release-safe optimization."""
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+# 中文维护说明：按文件头识别原生格式与架构；不能只凭扩展名判断动态库。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import struct

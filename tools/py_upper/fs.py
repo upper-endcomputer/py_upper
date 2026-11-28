@@ -1,3 +1,5 @@
+# 中文维护说明：复制、散列和退役构建目录；复制内容时避免继承来源目录的限制性权限。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import hashlib

@@ -1,3 +1,5 @@
+# 中文维护说明：补齐原生依赖闭包并重定位加载路径；只操作候选目录，保留平台系统库边界。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import json

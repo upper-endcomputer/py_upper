@@ -1,3 +1,5 @@
+# 中文维护说明：构造示例主窗口与按钮；业务动作通过 ViewModel 命令执行。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """主窗口：这个应用的参考 View —— 绑定、命令、跟子窗口的联动都在这里。"""
 from __future__ import annotations
 

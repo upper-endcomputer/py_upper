@@ -1,3 +1,5 @@
+# 中文维护说明：提供可注入的问候服务；业务服务不持有窗口或 ViewModel。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Greeting service: an injected capability, not a global."""
 
 

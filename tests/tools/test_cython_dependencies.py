@@ -1,3 +1,5 @@
+# 中文维护说明：验证外部声明变更与增量输出一致性；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Real Cython regression for declarations outside the application tree."""
 import os
 from pathlib import Path

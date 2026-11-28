@@ -1,3 +1,5 @@
+# 中文维护说明：保存关于窗口的展示数据；数据模型不依赖 Qt 窗口。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """关于窗口的内容：属于 Model 层的数据，不含任何界面代码。"""
 
 from __future__ import annotations

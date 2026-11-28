@@ -1,3 +1,5 @@
+# 中文维护说明：定义 app/src/mvvm 包的导出边界；保留导出对象身份，避免在包初始化时引入额外运行副作用。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """MVVM framework for py_upper applications.
 
 Ported from pcs_upper/mvvm. The core layer (ObservableProperty,

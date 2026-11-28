@@ -49,6 +49,8 @@ PY_UPPER_E2E=1 python -m pytest tests/tools/test_e2e_local.py -q
 
 ## 文档入口
 
+- [中文注释规范](docs/COMMENTING_GUIDE.md)与[逐文件维护索引](docs/FILE_MAINTENANCE_INDEX.md)。
+
 - [开发指南](docs/DEVELOPMENT_GUIDE.md)：环境准备、开发与排错。
 - [配置与构建参考](docs/CONFIGURATION_REFERENCE.md)：应用名、目标 Python、第三方依赖、native 闭包、Qt 裁剪、egg、部署和详细配置。
 - [架构](docs/ARCHITECTURE.md)：工具与示例的分层边界。

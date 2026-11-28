@@ -1,3 +1,5 @@
+# 中文维护说明：提供 ViewModel 属性通知与资源释放基类；界面绑定只依赖通知协议。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """
 Base ViewModel for MVVM
 所有ViewModel都应继承此类

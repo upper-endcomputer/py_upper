@@ -1,3 +1,5 @@
+# 中文维护说明：组装示例的 Model、Service、ViewModel 与 View；应用入口负责创建和释放对象图。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """装配处与入口：model、service、ViewModel、View 都在这一个文件里接起来。
 
 上面四个包彼此不 import 上层的具体类，只有这里同时认识它们——换掉其中一个

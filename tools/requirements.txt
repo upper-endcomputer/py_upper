@@ -1,3 +1,4 @@
+# 中文维护说明：构建工具的 Python 依赖约束；目标应用依赖由应用配置独立声明。
 # Optional external dependencies for developers who prefer pip-managed tools.
 # py_upper vendors a compatible TOML reader, so this file is not required just
 # to start tools/build.py on Python 3.8-3.10.

@@ -1,3 +1,8 @@
+/**
+ * @file MemoryModule.c
+ * @brief 在 Windows 内存中映射 PE 镜像并处理重定位、导入和资源；第三方实现保留 MPL 原文与出处。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 /*
  * Memory DLL loading code
  * Version 0.0.4

@@ -1,3 +1,8 @@
+/**
+ * @file _memimporter.c
+ * @brief 桥接 CPython 扩展导入与内存 DLL 加载；涉及解释器内部接口，升级 Python 时需原生回归。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 // Need to define these to be able to use SetDllDirectory.
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0502

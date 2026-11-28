@@ -1,3 +1,5 @@
+# 中文维护说明：应用声明式删除与保留规则；keep 优先，预计算祖先集合避免重复扫描子树。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Declarative payload trimming for the bundled site-packages and runtime.
 
 Qt pruning removes what the application's imports prove is dead. Every project

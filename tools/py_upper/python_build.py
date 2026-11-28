@@ -1,3 +1,5 @@
+# 中文维护说明：执行 Cython 转换、原生编译和应用暂存；缓存键覆盖内容输入，依赖文件用于跟踪外部声明。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Application build: Cython generation, target extension compilation and staging."""
 from __future__ import annotations
 
@@ -232,6 +234,7 @@ def _mark_current(artifact: Path, key: str) -> None:
     _stamp_path(artifact).write_text(key + "\n", encoding="utf-8")
 
 
+# 缓存同时验证已解析依赖的内容和本地声明名称；外部新增同名声明的遮蔽仍是边界。
 def _cython_key(source: Path, cython_version: str, destination: Path | None = None) -> str:
     """Conservative key including application declaration dependencies."""
     digest = hashlib.sha256()
@@ -265,6 +268,7 @@ def _cython_key(source: Path, cython_version: str, destination: Path | None = No
     return digest.hexdigest()
 
 
+# 编译命令中的路径不代表内容不变，因此额外散列编译器、显式头文件和库输入。
 def _command_inputs(cmd):
     """Content identity of compiler, include trees and explicit link inputs."""
     digest = hashlib.sha256()
@@ -352,6 +356,7 @@ def _windows_native_key(
     return digest.hexdigest()
 
 
+# 生成完成后再按新的 depfile 写入摘要，避免把旧依赖集合标记为当前产物。
 def cythonize_to_c(sources: list[Path], host_python: Path) -> dict[Path, Path]:
     """Generate the C translation unit for every selected source.
 
@@ -484,6 +489,7 @@ def _merged_source_dir(target: Target, group: str) -> Path:
     return BUILD / "merged" / target.key / group
 
 
+# 合并多个翻译单元前改写初始化符号，避免相同 basename 的模块在链接时冲突。
 def _renamed_translation_unit(text: str, symbol: str, source: Path) -> str:
     found = {match.group(1) for match in _PYINIT_RE.finditer(text)}
     if not found:

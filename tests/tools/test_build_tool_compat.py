@@ -1,3 +1,5 @@
+# 中文维护说明：验证宿主版本、平台工具链和 CLI 配置契约；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import ast

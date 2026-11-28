@@ -1,3 +1,5 @@
+# 中文维护说明：下载公开构建输入并处理可重试错误；日志与公开请求不应携带账户凭据。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import json

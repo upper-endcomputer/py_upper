@@ -1,3 +1,5 @@
+# 中文维护说明：解析 PE、ELF、Mach-O 依赖并解析加载路径；缺失非系统库时必须给出可定位错误。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import os

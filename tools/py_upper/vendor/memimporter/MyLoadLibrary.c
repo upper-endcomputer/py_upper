@@ -1,3 +1,8 @@
+/**
+ * @file MyLoadLibrary.c
+ * @brief 把系统 DLL 与内存 DLL 统一为加载接口；链表引用计数负责共享模块的释放时机。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 #include <Python.h>
 #include <windows.h>
 

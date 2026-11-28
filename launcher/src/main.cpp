@@ -1,3 +1,8 @@
+/**
+ * @file main.cpp
+ * @brief 适配操作系统进程入口；Windows 宽字符参数转换后再进入公共 launcher。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 #include "PyUpper.h"
 #include <string>
 #include <vector>

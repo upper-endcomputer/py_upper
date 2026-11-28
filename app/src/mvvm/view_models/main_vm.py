@@ -1,3 +1,5 @@
+# 中文维护说明：把模型与服务转换为界面状态和命令；保持无 Qt 导入，便于独立测试。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """ViewModel Layer - 界面状态与命令，不 import Qt"""
 from __future__ import annotations
 

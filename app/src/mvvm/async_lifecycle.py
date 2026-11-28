@@ -1,3 +1,5 @@
+# 中文维护说明：管理应用拥有的异步任务与关闭回调；并发关闭共享任务，等待者取消不应中断清理。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Application-owned asyncio tasks and service shutdown, independent of Qt."""
 from __future__ import annotations
 import asyncio
@@ -31,6 +33,7 @@ class AsyncLifecycle:
             raise RuntimeError('Application is shutting down')
         self._closers.append(callback)
 
+    # 只创建一次关闭任务；shield 将调用方取消与资源清理任务分离。
     async def aclose(self):
         if self._closed:
             return

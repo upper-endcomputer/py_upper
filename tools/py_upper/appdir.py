@@ -1,3 +1,5 @@
+# 中文维护说明：在配置导入前确定应用根目录；支持命令行、环境变量和默认示例路径。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Application root selection for the build tool.
 
 The build tool is deliberately independent of the bundled example application.

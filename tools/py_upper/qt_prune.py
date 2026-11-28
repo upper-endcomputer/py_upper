@@ -1,3 +1,5 @@
+# 中文维护说明：根据应用导入与显式配置裁剪 Qt 负载；动态导入与 QML 插件需显式保留。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 """Keep only the Qt payload the application actually imports.
 
 A PySide6 install ships every Qt module, and QtWebEngineCore alone is roughly

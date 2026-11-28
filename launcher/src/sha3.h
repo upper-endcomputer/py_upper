@@ -1,3 +1,8 @@
+/**
+ * @file sha3.h
+ * @brief 实现与 Python SHAKE-256 对齐的 Keccak 运算；当前目标为小端平台，修改时必须对照协议测试向量。
+ * @note 中文说明为本项目补充；原版权、许可和上游注释保留。
+ */
 #pragma once
 
 // Minimal SHAKE-256 keystream and authentication, matching
