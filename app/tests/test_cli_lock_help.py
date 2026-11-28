@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from appbuild.workspace_lock import workspace_lock
+from appbuild.fs import workspace_lock
 
 
 def test_help_remains_available_while_build_is_locked():

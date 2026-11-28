@@ -31,8 +31,8 @@ MVVMQtApplication → MVVMApplication → Model / Service / ViewModel / View
 ## 构建链路的接合点
 
 1. `appdir.py` 在配置导入前选定应用；`config.py` 提供 Target、目标 Python 和配置策略。
-2. `runtime.py` / `pbs.py` 获取目标 runtime 和 SDK；`third_party.py` 按目标标签安装 wheel，第三方包不做 Cython 转换。
-3. `python_build.py` 编译应用模块并维护增量缓存；`egg.py` / `egg_loader.py` 管理可选归档。`merge=all/directory/none` 是已有配置选择。
+2. `runtime.py` / `pbs.py` 获取目标 runtime 和 SDK；`wheels.py` 按目标标签安装 wheel，第三方包不做 Cython 转换。
+3. `application_build.py` 编译应用模块并维护增量缓存；`egg.py` / `egg_loader.py` 管理可选归档。`merge=all/directory/none` 是已有配置选择。
 4. `package.py` 编译 launcher 并组装目录；`native/` 解析与补齐动态库闭包；`trim.py` / `qt_prune.py` 实施保留与裁剪策略。
 5. Linux 本机构建在发布前预编译标准库 checked-hash 字节码。launcher 禁止在安装目录写字节码；跨架构构建不运行目标解释器。
 6. `verify.py` 检查布局、架构和依赖，再执行目标 Python 与 launcher import smoke。`--run` 继续调用实际应用入口。
@@ -82,7 +82,7 @@ python tools/build.py --target linux-arm64 --verify
 | 接合点 | 主要回归文件（统一位于 `app/tests/`） |
 | --- | --- |
 | 配置、目标、宿主兼容 | `test_config.py`、`test_build_tool_compat.py`、`test_doctor.py` |
-| runtime / wheel / 裁剪 | `test_pbs.py`、`test_third_party.py`、`test_qt_prune.py`、`test_trim.py` |
+| runtime / wheel / 裁剪 | `test_pbs.py`、`test_wheels.py`、`test_qt_prune.py`、`test_trim.py` |
 | Cython / egg / 增量缓存 | `test_incremental_build.py`、`test_merged_build.py`、`test_egg.py` |
 | 打包 / ABI / 原生闭包 | `test_package.py`、`test_verify.py`、`test_native_deployment.py`、`test_manifest.py` |
 | 启动 / 安装迁移 | `test_launcher_deployment.py`、`test_e2e_local.py`、`test_startup_bytecode.py` |
@@ -98,3 +98,28 @@ python tools/build.py --target linux-arm64 --verify
 - `PySide6-Essentials` 和 `merge=directory` 是按应用需求选择的优化，不强制写入通用模板；前者缩小构建输入，后者改变增量编译粒度，均不能直接等同于启动加速。
 - Linux `--release` 已接入 CPack，默认 TGZ/DEB、可选择 RPM，独立目标目录发布。旧根级归档不会随 `--run` 更新；依赖扫描及实机安装限制见 [发布与异步说明](RELEASE_AND_ASYNC.md)。
 - Windows/macOS 与真实 Linux 桌面按 CI/实机矩阵验证；当前容器运行结果仅代表此环境。
+
+## 脚本与遗留接口收口
+
+正式维护范围以 Git 跟踪文件为准，`.tmp/`、`build/`、缓存与 runtime 内的开发脚本不属于应用入口。当前 Python 文件共 88 个：应用 24、测试 30、构建及维护代码 29、内置 Tomli 5。模块文件不能等同于可执行脚本。
+
+| 收口项 | 调用证据与结果 |
+| --- | --- |
+| `mvvm/core/factory.py` | `ViewModelFactory` 仅被导出和结构测试引用；应用直接装配 ViewModel。`PropertyFactory` 的四次调用重复了 `_register_property` 的赋名行为。删除工厂模块，直接构造 `ObservableProperty`。 |
+| `appbuild/build_info.py` | 唯一功能是输出构建来源清单，移入 `manifest.write_build_info`，CLI 与回归同步更新。 |
+| `appbuild/workspace_lock.py` | 唯一功能是工作区文件锁，移入 `fs.workspace_lock`，保留锁冲突、释放和帮助入口回归。 |
+| `third_party.installed_import_names` | 全仓无调用；实际依赖冒烟使用 `_direct_imports_from_requirements`，删除旧扫描入口。 |
+
+保留 `appdir` 的配置导入前路径选择边界；`compat` 和 Tomli 用于 Python 3.8–3.10，属于当前支持能力；独立 egg loader 要被嵌入启动器，不能直接依赖构建器模块。桌面探针、基准复现和中文说明检查仍各有文档或 CI 入口。旧模块路径和工厂接口不提供转发兼容层。
+
+本轮收口验证：全量回归 498 passed / 6 skipped；显式真实 E2E 3 passed；Linux ARM64 正式 `tools/build.py --run` 输出 `GUI OK offscreen` 并以 0 退出；129 个跟踪文件维护检查通过。原工厂结构测试替换为属性赋名、通知和释放的行为回归。
+
+### appbuild 模块命名与发布边界
+
+- `input_lock.py` 固定构建输入；互斥写锁位于 `fs.workspace_lock`。
+- `wheels.py` 负责 wheel 解析、安装和 site 优化，替代过宽的 `third_party.py` 名称。
+- `application_build.py` 编译并暂存应用负载，替代容易与 Python runtime 构建混淆的 `python_build.py`。
+- `release.py` 合并原 `signing.py` 和 `linux_release.py`：`sign_macos_files` 处理归档前扩展签名，`sign_release` 处理最终候选包签名及公证，`build_linux_installers` 生成 Linux 安装包。安装包函数内部才导入 package 发布辅助，避免底层签名加载完整组装依赖链。
+- `runtime`、`pbs`、`package` 分别保留运行时装配、供应源获取、候选包组装的职责边界。模块迁移不改变 CLI 参数、配置段、锁文件名或产物格式，不提供旧模块转发别名。
+
+本轮命名与发布合并验证：498 passed / 6 skipped，真实 E2E 3 passed；正式 CLI `--release --linux-format TGZ` 生成 Linux ARM64 安装归档，归档包含应用与启动链接；打包应用输出 `GUI OK offscreen`，退出码 0。当前 appbuild 顶层实现模块共 19 个（不计包入口）。

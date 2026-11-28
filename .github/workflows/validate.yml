@@ -16,6 +16,11 @@ on:
   # pushing an empty commit.
   workflow_dispatch:
 
+# 同一分支/PR 只保留最新提交的验证，避免过时矩阵占用 runner。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-tool-compat:
     name: Build Tool Python ${{ matrix.python-version }}
@@ -33,9 +38,11 @@ jobs:
       # app/pyproject.toml.example.
       - name: Create the local configuration from the template
         run: python -c "import shutil; shutil.copyfile('app/pyproject.toml.example', 'app/pyproject.toml')"
+      - name: Check maintenance documentation
+        if: matrix.python-version == '3.13'
+        run: python tools/check_comments.py
       - name: Verify Build Tool imports
         run: |
-          python tools/check_comments.py
           python -m compileall -q tools/appbuild
           python -c "import sys; sys.path.insert(0, 'tools'); import appbuild.config; import appbuild.compat; print(sys.version)"
       - name: Run compatibility tests
@@ -165,11 +172,10 @@ jobs:
           sudo apt-get update
           # The local-runtime E2E fixture copies setup-python's system-linked
           # stdlib libraries and relocates their search paths with patchelf.
-          sudo apt-get install -y cmake ninja-build gcc g++ binutils patchelf
           # The bundled Qt GUI libraries link libEGL.so.1, which the runner
           # image does not carry (libGL.so.1 and libxkbcommon.so.0 it does).
           # Both the Qt pruning probe and the packaged smoke run load it.
-          sudo apt-get install -y libegl1
+          sudo apt-get install -y cmake ninja-build gcc g++ binutils patchelf libegl1
 
       - name: Install macOS build tools
         if: runner.os == 'macOS'

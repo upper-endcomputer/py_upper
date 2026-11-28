@@ -432,7 +432,7 @@ def build_memimporter(target: Target, site: Path) -> Path:
     """
     if target.os != "windows":
         raise RuntimeError("_memimporter is only available for Windows targets")
-    from .python_build import _is_current, _mark_current
+    from .application_build import _is_current, _mark_current
     from .fs import sha256
     from .toolchain import resolve_toolchain, windows_import_library
 

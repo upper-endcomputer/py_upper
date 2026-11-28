@@ -26,11 +26,11 @@ from .native.inspect import (
     PE_SUBSYSTEM, PE_SUBSYSTEM_CONSOLE, PE_SUBSYSTEM_GUI, inspect,
     native_files, target_format, verify_arch,
 )
-from .python_build import (
+from .application_build import (
     merged_bundle_relative, merged_groups, module_name, selected_sources,
 )
 from .runtime import runtime_pip_payloads
-from .third_party import WHEEL_MANIFEST, dependency_specs, wheel_dir
+from .wheels import WHEEL_MANIFEST, dependency_specs, wheel_dir
 
 
 def _expected_extension(site: Path, source: Path, suffix: str) -> Path:

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from appbuild import python_build as pb
+from appbuild import application_build as pb
 
 
 def test_external_include_changes_generated_code(tmp_path, monkeypatch):

@@ -30,7 +30,7 @@
 
 ### P1-01：Cython 缓存漏掉声明依赖，可能悄悄交付旧代码
 
-- 证据：`tools/appbuild/python_build.py:235` 的 `_cython_key()` 仅包含 schema、Cython 版本、源文件名和源文件内容。
+- 证据：`tools/appbuild/application_build.py:235` 的 `_cython_key()` 仅包含 schema、Cython 版本、源文件名和源文件内容。
 - 实测：`demo.py` 不变，把 `demo.pxd` 的 `cpdef int f(int x)` 改成 `cpdef double f(double x)`；第二次构建显示 `1 module(s) up to date`，生成 C 与旧版本完全一致；关闭增量后重新生成的 C 发生变化。
 - 影响：增量构建成功不等于实现与输入一致；切换外部应用时，共用缓存目录也会放大这类相同源码、不同声明依赖的风险。
 - 最小修复方向：跟踪实际读取的 `.pxd/.pxi` 依赖及内容，纳入转换键；同时记录工具版本、编译指令和模块身份。可以先用保守失效策略保证正确性，再优化依赖粒度。
@@ -90,7 +90,7 @@
 
 ### 跨目标 wheel 解析的可信度
 
-`third_party.resolution_python()` 原生目标优先目标解释器；交叉目标退回宿主 pip 加目标 tags。项目文档明确写出 marker 仍按宿主求值的限制。
+`wheels.resolution_python()` 原生目标优先目标解释器；交叉目标退回宿主 pip 加目标 tags。项目文档明确写出 marker 仍按宿主求值的限制。
 
 建议先让构建报告显式区分“目标解释器解析/宿主回退”，交叉发布优先消费目标原生 CI 生成的锁与 wheelhouse。不要把宿主回退的成功下载当成目标依赖完整；复杂跨平台 marker 解析器暂不值得自建。
 
@@ -150,7 +150,7 @@ PYTHONDONTWRITEBYTECODE=1 TMPDIR="$PWD/.tmp/review" \
 PYTHONDONTWRITEBYTECODE=1 TMPDIR="$PWD/.tmp/review" \
   .tmp/review/venv/bin/python -m pytest \
   app/tests/test_incremental_build.py app/tests/test_merged_build.py \
-  app/tests/test_package.py app/tests/test_linux_release.py \
+  app/tests/test_package.py app/tests/test_release.py \
   app/tests/test_async_lifecycle.py app/tests/test_trim.py \
   app/tests/test_manifest.py -q -p no:cacheprovider \
   --basetemp="$PWD/.tmp/review/pytest"

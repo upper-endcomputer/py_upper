@@ -261,15 +261,15 @@ def test_runtime_optimizer_applies_the_runtime_patterns(tmp_path, monkeypatch):
 
 def test_site_optimizer_applies_the_site_patterns(tmp_path, monkeypatch):
     """验证应用依赖目录使用 site-packages 专用裁剪规则。"""
-    from appbuild import third_party
+    from appbuild import wheels
 
-    monkeypatch.setattr(third_party, "optimize_config", lambda: {"remove_python_caches": False})
+    monkeypatch.setattr(wheels, "optimize_config", lambda: {"remove_python_caches": False})
     site = tmp_path / "site-packages"
     (site / "PySide2" / "examples").mkdir(parents=True)
     (site / "PySide2" / "examples" / "demo.py").write_text("", encoding="utf-8")
     (site / "PySide2" / "__init__.py").write_text("", encoding="utf-8")
 
-    result = third_party.optimize_site(
+    result = wheels.optimize_site(
         site,
         trim=TrimPolicy(site_packages=["PySide2/examples"]),
     )

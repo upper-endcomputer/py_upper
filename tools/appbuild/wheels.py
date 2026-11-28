@@ -237,15 +237,6 @@ def _top_level_imports(dist_info: Path) -> list[str]:
     return [fallback] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", fallback) else []
 
 
-def installed_import_names(site: Path) -> list[str]:
-    """合并已安装发行包的顶层导入名并去重排序。"""
-    result: set[str] = set()
-    for dist in site.glob("*.dist-info"):
-        if dist.is_dir():
-            result.update(_top_level_imports(dist))
-    return sorted(result)
-
-
 def _safe_member(name: str) -> Path:
     # Wheel members use POSIX paths regardless of the build host. Reject a
     # Windows path even on Unix, where pathlib would treat its drive as a name.

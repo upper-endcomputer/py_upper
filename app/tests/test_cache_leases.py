@@ -38,7 +38,7 @@ int main() {
     include = sysconfig.get_path('include')
     env = None
     if os.name == 'nt':
-        from test_third_party import _windows_extension_compiler
+        from test_wheels import _windows_extension_compiler
         try:
             compiler, _, env = _windows_extension_compiler()
         except RuntimeError as exc:

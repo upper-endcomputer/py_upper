@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from appbuild import python_build, verify
+from appbuild import application_build, verify
 from appbuild.config import TARGETS
 from appbuild.egg import EggConfig, pack_egg
 from appbuild.toolchain import Toolchain
@@ -44,7 +44,7 @@ def _cython_c(directory: Path, name: str, basename: str) -> Path:
 def test_merged_groups_leave_package_markers_out(tmp_path, monkeypatch, mode, expected):
     """验证合并分组只收录叶子模块，保留包初始化标记。"""
     app_root = tmp_path / "app"
-    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "APP", app_root)
     sources = [
         _source(app_root, "main.py"),
         _source(app_root, "pkg/__init__.py"),
@@ -55,28 +55,28 @@ def test_merged_groups_leave_package_markers_out(tmp_path, monkeypatch, mode, ex
         _source(app_root, "utils/paths.py"),
     ]
 
-    groups = python_build.merged_groups(sources, mode)
+    groups = application_build.merged_groups(sources, mode)
 
-    assert {group: [python_build.module_name(path) for path in paths]
+    assert {group: [application_build.module_name(path) for path in paths]
             for group, paths in groups.items()} == expected
-    assert python_build.merged_groups([source for source in sources if source.name == "__init__.py"], mode) == {}
+    assert application_build.merged_groups([source for source in sources if source.name == "__init__.py"], mode) == {}
 
 
 def test_entry_point_rewrite_is_unique_and_rejects_ambiguous_units(tmp_path, monkeypatch):
     """验证初始化符号重命名唯一且拒绝包含歧义入口的单元。"""
     app_root = tmp_path / "app"
     source = _source(app_root, "demo.py")
-    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "APP", app_root)
     text = "PyObject* PyInit_demo(void) { return 0; }\n"
 
-    renamed = python_build._renamed_translation_unit(text, "PyInit_appbuild_demo_abc", source)
+    renamed = application_build._renamed_translation_unit(text, "PyInit_appbuild_demo_abc", source)
 
     assert "PyInit_demo" not in renamed
     assert "PyInit_appbuild_demo_abc" in renamed
     with pytest.raises(RuntimeError, match="no PyInit"):
-        python_build._renamed_translation_unit("/* empty */\n", "PyInit_x", source)
+        application_build._renamed_translation_unit("/* empty */\n", "PyInit_x", source)
     with pytest.raises(RuntimeError, match="more than one"):
-        python_build._renamed_translation_unit(
+        application_build._renamed_translation_unit(
             "PyObject* PyInit_a(void);\nPyObject* PyInit_b(void);\n", "PyInit_x", source
         )
 
@@ -84,8 +84,8 @@ def test_entry_point_rewrite_is_unique_and_rejects_ambiguous_units(tmp_path, mon
 def test_registration_table_names_every_module(tmp_path, monkeypatch):
     """验证每个合并模块有唯一初始化符号并登记到内建模块表。"""
     app_root = tmp_path / "app"
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", tmp_path / "build")
     first = _source(app_root, "pkg/shared.py")
     second = _source(app_root, "utils/shared.py")
     generated = {
@@ -93,12 +93,12 @@ def test_registration_table_names_every_module(tmp_path, monkeypatch):
         second: _cython_c(tmp_path / "gen", "utils/shared.c", "shared"),
     }
 
-    inputs, register = python_build.prepare_merged_group(TARGETS["linux-x86_64"], "_all", [first, second], generated)
+    inputs, register = application_build.prepare_merged_group(TARGETS["linux-x86_64"], "_all", [first, second], generated)
 
     assert len(inputs) == 2
     text = register.read_text(encoding="utf-8")
     names = ["pkg.shared", "utils.shared"]
-    symbols = [python_build.merged_init_symbol(name) for name in names]
+    symbols = [application_build.merged_init_symbol(name) for name in names]
     assert len(set(symbols)) == 2
     for name, symbol, path in zip(names, symbols, inputs):
         assert f'(char*)"{name}", {symbol}' in text
@@ -115,7 +115,7 @@ def test_windows_merged_setup_exports_the_registration_entry_point(tmp_path):
     # translation units were renamed and register.c exports the launcher symbol.
     # Without the override the Windows link fails with LNK2001.
     """验证 Windows 合并扩展只导出统一注册入口。"""
-    script = python_build.windows_merged_setup_script(
+    script = application_build.windows_merged_setup_script(
         tmp_path / "include",
         tmp_path / "libs",
         ["python313"],
@@ -149,14 +149,14 @@ def test_merged_compile_links_every_translation_unit_once(tmp_path, monkeypatch)
         commands.append([str(token) for token in cmd])
         Path(cmd[cmd.index("-o") + 1]).write_bytes(b"")
 
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
-    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
-    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(application_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(application_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(application_build.subprocess, "run", fake_run)
 
-    outputs = python_build.compile_merged_unix_extensions(target, {"pkg": [first, second]}, generated)
-    second_run = python_build.compile_merged_unix_extensions(target, {"pkg": [first, second]}, generated)
+    outputs = application_build.compile_merged_unix_extensions(target, {"pkg": [first, second]}, generated)
+    second_run = application_build.compile_merged_unix_extensions(target, {"pkg": [first, second]}, generated)
 
     assert outputs == second_run
     assert [path.name for path in outputs] == ["appbuild_pkg.cpython-313-x86_64-linux-gnu.so"]
@@ -164,7 +164,7 @@ def test_merged_compile_links_every_translation_unit_once(tmp_path, monkeypatch)
     cmd = commands[0]
     linked = [Path(token).name for token in cmd if token.endswith(".c")]
     assert linked == ["0000_pkg_a.c", "0001_pkg_b.c", "register.c"]
-    assert outputs[0].parent.name == python_build.BUNDLE_DIR
+    assert outputs[0].parent.name == application_build.BUNDLE_DIR
 
 
 @pytest.mark.parametrize(("mode", "group"), [("directory", "pkg"), ("all", "_all")])
@@ -186,13 +186,13 @@ def test_merge_mode_cythonizes_only_leaves(tmp_path, monkeypatch, mode, group):
         seen["groups"] = groups
         return []
 
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: mode)
-    monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
-    monkeypatch.setattr(python_build, "cythonize_to_c", fake_cython)
-    monkeypatch.setattr(python_build, "build_merged_extensions", fake_merged)
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "cython_merge_mode", lambda: mode)
+    monkeypatch.setattr(application_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(application_build, "cythonize_to_c", fake_cython)
+    monkeypatch.setattr(application_build, "build_merged_extensions", fake_merged)
 
-    assert python_build.build_target_extensions(TARGETS["linux-x86_64"], [marker, leaf]) == []
+    assert application_build.build_target_extensions(TARGETS["linux-x86_64"], [marker, leaf]) == []
     assert seen["sources"] == [leaf]
     assert seen["groups"] == {group: [leaf]}
 
@@ -268,7 +268,7 @@ def test_merged_layout_keeps_markers_and_reads_bundles_from_egg(tmp_path, monkey
     bundle.parent.mkdir(parents=True)
     bundle.write_bytes(b"bundle")
 
-    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "APP", app_root)
     monkeypatch.setattr(verify, "APP", app_root)
     monkeypatch.setattr(verify, "cython_merge_mode", lambda: mode)
     monkeypatch.setattr(verify, "runtime_spec", lambda target: SimpleNamespace(major_minor="3.13", abi_tag="cp313"))

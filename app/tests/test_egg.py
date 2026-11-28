@@ -881,10 +881,10 @@ def test_packed_extensions_are_stripped_before_the_egg_is_sealed(tmp_path, monke
     never reached it, so strip_native silently had no effect on the
     application's own bundles.
     """
-    from appbuild import python_build
+    from appbuild import application_build
 
     calls = []
-    monkeypatch.setattr(python_build, "optimize_config", lambda: {"strip_native": True},
+    monkeypatch.setattr(application_build, "optimize_config", lambda: {"strip_native": True},
                         raising=False)
     import appbuild.config as config_module
     monkeypatch.setattr(config_module, "optimize_config", lambda: {"strip_native": True})
@@ -900,7 +900,7 @@ def test_packed_extensions_are_stripped_before_the_egg_is_sealed(tmp_path, monke
     (site / "appbuild_bundles" / "bundle.so").write_bytes(b"\x7fELF")
 
     from appbuild.config import TARGETS
-    python_build.strip_packed_extensions(
+    application_build.strip_packed_extensions(
         site, ["pkg/mod.py", "appbuild_bundles/bundle.so"], TARGETS["macos-arm64"])
 
     assert ("strip", "bundle.so") in calls
@@ -912,7 +912,7 @@ def test_packed_extensions_are_stripped_before_the_egg_is_sealed(tmp_path, monke
 
 def test_strip_is_a_no_op_when_disabled(tmp_path, monkeypatch):
     """验证未开启剥离时不调用原生处理工具。"""
-    from appbuild import python_build
+    from appbuild import application_build
     import appbuild.config as config_module
 
     monkeypatch.setattr(config_module, "optimize_config", lambda: {"strip_native": False})
@@ -924,7 +924,7 @@ def test_strip_is_a_no_op_when_disabled(tmp_path, monkeypatch):
     (site / "appbuild_bundles").mkdir(parents=True)
     (site / "appbuild_bundles" / "bundle.so").write_bytes(b"\x7fELF")
     from appbuild.config import TARGETS
-    python_build.strip_packed_extensions(site, ["appbuild_bundles/bundle.so"], TARGETS["macos-arm64"])
+    application_build.strip_packed_extensions(site, ["appbuild_bundles/bundle.so"], TARGETS["macos-arm64"])
     assert calls == []
 
 

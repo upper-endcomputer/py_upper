@@ -23,15 +23,15 @@ from appbuild.config import (
     trim_policy, validate_build_python_version, validate_target, require_local_python,
 )
 from appbuild.egg import COMPRESSIONS, egg_config
-from appbuild.lock import verify_lock, write_lock
+from appbuild.input_lock import verify_lock, write_lock
 from appbuild.package import _publish, build_launcher, package, write_release_manifest
-from appbuild.python_build import build_python_package
+from appbuild.application_build import build_python_package
 from appbuild.runtime import ensure_runtime, ensure_sdk
-from appbuild.signing import release
+from appbuild.release import sign_release
 from appbuild.fs import retire_tree
 from appbuild.verify import run_launcher_smoke, run_packaged_launcher, run_target_python_smoke
 from appbuild.toolchain import describe_toolchain
-from appbuild.third_party import resolve_wheels
+from appbuild.wheels import resolve_wheels
 from appbuild.trim import PRESETS
 from appbuild.egg_loader import BACKENDS
 from appbuild.verify import verify
@@ -113,7 +113,7 @@ def main(argv=None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     if "--help" in arguments or "-h" in arguments:
         return _main(argv)
-    from appbuild.workspace_lock import workspace_lock
+    from appbuild.fs import workspace_lock
     try:
         with workspace_lock(ROOT):
             return _main(argv)
@@ -247,19 +247,19 @@ def _main(argv=None) -> int:
         run_launcher_smoke(target, out / ("Contents/MacOS/" + app_name() if target.os == "macos" else (app_name() + ".exe" if target.os == "windows" else app_name())))
 
         phase("smoke")
-        from appbuild.build_info import write_build_info
+        from appbuild.manifest import write_build_info
         write_build_info(out, target, {"egg": egg.enabled, "backend": egg.backend,
                                       "compression": egg.compression, "trim": vars(trim)})
         timing_path = BUILD / "timings" / (target.key + ".json")
         timing_path.parent.mkdir(parents=True, exist_ok=True)
         timing_path.write_text(json.dumps(timings, indent=2) + "\n", encoding="utf-8")
         if action == "release" and target.os != "linux":
-            release(target, args.identity, args.notary_profile, output=out)
+            sign_release(target, args.identity, args.notary_profile, output=out)
             run_launcher_smoke(target, out / ("Contents/MacOS/" + app_name() if target.os == "macos" else app_name() + ".exe"))
 
         if action == "release" and target.os == "linux":
-            from appbuild.linux_release import linux_release
-            print("Linux release:", linux_release(target, args.linux_format or ("TGZ", "DEB"), args.linux_deb_depends, source=out))
+            from appbuild.release import build_linux_installers
+            print("Linux release:", build_linux_installers(target, args.linux_format or ("TGZ", "DEB"), args.linux_deb_depends, source=out))
         out = _publish(out.parent, out, DIST / out.name)
         if action == "run":
             return _run_app(out, target)

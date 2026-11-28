@@ -27,6 +27,10 @@
 
 ## 未发布
 
+- 清理冗余 MVVM 工厂和旧依赖扫描入口；构建来源与工作区锁并入 manifest/fs，发布功能合入 release，模块改名为 application_build、wheels、input_lock，测试与文档同步迁移，不保留旧模块别名。
+- CI 对同一 ref 取消过时运行，维护文档检查仅执行一次，合并 Linux apt 安装；保留全部 Python 与原生平台验证矩阵。
+
+
 - 构建器统一为 `tools/appbuild`、`[tool.appbuild]` 和 `APPBUILD_*`，测试统一到 `app/tests`。旧包名、配置、环境变量与旧归档格式不提供兼容；迁移配置后重新构建，仓库及示例产品名称仍为 py_upper。
 - 复用文件 SHA-256 和 Windows import library 查找逻辑，签名编排集中到 signing 模块，移除未使用的 keep 子树扫描；补充 Python 接口与原生函数中文说明。
 - 修复 Python 3.8 wheel 标签、PBS SDK include 目录识别、Windows 内存模块卸载链表及导出序号边界；无名称导出表仍支持按序号解析。
@@ -53,7 +57,7 @@
 - `_prune_cache()` 的前缀过滤写成了 `(CACHE_PREFIX, 'merged-')`，把 launcher 的命名空间也算进自己的淘汰范围。
 
 ### Changes
-- `python_build.py`：新增 `strip_packed_extensions()`，在 `pack_egg()` 之前对即将入包的 `.so/.pyd/.dylib` 执行 strip；macOS 随即 `ad_hoc_sign()`（strip 会让 Cython 链接时的 ad-hoc 签名失效，dyld 会拒绝加载）。
+- `application_build.py`：新增 `strip_packed_extensions()`，在 `pack_egg()` 之前对即将入包的 `.so/.pyd/.dylib` 执行 strip；macOS 随即 `ad_hoc_sign()`（strip 会让 Cython 链接时的 ad-hoc 签名失效，dyld 会拒绝加载）。
 - `egg_loader.py`：`_prune_cache()` 只清理 `egg-*`，`merged-*` 交给 launcher 自己的 `prune_bundle_cache()`。
 - 文档补上 `strip_native` 的真实收益表与启动 A/B 结果。
 
@@ -367,7 +371,7 @@
 - The Zig cross path does not use setuptools and never emitted that flag. Local macOS builds exercised Zig, while CI Windows hosts use native MSVC.
 
 ### Changes
-- `tools/appbuild/python_build.py` overrides `TargetBuildExt.get_export_symbols()` in the generated merged `setup.py` to return `py_upper_register_modules` instead of the implicit `PyInit_<bundle>`.
+- `tools/appbuild/application_build.py` overrides `TargetBuildExt.get_export_symbols()` in the generated merged `setup.py` to return `py_upper_register_modules` instead of the implicit `PyInit_<bundle>`.
 - `app/tests/test_merged_build.py` pins the generated setup script: the override must exist and must not reference `PyInit_py_upper`.
 - The version moves to 0.17.24.
 
@@ -430,7 +434,7 @@
 
 ### Changes
 - `[tool.appbuild.cython]` gains `merge = "none" | "directory"`. `none` keeps the historical one-extension-per-module layout; `directory` links every leaf module of a top-level package into one bundle. Root modules (`main.py`, `application.py`) share the `_root` group; `__init__.py` files never merge and stay as `.py` package markers. `tools/appbuild/config.py` exposes `MERGE_MODES`, `BUNDLE_DIR = "appbuild_bundles"` and `cython_merge_mode()`.
-- `tools/appbuild/python_build.py` renames each generated `PyInit_*` to a unique `PyInit_py_upper_<sanitized>_<sha256[:12]>` before compilation and rejects translation units with zero or more than one entry point. Each group gets a generated `register.c` with a static `_inittab` and an exported `py_upper_register_modules()` that calls `PyImport_ExtendInittab`. Translation units are materialized under `build/merged/<target>/<group>/`, so the shared Cython cache is never edited in place and stale units from deleted modules are removed.
+- `tools/appbuild/application_build.py` renames each generated `PyInit_*` to a unique `PyInit_py_upper_<sanitized>_<sha256[:12]>` before compilation and rejects translation units with zero or more than one entry point. Each group gets a generated `register.c` with a static `_inittab` and an exported `py_upper_register_modules()` that calls `PyImport_ExtendInittab`. Translation units are materialized under `build/merged/<target>/<group>/`, so the shared Cython cache is never edited in place and stale units from deleted modules are removed.
 - Merged linking has its own content-addressed cache (`py_upper-merged-native-1`) keyed by every translation unit, `register.c`, the full link command and the MSVC environment. A module edit invalidates its bundle even when the module name is unchanged.
 - `tools/appbuild/egg.py` forces every `appbuild_bundles/` entry to `ZIP_STORED`; all other entries keep the configured compression. The launcher can then read bundles from the decrypted archive without linking zlib or lzma.
 - `launcher/src/sha3.h` implements Keccak/SHAKE-256 in-tree, so the launcher derives the same cache key as the Python loader without depending on OpenSSL or libcrypto.
@@ -463,7 +467,7 @@
 - `MainWindow.show()` only called `QMainWindow.show()`. Qt creates and orders the window but does not force the application to become active, and macOS will not hand focus to a process that no longer holds a fresh launch activation.
 
 ### Changes
-- `tools/appbuild/python_build.py` now compiles `__init__.py` files. `module_name()` strips the marker for include/exclude matching, `extension_name()` keeps `pkg.__init__` for setuptools, and `windows_setup_script()` uses the latter. `app/tests/test_build_tool_compat.py` asserts both names and the presence of the marker.
+- `tools/appbuild/application_build.py` now compiles `__init__.py` files. `module_name()` strips the marker for include/exclude matching, `extension_name()` keeps `pkg.__init__` for setuptools, and `windows_setup_script()` uses the latter. `app/tests/test_build_tool_compat.py` asserts both names and the presence of the marker.
 - `tools/appbuild/egg_loader.py` extracts into a content-addressed cache: `egg-<sha256 of the decrypted zip>`. A staging directory under the cache root is populated, marked with `.complete`, and published with `os.replace`; a marker hit reuses the directory without reading the zip. The cache root is `~/Library/Caches/py_upper/eggs` on macOS, `%LOCALAPPDATA%/py_upper/cache/eggs` on Windows, `$XDG_CACHE_HOME/py_upper/eggs` or `~/.cache/py_upper/eggs` elsewhere, and `APPBUILD_EGG_CACHE` overrides it. An unwritable cache falls back to the old `py_upper_egg_*` temporary directory and `atexit` cleanup.
 - `app/tests/test_egg.py` covers same-content reuse, different-content separation, marker hits without extraction, recovery from a partial cache, and rejection of `../escape.py` without leaving staging directories.
 - `tools/appbuild/vendor/memimporter/_memimporter.c` keeps the package context on Python < 3.13 and registers single-phase modules directly in `sys.modules` on 3.13+. `do_import()` returns the module object instead of re-importing it by name, and multi-phase initialization always checks `PyModule_ExecDef`.
@@ -918,7 +922,7 @@
 - Merge runtime provider dispatch, PBS runtime acquisition and release-safe optimization into `runtime.py`.
 - Merge the static verification with the target-runtime and launcher smoke tests into `verify.py`.
 - Merge the launcher build, bundle assembly and release manifest into `package.py`.
-- Move the Unix target extension compiler into `python_build.py`, which already owned the Windows path.
+- Move the Unix target extension compiler into `application_build.py`, which already owned the Windows path.
 - Delete the unused `wheel.py` compatibility facade and the four duplicate `sha256` implementations; hashing now lives in `fs.sha256`.
 - Rename the test modules that followed the removed names (`test_smoke.py` to `test_verify.py`, `test_release_artifacts.py` to `test_package.py`).
 - Clear every unused import and variable reported by pyflakes across `tools/`, `app/src` and `app/tests`.

@@ -1,13 +1,16 @@
-# 中文维护说明：生成规范化文件清单并验证摘要；清单路径必须相对受控根目录。
+# 中文维护说明：生成运行时清单及构建来源信息，验证摘要与路径边界。
 # 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
-from .config import RuntimeSpec, Target
+from .config import APP, APP_CONFIG, ROOT, RuntimeSpec, Target, python_version
 
 FORMAT = 4
 FILENAME = "manifest.json"
@@ -109,3 +112,29 @@ def validate_manifest(data: dict[str, Any], target: Target, spec: RuntimeSpec) -
             raise RuntimeError(f"Runtime manifest {key} must be a relative SDK path without '..'")
         if not (spec.sdk_root / value).exists():
             raise RuntimeError(f"Runtime manifest {key} does not exist: {spec.sdk_root / value}")
+
+
+def write_build_info(root, target, options):
+    """向候选包写入构建来源与输入摘要；macOS 写入 Contents/Resources，避免把配置秘密落盘。"""
+    digest = hashlib.sha256()
+    for path in sorted((APP / 'src').rglob('*')):
+        if path.is_file() and '__pycache__' not in path.parts:
+            digest.update(path.relative_to(APP).as_posix().encode())
+            digest.update(path.read_bytes())
+    git = shutil.which('git')
+    result = subprocess.run([git, 'rev-parse', 'HEAD'], cwd=ROOT,
+                            capture_output=True, text=True, check=False) if git else None
+    dirty = subprocess.run([git, 'diff', '--quiet'], cwd=ROOT, check=False).returncode != 0 if git else None
+    data = {
+        'format': 1, 'builder_commit': result.stdout.strip() if result and result.returncode == 0 else None,
+        'builder_dirty': dirty,
+        'build_python': sys.version.split()[0], 'target': target.key,
+        'target_python': python_version(),
+        'source_sha256': digest.hexdigest(),
+        'config_sha256': hashlib.sha256(APP_CONFIG.read_bytes()).hexdigest(),
+        'options': options,
+        'reproducibility': 'input provenance; not a byte-identical build guarantee',
+    }
+    resources = root / 'Contents/Resources' if target.os == 'macos' else root
+    resources.mkdir(parents=True, exist_ok=True)
+    (resources / 'build-info.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')

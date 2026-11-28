@@ -9,7 +9,7 @@ from .fs import sha256
 
 from .config import LOCK, Target, app_config_label, load_app_config, python_version, runtime_provider, runtime_spec, wheel_dir
 from .manifest import manifest_hash, read_manifest
-from .third_party import dependency_specs
+from .wheels import dependency_specs
 
 FORMAT = 5
 

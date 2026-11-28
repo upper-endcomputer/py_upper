@@ -22,7 +22,6 @@
 | [app/src/mvvm/core/__init__.py](../app/src/mvvm/core/__init__.py) | 定义 app/src/mvvm/core 包的导出边界；保留导出对象身份，避免在包初始化时引入额外运行副作用。 | 文件内中文说明 |
 | [app/src/mvvm/core/base_view_model.py](../app/src/mvvm/core/base_view_model.py) | 提供 ViewModel 属性通知与资源释放基类；界面绑定只依赖通知协议。 | 文件内中文说明 |
 | [app/src/mvvm/core/command.py](../app/src/mvvm/core/command.py) | 封装同步与异步命令及可执行状态；异步任务的取消与异常需由调用方观察。 | 文件内中文说明 |
-| [app/src/mvvm/core/factory.py](../app/src/mvvm/core/factory.py) | 集中创建可观察属性与 ViewModel；重导出必须保持同一类对象身份。 | 文件内中文说明 |
 | [app/src/mvvm/core/observable.py](../app/src/mvvm/core/observable.py) | 维护可观察属性及订阅回调；解除订阅是视图销毁时的必要步骤。 | 文件内中文说明 |
 | [app/src/mvvm/models/__init__.py](../app/src/mvvm/models/__init__.py) | 定义 app/src/mvvm/models 包的导出边界；保留导出对象身份，避免在包初始化时引入额外运行副作用。 | 文件内中文说明 |
 | [app/src/mvvm/models/about_model.py](../app/src/mvvm/models/about_model.py) | 保存关于窗口的展示数据；数据模型不依赖 Qt 窗口。 | 文件内中文说明 |
@@ -73,7 +72,7 @@
 | [app/tests/test_egg.py](../app/tests/test_egg.py) | 验证归档认证、读取和缓存安全边界；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_incremental_build.py](../app/tests/test_incremental_build.py) | 验证Cython 与原生编译的增量命中及失效；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_launcher_deployment.py](../app/tests/test_launcher_deployment.py) | 验证launcher 部署和路径定位；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
-| [app/tests/test_linux_release.py](../app/tests/test_linux_release.py) | 验证Linux 安装包生成及发布边界；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
+| [app/tests/test_release.py](../app/tests/test_release.py) | 验证安装包生成、签名、公证及发布边界；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_memimporter_lifetime.py](../app/tests/test_memimporter_lifetime.py) | 编译原生探针验证内存模块释放顺序、引用计数及序号导出边界。 | 文件内中文说明 |
 | [app/tests/test_manifest.py](../app/tests/test_manifest.py) | 验证清单摘要和文件覆盖；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_merged_build.py](../app/tests/test_merged_build.py) | 验证多模块合并及注册符号；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
@@ -83,7 +82,7 @@
 | [app/tests/test_config.py](../app/tests/test_config.py) | 验证应用配置默认值与校验；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_qt_prune.py](../app/tests/test_qt_prune.py) | 验证Qt 模块、插件和运行库裁剪；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_startup_bytecode.py](../app/tests/test_startup_bytecode.py) | 验证目标标准库字节码预编译；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
-| [app/tests/test_third_party.py](../app/tests/test_third_party.py) | 验证wheel 解包、路径安全与导入发现；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
+| [app/tests/test_wheels.py](../app/tests/test_wheels.py) | 验证wheel 解包、路径安全与导入发现；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_trim.py](../app/tests/test_trim.py) | 验证删除规则、keep 优先级及裁剪预设；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [app/tests/test_verify.py](../app/tests/test_verify.py) | 验证静态检查及目标运行时 smoke；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。 | 文件内中文说明 |
 | [tools/__init__.py](../tools/__init__.py) | 定义 tools 包的导出边界；保留导出对象身份，避免在包初始化时引入额外运行副作用。 | 文件内中文说明 |
@@ -97,15 +96,14 @@
 | [tools/appbuild/_vendor/tomli/_types.py](../tools/appbuild/_vendor/tomli/_types.py) | 定义 TOML 解析器的内部类型别名；不增加运行时业务依赖。 | 文件内中文说明 |
 | [tools/appbuild/_vendor/tomli/py.typed](../tools/appbuild/_vendor/tomli/py.typed) | PEP 561 类型标记，必须保留原文件内容。 | 索引说明；保持格式或许可 |
 | [tools/appbuild/appdir.py](../tools/appbuild/appdir.py) | 在配置导入前确定应用根目录；支持命令行、环境变量和默认示例路径。 | 文件内中文说明 |
-| [tools/appbuild/build_info.py](../tools/appbuild/build_info.py) | 写入构建来源、源码摘要与有效选项；不记录原始配置中的密钥。 | 文件内中文说明 |
 | [tools/appbuild/compat.py](../tools/appbuild/compat.py) | 适配宿主 Python 的标准库差异；宿主版本与被打包的目标 Python 版本独立。 | 文件内中文说明 |
 | [tools/appbuild/config.py](../tools/appbuild/config.py) | 把应用 TOML 转为目标平台、ABI、路径和有效构建选项；路径以选定应用根为准。 | 文件内中文说明 |
 | [tools/appbuild/egg.py](../tools/appbuild/egg.py) | 生成认证归档及加载器配置；打包内嵌密钥仅增加读取成本，不能承担授权安全。 | 文件内中文说明 |
 | [tools/appbuild/egg_loader.py](../tools/appbuild/egg_loader.py) | 验证并加载应用归档；缓存需校验内容并持有租约，防止运行实例被淘汰。 | 文件内中文说明 |
-| [tools/appbuild/fs.py](../tools/appbuild/fs.py) | 复制、散列和退役构建目录；复制内容时避免继承来源目录的限制性权限。 | 文件内中文说明 |
-| [tools/appbuild/linux_release.py](../tools/appbuild/linux_release.py) | 将已验证候选目录交给 CPack 生成 Linux 安装包；全部请求格式成功后才发布归档。 | 文件内中文说明 |
-| [tools/appbuild/lock.py](../tools/appbuild/lock.py) | 记录和检查 runtime、SDK 与 wheel 输入；依赖可重放不等于产物字节级可复现。 | 文件内中文说明 |
-| [tools/appbuild/manifest.py](../tools/appbuild/manifest.py) | 生成规范化文件清单并验证摘要；清单路径必须相对受控根目录。 | 文件内中文说明 |
+| [tools/appbuild/fs.py](../tools/appbuild/fs.py) | 复制、散列、退役构建目录和工作区互斥锁。 | 文件内中文说明 |
+| [tools/appbuild/release.py](../tools/appbuild/release.py) | 生成 Linux 安装包并签署 Windows/macOS 发布产物；扩展签名须先于归档。 | 文件内中文说明 |
+| [tools/appbuild/input_lock.py](../tools/appbuild/input_lock.py) | 记录和检查 runtime、SDK 与 wheel 输入；依赖可重放不等于产物字节级可复现。 | 文件内中文说明 |
+| [tools/appbuild/manifest.py](../tools/appbuild/manifest.py) | 生成运行时清单及构建来源信息，验证摘要与路径边界。 | 文件内中文说明 |
 | [tools/appbuild/native/__init__.py](../tools/appbuild/native/__init__.py) | 定义 tools/appbuild/native 包的导出边界；保留导出对象身份，避免在包初始化时引入额外运行副作用。 | 文件内中文说明 |
 | [tools/appbuild/native/bundle.py](../tools/appbuild/native/bundle.py) | 补齐原生依赖闭包并重定位加载路径；只操作候选目录，保留平台系统库边界。 | 文件内中文说明 |
 | [tools/appbuild/native/deps.py](../tools/appbuild/native/deps.py) | 解析 PE、ELF、Mach-O 依赖并解析加载路径；缺失非系统库时必须给出可定位错误。 | 文件内中文说明 |
@@ -113,11 +111,10 @@
 | [tools/appbuild/net.py](../tools/appbuild/net.py) | 下载公开构建输入并处理可重试错误；日志与公开请求不应携带账户凭据。 | 文件内中文说明 |
 | [tools/appbuild/package.py](../tools/appbuild/package.py) | 构建 launcher、组装候选包并生成发布清单；验证与发布替换由上层顺序协调。 | 文件内中文说明 |
 | [tools/appbuild/pbs.py](../tools/appbuild/pbs.py) | 解析 PBS 运行时和 SDK 资产并验证解包布局；宿主工具与目标产物不可混用。 | 文件内中文说明 |
-| [tools/appbuild/python_build.py](../tools/appbuild/python_build.py) | 执行 Cython 转换、原生编译和应用暂存；缓存键覆盖内容输入，依赖文件用于跟踪外部声明。 | 文件内中文说明 |
+| [tools/appbuild/application_build.py](../tools/appbuild/application_build.py) | 执行 Cython 转换、原生编译和应用暂存；缓存键覆盖内容输入，依赖文件用于跟踪外部声明。 | 文件内中文说明 |
 | [tools/appbuild/qt_prune.py](../tools/appbuild/qt_prune.py) | 根据应用导入与显式配置裁剪 Qt 负载；动态导入与 QML 插件需显式保留。 | 文件内中文说明 |
 | [tools/appbuild/runtime.py](../tools/appbuild/runtime.py) | 选择 runtime 提供方并准备目标解释器；只裁剪复制树，不破坏共享原始 runtime。 | 文件内中文说明 |
-| [tools/appbuild/signing.py](../tools/appbuild/signing.py) | 按镜像类型签署 Mach-O 与嵌套 bundle；扩展入 egg 前签名，应用封签在最后。 | 文件内中文说明 |
-| [tools/appbuild/third_party.py](../tools/appbuild/third_party.py) | 按目标 ABI 获取 wheel 并安装到暂存目录；跨目标宿主 marker 求值存在边界。 | 文件内中文说明 |
+| [tools/appbuild/wheels.py](../tools/appbuild/wheels.py) | 按目标 ABI 获取 wheel 并安装到暂存目录；跨目标宿主 marker 求值存在边界。 | 文件内中文说明 |
 | [tools/appbuild/toolchain.py](../tools/appbuild/toolchain.py) | 选择原生 MSVC、Unix 或 Zig 工具链；编译器架构与目标 Python ABI 必须一致。 | 文件内中文说明 |
 | [tools/appbuild/trim.py](../tools/appbuild/trim.py) | 应用声明式删除与保留规则；keep 优先，预计算祖先集合避免重复扫描子树。 | 文件内中文说明 |
 | [tools/appbuild/vendor/memimporter/MIT-License.txt](../tools/appbuild/vendor/memimporter/MIT-License.txt) | 第三方 MIT 许可原文，不翻译替换法律文本。 | 索引说明；保持格式或许可 |
@@ -130,7 +127,6 @@
 | [tools/appbuild/vendor/memimporter/actctx.c](../tools/appbuild/vendor/memimporter/actctx.c) | 保存并激活 Windows DLL 的激活上下文；扩展加载后恢复原上下文，避免串扰。 | 文件内中文说明 |
 | [tools/appbuild/vendor/memimporter/actctx.h](../tools/appbuild/vendor/memimporter/actctx.h) | 声明激活上下文函数指针及共享状态；运行时检查可用性后才调用系统 API。 | 文件内中文说明 |
 | [tools/appbuild/verify.py](../tools/appbuild/verify.py) | 检查清单、架构与依赖并执行目标 import 和 launcher smoke；成功范围以实际运行步骤为准。 | 文件内中文说明 |
-| [tools/appbuild/workspace_lock.py](../tools/appbuild/workspace_lock.py) | 通过操作系统文件锁拒绝并发写入；退出后由系统释放锁，锁文件本身可以保留。 | 文件内中文说明 |
 | [tools/requirements.txt](../tools/requirements.txt) | 构建工具的 Python 依赖约束；目标应用依赖由应用配置独立声明。 | 文件内中文说明 |
 | [docs/COMMENTING_GUIDE.md](../docs/COMMENTING_GUIDE.md) | 中文注释格式、所有权与验证规则。 | 文件内说明 |
 | [docs/FILE_MAINTENANCE_INDEX.md](../docs/FILE_MAINTENANCE_INDEX.md) | 全文件维护说明索引；新增文件时同步登记。 | 文件内说明 |

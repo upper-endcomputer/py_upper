@@ -40,7 +40,7 @@ def make_wheel(root: Path, name="demo_pkg", version="1.0.0", payload="ok", requi
 
 def test_wheel_extraction_and_direct_import_discovery(tmp_path):
     """验证 wheel 安装及直接依赖顶层导入名发现。"""
-    from appbuild.third_party import _extract_wheel
+    from appbuild.wheels import _extract_wheel
 
     wheel = make_wheel(tmp_path)
     site = tmp_path / "site-packages"
@@ -49,14 +49,14 @@ def test_wheel_extraction_and_direct_import_discovery(tmp_path):
     staging.mkdir()
     _extract_wheel(wheel, site, staging)
     assert (site / "demo_pkg" / "__init__.py").exists()
-    from appbuild.third_party import _top_level_imports
+    from appbuild.wheels import _top_level_imports
     dist = site / "demo_pkg-1.0.0.dist-info"
     assert _top_level_imports(dist) == ["demo_pkg"]
 
 
 def test_wheel_collision_with_different_content_fails(tmp_path):
     """验证两个 wheel 写入同路径但内容不同会明确失败。"""
-    from appbuild.third_party import _extract_wheel
+    from appbuild.wheels import _extract_wheel
 
     a = make_wheel(tmp_path / "a")
     b = make_wheel(tmp_path / "b", payload="different")
@@ -75,7 +75,7 @@ def test_wheel_collision_with_different_content_fails(tmp_path):
 
 def test_wheel_data_buckets_are_mapped_into_the_bundle(tmp_path):
     """验证 wheel 数据桶映射到应用与运行时目录，且不复制开发头文件。"""
-    from appbuild.third_party import _extract_wheel
+    from appbuild.wheels import _extract_wheel
 
     wheel = make_wheel(tmp_path)
     with zipfile.ZipFile(wheel, "a") as archive:
@@ -106,7 +106,7 @@ def test_wheel_data_buckets_are_mapped_into_the_bundle(tmp_path):
 ])
 def test_wheel_member_must_be_portable_and_relative(tmp_path, member):
     """验证 wheel 成员路径必须是可移植相对路径且在写入前完成检查。"""
-    from appbuild.third_party import _extract_wheel, _wheel_records
+    from appbuild.wheels import _extract_wheel, _wheel_records
 
     wheel = make_wheel(tmp_path)
     with zipfile.ZipFile(wheel, "a") as archive:
@@ -123,7 +123,7 @@ def test_wheel_member_must_be_portable_and_relative(tmp_path, member):
 ])
 def test_invalid_wheel_data_member_is_rejected(tmp_path, member):
     """验证非法数据桶成员不会生成部分安装目录。"""
-    from appbuild.third_party import _extract_wheel
+    from appbuild.wheels import _extract_wheel
 
     wheel = make_wheel(tmp_path)
     with zipfile.ZipFile(wheel, "a") as archive:
@@ -135,7 +135,7 @@ def test_invalid_wheel_data_member_is_rejected(tmp_path, member):
 
 def test_pip_target_arguments_use_target_compatibility_set():
     """验证 pip 收到目标平台全部兼容标签及 ABI 集合。"""
-    from appbuild.third_party import _pip_args
+    from appbuild.wheels import _pip_args
     from appbuild.config import TARGETS
 
     args = _pip_args(TARGETS["macos-arm64"])
@@ -146,15 +146,15 @@ def test_pip_target_arguments_use_target_compatibility_set():
 
 def test_pip_target_arguments_honor_offline_find_links(monkeypatch):
     """验证离线依赖配置转为 no-index 与正确的本地 find-links 路径。"""
-    from appbuild.third_party import _pip_args
+    from appbuild.wheels import _pip_args
     from appbuild.config import TARGETS
-    import appbuild.third_party as third_party
+    import appbuild.wheels as wheels
 
-    monkeypatch.setattr(third_party, "dependency_config", lambda: {"no_index": True, "find_links": ["wheelhouse"]})
+    monkeypatch.setattr(wheels, "dependency_config", lambda: {"no_index": True, "find_links": ["wheelhouse"]})
     args = _pip_args(TARGETS["linux-x86_64"])
     assert "--no-index" in args
     assert "--find-links" in args
-    assert str((third_party.ROOT / "wheelhouse").resolve()) in args
+    assert str((wheels.ROOT / "wheelhouse").resolve()) in args
 
 
 def _host_wheel_tag() -> str:
@@ -346,7 +346,7 @@ def test_direct_import_discovery_rejects_a_declared_module_the_wheel_does_not_in
     intact PySide2 payload fails [6/6] with "No module named 'QtCore'". RECORD
     is the record of what was installed, so a declared name has to appear there.
     """
-    from appbuild.third_party import _top_level_imports
+    from appbuild.wheels import _top_level_imports
 
     dist = tmp_path / "PySide2-5.15.2.1.dist-info"
     dist.mkdir()
@@ -377,7 +377,7 @@ def test_direct_import_fallback_reads_record_instead_of_sibling_scan(tmp_path):
     would then try to import unrelated packages (pyobjc ships an empty
     PyObjCTest directory that breaks exactly that way).
     """
-    from appbuild.third_party import _top_level_imports
+    from appbuild.wheels import _top_level_imports
 
     dist = tmp_path / "some-distribution-1.0.0.dist-info"
     dist.mkdir()
@@ -402,14 +402,14 @@ def test_manifest_records_imports_before_distribution_metadata_trim(tmp_path, mo
     import json
     import shutil
 
-    import appbuild.third_party as third_party
+    import appbuild.wheels as wheels
     from appbuild.config import host_target
 
     wheel = make_wheel(tmp_path / "wheelhouse")
     staging = tmp_path / "staging"
-    monkeypatch.setattr(third_party, "resolve_wheels", lambda target: wheel.parent)
-    monkeypatch.setattr(third_party, "dependency_specs", lambda: ["demo-pkg==1.0.0"])
-    monkeypatch.setattr(third_party, "_manifest_path", lambda target: tmp_path / "manifest.json")
+    monkeypatch.setattr(wheels, "resolve_wheels", lambda target: wheel.parent)
+    monkeypatch.setattr(wheels, "dependency_specs", lambda: ["demo-pkg==1.0.0"])
+    monkeypatch.setattr(wheels, "_manifest_path", lambda target: tmp_path / "manifest.json")
 
     def trim_entry_metadata(site, target=None, trim=None):
         """删除测试发行元数据以模拟发布裁剪阶段。"""
@@ -417,8 +417,8 @@ def test_manifest_records_imports_before_distribution_metadata_trim(tmp_path, mo
             shutil.rmtree(dist)
         return {"removed_files": 0, "removed_dirs": 1}
 
-    monkeypatch.setattr(third_party, "optimize_site", trim_entry_metadata)
-    third_party.install_wheels(host_target(), staging)
+    monkeypatch.setattr(wheels, "optimize_site", trim_entry_metadata)
+    wheels.install_wheels(host_target(), staging)
 
     data = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert data["imports"] == ["demo_pkg"]

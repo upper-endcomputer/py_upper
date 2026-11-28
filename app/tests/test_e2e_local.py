@@ -173,7 +173,7 @@ def _make_local_runtime(repo: Path) -> str:
         # a compiler input, so they belong to the SDK tree and not to the
         # runtime that ships; a fixture without them stops at [2/6] with
         # "Import library of target Python ... not found under the SDK tree".
-        from test_third_party import windows_import_lib_dir
+        from test_wheels import windows_import_lib_dir
 
         shutil.copytree(windows_import_lib_dir(), sdk / "libs", symlinks=True, ignore=ignore)
         executable_name = "python.exe"
@@ -286,7 +286,7 @@ def _make_app_native_tree(repo: Path, target) -> None:
 
 def _make_test_wheels(repo: Path) -> Path:
     """生成纯 Python 和原生测试 wheel，供离线 E2E 构建使用。"""
-    from test_third_party import make_native_wheel, make_wheel
+    from test_wheels import make_native_wheel, make_wheel
 
     target = host_target()
     wheel_dir = repo / "build" / "e2e-wheelhouse"

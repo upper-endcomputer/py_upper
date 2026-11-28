@@ -71,7 +71,7 @@ def launcher_probe(tmp_path_factory):
     include = sysconfig.get_path("include")
     env = None
     if os.name == "nt":
-        from test_third_party import _windows_extension_compiler
+        from test_wheels import _windows_extension_compiler
 
         try:
             compiler, _library, env = _windows_extension_compiler()

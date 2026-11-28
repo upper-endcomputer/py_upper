@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from mvvm.core import BaseViewModel, ObservableProperty, PropertyFactory, RelayCommand
+from mvvm.core import BaseViewModel, ObservableProperty, RelayCommand
 from mvvm.models import AboutModel, ApplicationModel
 from mvvm.services import GreetingService
 
@@ -33,16 +33,16 @@ class MainViewModel(BaseViewModel):
 
     def _initialize_properties(self) -> None:
         """把模型及服务结果装配成可观察属性，并创建关于窗口开关命令。"""
-        self.title_property = PropertyFactory.create(self.model.app_name, "title")
+        self.title_property = ObservableProperty(self.model.app_name)
         self._register_property("title", self.title_property)
 
-        self.message_property = PropertyFactory.create(self._greeting.message(), "message")
+        self.message_property = ObservableProperty(self._greeting.message())
         self._register_property("message", self.message_property)
 
-        self.about_title_property = PropertyFactory.create(self._about.title, "about_title")
+        self.about_title_property = ObservableProperty(self._about.title)
         self._register_property("about_title", self.about_title_property)
 
-        self.about_body_property = PropertyFactory.create(self._about.body, "about_body")
+        self.about_body_property = ObservableProperty(self._about.body)
         self._register_property("about_body", self.about_body_property)
 
         self.about_visible_property = ObservableProperty(False)

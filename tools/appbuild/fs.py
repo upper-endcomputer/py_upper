@@ -1,7 +1,8 @@
-# 中文维护说明：复制、散列和退役构建目录；复制内容时避免继承来源目录的限制性权限。
+# 中文维护说明：复制、散列、退役构建目录和工作区互斥锁。
 # 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 import shutil
@@ -171,3 +172,33 @@ Content hash used by runtime/SDK/wheel/release integrity checks.
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+# 锁由 OS 持有而非 PID 文本判断；进程崩溃后无需清理“陈旧 PID”才能恢复构建。
+@contextmanager
+def workspace_lock(root: Path):
+    """持有工作区独占文件锁直到退出上下文；冲突抛出 RuntimeError，异常退出也释放句柄。"""
+    directory = root / '.tmp'
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / 'build.lock').open('a+b') as stream:
+        stream.seek(0)
+        stream.write(b'0')
+        stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError('Another build is using this workspace') from exc
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == 'nt':
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream, fcntl.LOCK_UN)

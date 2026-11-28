@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from appbuild import python_build
+from appbuild import application_build
 from appbuild.config import TARGETS
 from appbuild.toolchain import Toolchain
 
@@ -41,11 +41,11 @@ def _stub_cython(monkeypatch, app_root: Path, build: Path) -> list[list[str]]:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text("/* generated */\n", encoding="utf-8")
 
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", build)
-    monkeypatch.setattr(python_build, "_cython_env", lambda host: {})
-    monkeypatch.setattr(python_build, "_cython_version", lambda host, env: "3.1.2")
-    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", build)
+    monkeypatch.setattr(application_build, "_cython_env", lambda host: {})
+    monkeypatch.setattr(application_build, "_cython_version", lambda host, env: "3.1.2")
+    monkeypatch.setattr(application_build.subprocess, "run", fake_run)
     return commands
 
 
@@ -55,8 +55,8 @@ def test_unchanged_source_reuses_the_cached_translation_unit(tmp_path, monkeypat
     source = _app_source(app_root)
     commands = _stub_cython(monkeypatch, app_root, tmp_path / "build")
 
-    first = python_build.cythonize_to_c([source], Path("/fake/python3"))
-    second = python_build.cythonize_to_c([source], Path("/fake/python3"))
+    first = application_build.cythonize_to_c([source], Path("/fake/python3"))
+    second = application_build.cythonize_to_c([source], Path("/fake/python3"))
 
     assert len(commands) == 1
     assert first[source] == second[source]
@@ -70,11 +70,11 @@ def test_changed_source_regenerates_only_that_module(tmp_path, monkeypatch):
     edited = _app_source(app_root, "pkg/edited.py")
     commands = _stub_cython(monkeypatch, app_root, tmp_path / "build")
 
-    python_build.cythonize_to_c([stable, edited], Path("/fake/python3"))
+    application_build.cythonize_to_c([stable, edited], Path("/fake/python3"))
     assert len(commands) == 2
 
     edited.write_text("x = 2\n", encoding="utf-8")
-    outputs = python_build.cythonize_to_c([stable, edited], Path("/fake/python3"))
+    outputs = application_build.cythonize_to_c([stable, edited], Path("/fake/python3"))
 
     assert len(commands) == 3
     assert [Path(cmd[-1]).name for cmd in commands[2:]] == ["edited.py"]
@@ -93,8 +93,8 @@ def test_cython_output_path_survives_a_foreign_windows_drive(tmp_path, monkeypat
         """模拟 Windows 跨盘相对路径计算失败。"""
         raise ValueError("path is on mount 'D:', start on mount 'C:'")
 
-    monkeypatch.setattr(python_build.os.path, "relpath", cross_drive)
-    python_build.cythonize_to_c([source], Path("/fake/python3"))
+    monkeypatch.setattr(application_build.os.path, "relpath", cross_drive)
+    application_build.cythonize_to_c([source], Path("/fake/python3"))
 
     output = Path(commands[0][commands[0].index("-o") + 1])
     assert output.is_absolute()
@@ -106,9 +106,9 @@ def test_a_new_cython_version_invalidates_the_cache(tmp_path, monkeypatch):
     source = _app_source(app_root)
     commands = _stub_cython(monkeypatch, app_root, tmp_path / "build")
 
-    python_build.cythonize_to_c([source], Path("/fake/python3"))
-    monkeypatch.setattr(python_build, "_cython_version", lambda host, env: "3.2.4")
-    python_build.cythonize_to_c([source], Path("/fake/python3"))
+    application_build.cythonize_to_c([source], Path("/fake/python3"))
+    monkeypatch.setattr(application_build, "_cython_version", lambda host, env: "3.2.4")
+    application_build.cythonize_to_c([source], Path("/fake/python3"))
 
     assert len(commands) == 2
 
@@ -133,11 +133,11 @@ def _unix_fixture(tmp_path, monkeypatch):
         commands.append(cmd)
         Path(cmd[cmd.index("-o") + 1]).write_bytes(b"")
 
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
-    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
-    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(application_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(application_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(application_build.subprocess, "run", fake_run)
     return target, source, generated, commands
 
 
@@ -145,8 +145,8 @@ def test_unchanged_extension_is_not_recompiled(tmp_path, monkeypatch):
     """验证编译输入不变时复用原生扩展。"""
     target, source, generated, commands = _unix_fixture(tmp_path, monkeypatch)
 
-    first = python_build.compile_unix_extensions(target, {source: generated})
-    second = python_build.compile_unix_extensions(target, {source: generated})
+    first = application_build.compile_unix_extensions(target, {source: generated})
+    second = application_build.compile_unix_extensions(target, {source: generated})
 
     assert len(commands) == 1
     assert [path.name for path in first] == ["demo.cpython-310-x86_64-linux-gnu.so"]
@@ -157,9 +157,9 @@ def test_changed_c_output_invalidates_the_extension(tmp_path, monkeypatch):
     """验证生成 C 内容变化后重新链接扩展。"""
     target, source, generated, commands = _unix_fixture(tmp_path, monkeypatch)
 
-    python_build.compile_unix_extensions(target, {source: generated})
+    application_build.compile_unix_extensions(target, {source: generated})
     generated.write_text("/* regenerated */\n", encoding="utf-8")
-    python_build.compile_unix_extensions(target, {source: generated})
+    application_build.compile_unix_extensions(target, {source: generated})
 
     assert len(commands) == 2
 
@@ -169,10 +169,10 @@ def test_incremental_build_can_be_switched_off(tmp_path, monkeypatch):
     app_root = tmp_path / "app"
     source = _app_source(app_root)
     commands = _stub_cython(monkeypatch, app_root, tmp_path / "build")
-    monkeypatch.setattr(python_build, "incremental_build_enabled", lambda: False)
+    monkeypatch.setattr(application_build, "incremental_build_enabled", lambda: False)
 
-    python_build.cythonize_to_c([source], Path("/fake/python3"))
-    python_build.cythonize_to_c([source], Path("/fake/python3"))
+    application_build.cythonize_to_c([source], Path("/fake/python3"))
+    application_build.cythonize_to_c([source], Path("/fake/python3"))
 
     assert len(commands) == 2
 
@@ -209,17 +209,17 @@ def test_windows_unchanged_extension_skips_the_setuptools_driver(tmp_path, monke
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"")
 
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", build)
-    monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
-    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: "none")
-    monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
-    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
-    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
-    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", build)
+    monkeypatch.setattr(application_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(application_build, "cython_merge_mode", lambda: "none")
+    monkeypatch.setattr(application_build, "cythonize_to_c", lambda sources, host: {source: generated})
+    monkeypatch.setattr(application_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(application_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(application_build.subprocess, "run", fake_run)
 
-    first = python_build.build_target_extensions(target, [source])
-    second = python_build.build_target_extensions(target, [source])
+    first = application_build.build_target_extensions(target, [source])
+    second = application_build.build_target_extensions(target, [source])
 
     assert len(invocations) == 1
     assert [path.name for path in first] == ["demo.cp313-win_amd64.pyd"]

@@ -1093,7 +1093,7 @@ def build_python_package(target: Target, trim=None, egg=None, signing_identity=N
 
     # Third-party dependencies are resolved/installed exactly once here. They are
     # not Cythonized; only application source modules are compiled below.
-    from .third_party import install_wheels
+    from .wheels import install_wheels
     install_wheels(target, stage, trim)
     copy_python_tree(site)
     sources = selected_sources()
@@ -1131,7 +1131,7 @@ def build_python_package(target: Target, trim=None, egg=None, signing_identity=N
         # before the tag is computed.
         strip_packed_extensions(site, files, target)
         if signing_identity and target.os == "macos":
-            from .signing import sign_macos_files
+            from .release import sign_macos_files
             sign_macos_files([site / name for name in files], signing_identity)
         pack_egg(site, stage / EGG_DIR / EGG_NAME, files, egg)
         remove_packed_files(site, files)

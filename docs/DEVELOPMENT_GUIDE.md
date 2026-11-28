@@ -947,21 +947,29 @@ macOS 正式发布会在入 egg 前签名应用扩展，散落的可加载 Mach-
 | `toolchain.py` | 宿主工具链解析（clang/gcc/MSVC，以及无 VS 宿主上的 Zig 交叉路径） |
 | `pbs.py` | PBS 解析：release 元数据、资产匹配、runtime/SDK 获取与校验 |
 | `runtime.py` | 目标 runtime：provider 分发（pbs/local）、获取、release 安全裁剪 |
-| `third_party.py` | wheel 解析/安装、site 优化、依赖清单 |
+| `wheels.py` | wheel 解析/安装、site 优化、依赖清单 |
 | `qt_prune.py` | 按 import 裁剪 Qt 负载（用 `ast` 读语句，认识 binding 前缀与 `utils.qt_compat`） |
 | `trim.py` | 声明式负载裁剪：相对 glob、keep 优先、site-packages / runtime 两棵树 |
-| `python_build.py` | Cython 化、目标扩展编译（Unix/Windows）、增量产物缓存、并行调度、staging |
+| `application_build.py` | Cython 化、目标扩展编译（Unix/Windows）、增量产物缓存、并行调度、staging |
 | `native/inspect.py` | 二进制格式与架构识别 |
 | `native/deps.py` | 依赖解析（otool/readelf/dumpbin + 索引/缓存） |
 | `native/bundle.py` | 依赖闭包、install name 重写、ad-hoc 签名 |
 | `package.py` | launcher 构建（含内嵌入口源码与 Windows 版本资源）、产物组装、原生排除、发布清单 |
 | `verify.py` | 静态校验 + 目标 runtime/launcher 真 import smoke |
 | `launcher/` | C++ launcher 实现（CMake 由 `package.build_launcher` 驱动） |
-| `lock.py` / `manifest.py` | 锁文件与 runtime manifest（可复现性） |
-| `fs.py` / `net.py` / `compat.py` | 文件拷贝与哈希、HTTP 重试下载、tomllib 兼容 |
+| `input_lock.py` | 固定和校验 runtime、SDK、wheel 构建输入，区别于工作区互斥锁 |
+| `manifest.py` | runtime 清单校验及 build-info 构建来源记录 |
+| `release.py` | Linux 安装包生成、Windows/macOS 签名与 macOS 公证 |
+| `fs.py` / `net.py` / `compat.py` | 文件拷贝、哈希与工作区锁、HTTP 重试下载、tomllib 兼容 |
 
 ## 接口变更与移植约定
 
 本项目直接升级到当前接口，不为旧版本保留导入别名、配置回退或环境变量别名。应用配置只使用 `[tool.appbuild]`，构建及启动环境变量只使用 `APPBUILD_*`；锁文件为 `appbuild.lock.json`。升级后按当前模板更新本机 `app/pyproject.toml` 并重新构建产物；不要混用不同版本的 launcher、egg 和 manifest。
 
 移植到新项目时复制 `tools/`、`launcher/` 及所需 CI 配置；业务名由应用 TOML 定义，无需改构建包名。所有回归集中在 `app/tests/`，替换业务代码时保留构建器回归和 `conftest.py`。此约定不改变已经声明的 Python 版本、Qt binding 和目标平台支持。
+
+### CI 调度与重复工作
+
+同一 workflow 与 Git ref 的新运行取消旧运行，避免过时提交占用全平台 runner；不同 PR/ref 互不取消。Python 3.8–3.13 仍分别执行导入与兼容测试，中文维护检查只在 Python 3.13 行执行一次。Linux 系统构建依赖与 libEGL 合并为一次 apt 安装；原生单元测试、真实 E2E、doctor、打包启动及七目标产物汇总保留。
+
+对应模块回归使用 `test_wheels.py` 与 `test_release.py`；后者同时覆盖 Linux 安装包、macOS 公证和 Mach-O 签名。现有缓存按系统、架构、目标及配置摘要隔离，本轮不调整键以继续复用缓存。

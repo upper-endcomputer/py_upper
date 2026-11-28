@@ -19,7 +19,7 @@ def test_mvvm_core_imports_without_qt():
     import mvvm.models
 
     for name in ("BaseViewModel", "ObservableProperty", "PropertyChangedEvent",
-                 "RelayCommand", "AsyncRelayCommand", "PropertyFactory", "ViewModelFactory"):
+                 "RelayCommand", "AsyncRelayCommand"):
         assert hasattr(mvvm.core, name), f"mvvm.core lost {name}"
     for name in ("BaseModel", "ApplicationModel"):
         assert hasattr(mvvm.models, name), f"mvvm.models lost {name}"
@@ -239,27 +239,23 @@ def test_mvvm_import_does_not_require_qt():
     )
 
 
-def test_factories_have_a_single_home():
-    """验证工厂仅在统一模块定义并通过公开接口导出一次。
+def test_registered_properties_keep_names_and_notifications():
+    """直接构造属性后，由注册入口统一赋名并继续转发变更通知。"""
+    from mvvm.view_models.main_vm import MainViewModel
 
-    mvvm.core.factory defines the factories; mvvm.core only re-exports them.
-
-    A second definition under the same name made ``from mvvm.core import
-    PropertyFactory`` resolve to whichever module the package imported last,
-    which is not a decision anything should be making by accident.
-    """
-    import mvvm.core
-    import mvvm.core.base_view_model as base_view_model
-    import mvvm.core.factory as factory
-    import mvvm.core.observable as observable
-
-    assert mvvm.core.PropertyFactory is factory.PropertyFactory
-    assert mvvm.core.ViewModelFactory is factory.ViewModelFactory
-    assert not hasattr(observable, "PropertyFactory")
-    assert not hasattr(base_view_model, "ViewModelFactory")
-    assert mvvm.core.__all__.count("PropertyFactory") == 1
-    assert mvvm.core.__all__.count("ViewModelFactory") == 1
-    assert set(mvvm.core.__all__) <= set(dir(mvvm.core))
+    vm = MainViewModel()
+    events = []
+    vm.subscribe_property_changed(events.append)
+    for name in ("title", "message", "about_title", "about_body", "about_visible"):
+        prop = vm.get_property(name)
+        assert prop is getattr(vm, name + "_property")
+        value = True if name == "about_visible" else "changed " + name
+        assert vm.set_property_value(name, value)
+        assert events[-1].property_name == name
+        assert vm.get_property_value(name) == value
+    vm.dispose()
+    vm.title_property.set_value("after disposal")
+    assert len(events) == 5
 
 
 def test_every_mvvm_module_imports(monkeypatch):

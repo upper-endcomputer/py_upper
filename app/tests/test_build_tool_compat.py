@@ -39,7 +39,7 @@ def test_every_build_tool_module_imports():
     import appbuild
 
     names = sorted(module.name for module in pkgutil.walk_packages(appbuild.__path__, appbuild.__name__ + "."))
-    assert "appbuild.python_build" in names and "appbuild.pbs" in names
+    assert "appbuild.application_build" in names and "appbuild.pbs" in names
     for name in names:
         importlib.import_module(name)
 
@@ -602,7 +602,7 @@ def test_windows_extensions_are_named_for_the_target_not_the_build_host(tmp_path
     from setuptools.dist import Distribution
 
     from appbuild.config import APP
-    from appbuild.python_build import module_name, windows_setup_script
+    from appbuild.application_build import module_name, windows_setup_script
 
     source = APP / "src" / "utils" / "paths.py"
     module = module_name(source)
@@ -633,7 +633,7 @@ def test_windows_extensions_are_named_for_the_target_not_the_build_host(tmp_path
 
 def test_source_selection_is_layout_agnostic():
     """验证模块发现支持包和普通模块，并正确处理包初始化文件。"""
-    from appbuild.python_build import APP, extension_name, module_name, selected_sources
+    from appbuild.application_build import APP, extension_name, module_name, selected_sources
 
     sources = selected_sources()
     modules = {module_name(path) for path in sources}
@@ -651,17 +651,17 @@ def test_source_selection_is_layout_agnostic():
 
 def test_cython_cache_is_keyed_by_development_python(monkeypatch, tmp_path):
     """验证 Cython 工具缓存按构建解释器版本隔离。"""
-    from appbuild import python_build
+    from appbuild import application_build
 
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(application_build, "BUILD", tmp_path / "build")
     calls = []
 
     class Result:
         stdout = "3.13\n"
         returncode = 0
 
-    monkeypatch.setattr(python_build.subprocess, "run", lambda *args, **kwargs: Result())
-    path = python_build._cython_cache_dir(Path("/fake/python3"))
+    monkeypatch.setattr(application_build.subprocess, "run", lambda *args, **kwargs: Result())
+    path = application_build._cython_cache_dir(Path("/fake/python3"))
     assert path.name == "cython-py3_13"
     assert calls == []
 
@@ -687,7 +687,7 @@ def test_native_wheel_resolution_uses_the_target_interpreter(tmp_path, monkeypat
     """验证本机构建由目标解释器解析 wheel 标签。
 
     pip evaluates environment markers against the interpreter that runs it."""
-    from appbuild import third_party
+    from appbuild import wheels
     from appbuild.config import TARGETS
 
     target = TARGETS["macos-arm64"]
@@ -695,32 +695,32 @@ def test_native_wheel_resolution_uses_the_target_interpreter(tmp_path, monkeypat
     runtime_python.parent.mkdir(parents=True)
     runtime_python.write_text("", encoding="utf-8")
 
-    monkeypatch.setattr(third_party, "host_target", lambda: target)
-    monkeypatch.setattr(third_party, "runtime_executable", lambda value: runtime_python)
-    monkeypatch.setattr(third_party, "_has_pip", lambda value: True)
-    python, tag_args = third_party.resolution_python(target)
+    monkeypatch.setattr(wheels, "host_target", lambda: target)
+    monkeypatch.setattr(wheels, "runtime_executable", lambda value: runtime_python)
+    monkeypatch.setattr(wheels, "_has_pip", lambda value: True)
+    python, tag_args = wheels.resolution_python(target)
     assert python == runtime_python
     assert tag_args == []
 
 
 def test_cross_target_resolution_keeps_the_host_interpreter(tmp_path, monkeypatch):
     """验证交叉构建使用主机 pip 并显式传入目标标签。"""
-    from appbuild import third_party
+    from appbuild import wheels
     from appbuild.config import TARGETS
 
     target = TARGETS["windows-x86_64"]
     host_python = tmp_path / "host-python"
     host_python.write_text("", encoding="utf-8")
-    monkeypatch.setattr(third_party, "host_target", lambda: TARGETS["macos-arm64"])
-    monkeypatch.setattr(third_party, "require_local_python", lambda: host_python)
-    python, tag_args = third_party.resolution_python(target)
+    monkeypatch.setattr(wheels, "host_target", lambda: TARGETS["macos-arm64"])
+    monkeypatch.setattr(wheels, "require_local_python", lambda: host_python)
+    python, tag_args = wheels.resolution_python(target)
     assert python == host_python
     assert "--platform" in tag_args and "win_amd64" in tag_args
 
 
 def test_cython_supported_versions():
     """验证 Cython 版本接受范围与最低支持版本边界。"""
-    from appbuild.python_build import _supported_cython
+    from appbuild.application_build import _supported_cython
 
     assert _supported_cython("3.1.6")
     assert _supported_cython("3.2.4")
@@ -729,7 +729,7 @@ def test_cython_supported_versions():
 
 def test_supported_host_cython_ignores_stale_cache(monkeypatch, tmp_path):
     """验证主机已有可用 Cython 时不被旧缓存遮蔽。"""
-    from appbuild import python_build
+    from appbuild import application_build
 
     cache = tmp_path / "cython-cache"
     cache.mkdir()
@@ -741,10 +741,10 @@ def test_supported_host_cython_ignores_stale_cache(monkeypatch, tmp_path):
         probes.append(env.copy())
         return "3.0.12" if str(cache) in env.get("PYTHONPATH", "") else "3.2.4"
 
-    monkeypatch.setattr(python_build, "_cython_version", version)
+    monkeypatch.setattr(application_build, "_cython_version", version)
     cache_probes = []
-    monkeypatch.setattr(python_build, "_cython_cache_dir", lambda host: cache_probes.append(host) or cache)
-    env = python_build._cython_env(Path("python"))
+    monkeypatch.setattr(application_build, "_cython_cache_dir", lambda host: cache_probes.append(host) or cache)
+    env = application_build._cython_env(Path("python"))
 
     assert env["PYTHONPATH"] == "existing-path"
     assert len(probes) == 1
@@ -753,17 +753,17 @@ def test_supported_host_cython_ignores_stale_cache(monkeypatch, tmp_path):
 
 def test_supported_cached_cython_is_added_once(monkeypatch, tmp_path):
     """验证可用 Cython 缓存路径只加入搜索路径一次。"""
-    from appbuild import python_build
+    from appbuild import application_build
 
     cache = tmp_path / "cython-cache"
     cache.mkdir()
     monkeypatch.setenv("PYTHONPATH", "existing-path")
-    monkeypatch.setattr(python_build, "_cython_cache_dir", lambda host: cache)
+    monkeypatch.setattr(application_build, "_cython_cache_dir", lambda host: cache)
     monkeypatch.setattr(
-        python_build, "_cython_version",
+        application_build, "_cython_version",
         lambda host, env: "3.2.4" if str(cache) in env["PYTHONPATH"] else None,
     )
-    env = python_build._cython_env(Path("python"))
+    env = application_build._cython_env(Path("python"))
 
     assert env["PYTHONPATH"].split(os.pathsep) == [str(cache), "existing-path"]
 
@@ -774,13 +774,13 @@ def test_cython_bootstrap_replaces_cache_and_checks_result(
     monkeypatch, tmp_path, existing_cache, installed_version,
 ):
     """验证引导安装升级旧缓存，并重新探测安装结果。"""
-    from appbuild import python_build
+    from appbuild import application_build
 
     cache = tmp_path / "cython-cache"
     if existing_cache:
         cache.mkdir()
     monkeypatch.setenv("PYTHONPATH", "existing-path")
-    monkeypatch.setattr(python_build, "_cython_cache_dir", lambda host: cache)
+    monkeypatch.setattr(application_build, "_cython_cache_dir", lambda host: cache)
     commands = []
     probes = []
 
@@ -789,14 +789,14 @@ def test_cython_bootstrap_replaces_cache_and_checks_result(
         probes.append(env.copy())
         return installed_version if commands else "3.0.12"
 
-    monkeypatch.setattr(python_build, "_cython_version", version)
-    monkeypatch.setattr(python_build, "_run", lambda cmd: commands.append(cmd))
-    monkeypatch.setattr(python_build, "pip_transfer_args", lambda: [])
+    monkeypatch.setattr(application_build, "_cython_version", version)
+    monkeypatch.setattr(application_build, "_run", lambda cmd: commands.append(cmd))
+    monkeypatch.setattr(application_build, "pip_transfer_args", lambda: [])
     if installed_version == "3.0.12":
         with pytest.raises(RuntimeError, match="Unable to bootstrap"):
-            python_build._cython_env(Path("python"))
+            application_build._cython_env(Path("python"))
     else:
-        env = python_build._cython_env(Path("python"))
+        env = application_build._cython_env(Path("python"))
         assert env["PYTHONPATH"].split(os.pathsep) == [str(cache), "existing-path"]
 
     assert len(commands) == 1
@@ -1780,7 +1780,7 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
     """
     from types import SimpleNamespace
 
-    from appbuild import python_build
+    from appbuild import application_build
     from appbuild.config import TARGETS
     from appbuild.toolchain import Toolchain
 
@@ -1819,22 +1819,22 @@ def test_windows_extensions_link_the_versioned_import_library(tmp_path, monkeypa
         extension.parent.mkdir(parents=True, exist_ok=True)
         extension.write_bytes(b"")
 
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", build)
-    monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
-    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: "none")
-    monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
-    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
-    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
-    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", build)
+    monkeypatch.setattr(application_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(application_build, "cython_merge_mode", lambda: "none")
+    monkeypatch.setattr(application_build, "cythonize_to_c", lambda sources, host: {source: generated})
+    monkeypatch.setattr(application_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(application_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(application_build.subprocess, "run", fake_run)
 
     # Neither the shim, nor the copy the runtime tree happens to carry, is an
     # import library this build can use.
     with pytest.raises(RuntimeError, match="python313.lib not found"):
-        python_build.build_target_extensions(target, [source])
+        application_build.build_target_extensions(target, [source])
 
     (libs / "python313.lib").write_bytes(b"")
-    outputs = python_build.build_target_extensions(target, [source])
+    outputs = application_build.build_target_extensions(target, [source])
 
     assert [path.name for path in outputs] == ["demo.cp313-win_amd64.pyd"]
     setup_text = generated_setup["text"]
@@ -1862,7 +1862,7 @@ def test_zig_compiled_windows_extensions_name_the_64_bit_abi(tmp_path, monkeypat
     """
     from types import SimpleNamespace
 
-    from appbuild import python_build
+    from appbuild import application_build
     from appbuild.config import TARGETS
     from appbuild.toolchain import windows_gnu_cpython_defines
 
@@ -1889,12 +1889,12 @@ def test_zig_compiled_windows_extensions_name_the_64_bit_abi(tmp_path, monkeypat
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(b"")
 
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
-    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: "none")
-    monkeypatch.setattr(python_build, "cythonize_to_c", lambda sources, host: {source: generated})
-    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(application_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(application_build, "cython_merge_mode", lambda: "none")
+    monkeypatch.setattr(application_build, "cythonize_to_c", lambda sources, host: {source: generated})
+    monkeypatch.setattr(application_build.subprocess, "run", fake_run)
 
     def compile_for(key: str) -> list[str]:
         """为指定 Windows 架构执行编译路径并返回实际命令。"""
@@ -1906,12 +1906,12 @@ def test_zig_compiled_windows_extensions_name_the_64_bit_abi(tmp_path, monkeypat
             extension_suffix=f".cp38-{target.extension_platform}.pyd",
         )
         frontend = ("cc", "-target", target.triple, *windows_gnu_cpython_defines(target))
-        monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
-        monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: SimpleNamespace(
+        monkeypatch.setattr(application_build, "resolve_target_python", lambda value: target_python)
+        monkeypatch.setattr(application_build, "resolve_toolchain", lambda value: SimpleNamespace(
             env={}, compiler=str(tmp_path / "zig"), compiler_args=frontend,
         ))
         commands.clear()
-        python_build.build_target_extensions(target, [source])
+        application_build.build_target_extensions(target, [source])
         assert commands, "the Zig branch never reached the compiler"
         return commands[0]
 
@@ -1995,7 +1995,7 @@ def test_windows_launcher_does_not_ask_for_the_python_import_library(tmp_path):
     if sys.platform != "win32":
         pytest.skip("the auto-link pragma belongs to the Windows pyconfig.h")
 
-    from test_third_party import _windows_extension_compiler
+    from test_wheels import _windows_extension_compiler
 
     try:
         cl, import_lib, env = _windows_extension_compiler()
@@ -2052,7 +2052,7 @@ def test_packaged_launcher_streams_reach_the_caller(tmp_path):
     if sys.platform != "win32":
         pytest.skip("handle inheritance for GUI-subsystem children belongs to Windows")
 
-    from test_third_party import _windows_extension_compiler
+    from test_wheels import _windows_extension_compiler
 
     try:
         cl, _import_lib, env = _windows_extension_compiler()
@@ -2108,7 +2108,7 @@ def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkey
     """
     from types import SimpleNamespace
 
-    from appbuild import python_build
+    from appbuild import application_build
     from appbuild.config import TARGETS
     from appbuild.toolchain import Toolchain
 
@@ -2126,13 +2126,13 @@ def test_macos_extensions_link_as_bundles_with_deferred_symbols(tmp_path, monkey
     generated.write_text("/* generated */\n", encoding="utf-8")
 
     commands: list[list[str]] = []
-    monkeypatch.setattr(python_build, "APP", app_root)
-    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
-    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
-    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
-    monkeypatch.setattr(python_build.subprocess, "run", lambda cmd, **kwargs: commands.append(cmd))
+    monkeypatch.setattr(application_build, "APP", app_root)
+    monkeypatch.setattr(application_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(application_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(application_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(application_build.subprocess, "run", lambda cmd, **kwargs: commands.append(cmd))
 
-    outputs = python_build.compile_unix_extensions(target, {source: generated})
+    outputs = application_build.compile_unix_extensions(target, {source: generated})
 
     assert [path.name for path in outputs] == ["demo.cpython-310-darwin.so"]
     assert len(commands) == 1
@@ -2200,7 +2200,7 @@ def test_package_verification_skips_foreign_format_binaries(tmp_path, monkeypatc
 def test_lock_preserves_existing_target_entries(tmp_path, monkeypatch):
     """验证更新锁文件时保留其他目标的已锁定记录。"""
     import json
-    import appbuild.lock as lock
+    import appbuild.input_lock as lock
     from appbuild.config import TARGETS
 
     lock_path = tmp_path / "appbuild.lock.json"
