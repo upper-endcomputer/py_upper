@@ -14,6 +14,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 def test_mvvm_core_imports_without_qt():
+    """验证不加载 Qt 时核心属性读写与变更通知仍可工作。"""
     import mvvm.core
     import mvvm.models
 
@@ -39,6 +40,7 @@ def test_mvvm_core_imports_without_qt():
 
 
 def test_mvvm_application_container():
+    """验证容器注册、解析、启动和停止的完整对象生命周期。"""
     from mvvm.core import BaseViewModel
     from mvvm.mvvm_application import MVVMApplication
     from mvvm.models import ApplicationModel
@@ -73,7 +75,9 @@ def test_mvvm_application_container():
 
 
 def test_services_belong_to_the_application_that_registered_them():
-    """A class-level registry hands one application another application's services.
+    """验证多个应用容器之间的服务注册互不泄漏。
+
+    A class-level registry hands one application another application's services.
 
     The container exists to keep dependencies explicit; a process-global
     locator defeats that the moment two MVVMApplication objects exist (tests,
@@ -91,6 +95,7 @@ def test_services_belong_to_the_application_that_registered_them():
 
 
 def test_disposing_one_view_preserves_the_shared_viewmodel():
+    """验证释放一个视图不会清空共享 ViewModel 或其他视图的绑定。"""
     from types import SimpleNamespace
     from mvvm.core import BaseViewModel, ObservableProperty
     from mvvm.views import ViewBase
@@ -112,6 +117,7 @@ def test_disposing_one_view_preserves_the_shared_viewmodel():
 
 
 def test_container_disposes_shared_viewmodel_once_after_all_views():
+    """验证先关闭和释放全部视图，再仅释放一次共享 ViewModel。"""
     from mvvm.core import BaseViewModel
     from mvvm.mvvm_application import MVVMApplication
     from mvvm.views import ViewBase
@@ -120,18 +126,22 @@ def test_container_disposes_shared_viewmodel_once_after_all_views():
 
     class VM(BaseViewModel):
         def dispose(self):
+            """记录 ViewModel 的最终释放时机。"""
             events.append("vm.dispose")
             super().dispose()
 
     class View(ViewBase):
         def __init__(self, vm, name):
+            """为测试视图保存名称和共享 ViewModel。"""
             super().__init__(vm)
             self.name = name
 
         def close(self):
+            """记录当前命名视图的关闭事件。"""
             events.append(self.name + ".close")
 
         def dispose(self):
+            """记录当前命名视图的绑定释放事件。"""
             events.append(self.name + ".dispose")
             super().dispose()
 
@@ -146,7 +156,9 @@ def test_container_disposes_shared_viewmodel_once_after_all_views():
 
 
 def test_a_binding_can_target_a_setter_method():
-    """``bind_property(..., 'setText')`` has to call setText.
+    """验证属性绑定能调用控件 setter，而不是覆盖该方法。
+
+    ``bind_property(..., 'setText')`` has to call setText.
 
     setattr(label, 'setText', value) only shadows the method with an attribute:
     the widget never updates and nothing reports a problem.
@@ -156,9 +168,11 @@ def test_a_binding_can_target_a_setter_method():
 
     class Label:
         def __init__(self):
+            """创建保存显示文本的最小标签桩。"""
             self.text = ""
 
         def setText(self, value):  # noqa: N802 - Qt spelling
+            """记录绑定传入的文本值。"""
             self.text = value
 
     viewmodel = BaseViewModel()
@@ -171,6 +185,7 @@ def test_a_binding_can_target_a_setter_method():
 
 
 def test_a_binding_can_target_a_plain_attribute():
+    """验证绑定也支持直接赋值的普通控件属性。"""
     from mvvm.core import BaseViewModel, ObservableProperty
     from mvvm.views import ViewBase
 
@@ -187,7 +202,9 @@ def test_a_binding_can_target_a_plain_attribute():
 
 
 def test_two_way_binding_needs_an_explicit_getter():
-    """Guessing the getter from the setter name reads the wrong value in Qt."""
+    """验证双向绑定通过显式 getter 读取控件状态。
+
+    Guessing the getter from the setter name reads the wrong value in Qt."""
     from mvvm.core import BaseViewModel, ObservableProperty
     from mvvm.views import ViewBase
 
@@ -209,6 +226,7 @@ def test_two_way_binding_needs_an_explicit_getter():
 
 def test_mvvm_import_does_not_require_qt():
     # The framework itself must not pull any Qt binding at import time.
+    """验证导入 MVVM 包不会提前导入任何 Qt binding。"""
     for name in list(sys.modules):
         if name.startswith(("PySide6", "PySide2", "PyQt6", "PyQt5")):
             del sys.modules[name]
@@ -222,7 +240,9 @@ def test_mvvm_import_does_not_require_qt():
 
 
 def test_factories_have_a_single_home():
-    """mvvm.core.factory defines the factories; mvvm.core only re-exports them.
+    """验证工厂仅在统一模块定义并通过公开接口导出一次。
+
+    mvvm.core.factory defines the factories; mvvm.core only re-exports them.
 
     A second definition under the same name made ``from mvvm.core import
     PropertyFactory`` resolve to whichever module the package imported last,
@@ -243,7 +263,9 @@ def test_factories_have_a_single_home():
 
 
 def test_every_mvvm_module_imports(monkeypatch):
-    """Every module in the tree must be importable.
+    """遍历导入全部 MVVM 模块，发现循环导入和遗漏依赖。
+
+    Every module in the tree must be importable.
 
     The port arrived with a models/app_model.py that imported four model modules
     that do not exist in this repository and redefined ApplicationModel. Nothing

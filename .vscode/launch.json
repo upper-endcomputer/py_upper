@@ -14,7 +14,7 @@
       "justMyCode": true
     },
     {
-      "name": "py_upper: packaged app",
+      "name": "appbuild: packaged app",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/tools/build.py",

@@ -55,15 +55,19 @@ _CANDIDATES = (
 
 
 def qt_binding() -> str:
-    """Return the installed binding's top-level package name."""
+    """返回首次探测选定的 Qt binding 包名，并缓存到进程结束。
+
+    Return the installed binding's top-level package name."""
     return _load_binding()[0]
 
 
 def qt_major() -> int:
+    """返回当前 binding 的 Qt 主版本。"""
     return int(_load_binding()[1])
 
 
 def _load_binding() -> tuple[str, str]:
+    """按候选顺序选择唯一 binding；全部不可导入时抛出 ImportError。"""
     global _binding
     if _binding is not None:
         return _binding
@@ -82,6 +86,7 @@ def _load_binding() -> tuple[str, str]:
 
 
 def _binding_module(submodule: str) -> ModuleType:
+    """按需导入并缓存选定 binding 的子模块；缺失时附加明确诊断。"""
     binding, _ = _load_binding()
     key = f"{binding}.{submodule}"
     if key not in _modules:
@@ -102,6 +107,7 @@ class _QtModule:
     __slots__ = ("_submodule",)
 
     def __init__(self, submodule: str) -> None:
+        """保存子模块名并立即验证可导入性，使拼写错误在导入处暴露。"""
         self._submodule = submodule
         # Resolve the probe now rather than at first attribute access: a
         # mistyped module then fails at the import that names it, exactly where
@@ -109,6 +115,7 @@ class _QtModule:
         _binding_module(submodule)
 
     def __getattr__(self, name: str) -> Any:
+        """从真实 Qt 模块读取属性；缺少属性转换为带 binding 信息的 ImportError。"""
         module = _binding_module(self._submodule)
         try:
             return getattr(module, name)
@@ -119,17 +126,21 @@ class _QtModule:
             ) from exc
 
     def __dir__(self) -> list[str]:
+        """返回真实模块成员供补全；binding 不可用时返回空列表。"""
         try:
             return dir(_binding_module(self._submodule))
         except ImportError:
             return []
 
     def __repr__(self) -> str:
+        """显示代理子模块及已解析 binding，便于调试延迟导入。"""
         return f"<qt_compat {self._submodule} via {_binding[0] if _binding else 'unresolved'}>"
 
 
 def __getattr__(name: str) -> Any:
-    """Forward any ``Qt*`` name to the detected binding as a submodule.
+    """将 Qt 开头的属性解析为子模块代理；其他名称保留普通 AttributeError。
+
+    Forward any ``Qt*`` name to the detected binding as a submodule.
 
     Submodules are resolved by name instead of being listed, so
     ``from utils.qt_compat import QtNetwork`` works exactly like
@@ -144,7 +155,9 @@ def __getattr__(name: str) -> Any:
 
 
 def _qt_factory(*names: str) -> Any:
-    """The first of ``names`` the detected binding's QtCore actually provides.
+    """探测 QtCore 实际提供的工厂名称，统一 PySide 和 PyQt 的命名差异。
+
+    The first of ``names`` the detected binding's QtCore actually provides.
 
     The two binding families spell the signal and slot factories differently
     and neither ships the other's spelling: PySide has ``Signal``/``Slot``, PyQt
@@ -160,10 +173,12 @@ def _qt_factory(*names: str) -> Any:
 
 
 def Signal(*args: Any, **kwargs: Any) -> Any:
+    """调用当前 binding 的 Signal 工厂，参数原样转交。"""
     return _qt_factory("Signal", "pyqtSignal")(*args, **kwargs)
 
 
 def Slot(*args: Any, **kwargs: Any) -> Any:
+    """调用当前 binding 的 Slot 装饰器工厂，参数原样转交。"""
     return _qt_factory("Slot", "pyqtSlot")(*args, **kwargs)
 
 
@@ -175,7 +190,9 @@ _EVENT_LOOP_ENTRIES = ("exec", "exec_")
 
 
 def exec_loop(target: Any, *args: Any, **kwargs: Any) -> Any:
-    """Run ``target``'s blocking event loop under the name it actually ships.
+    """调用对象实际提供的阻塞事件循环入口，并原样返回退出结果。
+
+    Run ``target``'s blocking event loop under the name it actually ships.
 
     Application code that writes either spelling is bound to one Qt major: a
     PySide2 bundle builds its window and then dies with ``AttributeError:

@@ -1,0 +1,894 @@
+# 中文维护说明：验证Qt 模块、插件和运行库裁剪；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from appbuild.config import TARGETS
+from appbuild.qt_prune import QT_COMPAT_MODULE, _qt_module_of, prune, used_qt_modules
+
+
+@pytest.fixture(autouse=True)
+def _isolate_payload_options(monkeypatch):
+    """隔离 Qt 裁剪选项，避免本机应用配置影响测试。
+
+    Prune tests exercise the documented defaults, not the local app config.
+
+    ``prune()`` reads ``[tool.appbuild.optimize]`` for the optional payload
+    cuts. The working copy deliberately enables those cuts, so without this
+    isolation the expected files would depend on the machine's pyproject.toml.
+    """
+    from appbuild import qt_prune
+
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {})
+
+
+def _touch(path: Path, payload: bytes = b"\xcf\xfa\xed\xfe") -> Path:
+    """创建指定相对路径的测试文件并返回路径。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+def _fake_pyside(site: Path) -> Path:
+    """创建包含多类 Qt 模块、插件和资源的 POSIX 测试布局。"""
+    pyside = site / "PySide6"
+    for module in ("QtCore", "QtGui", "QtWidgets", "QtQml", "QtWebEngineCore"):
+        _touch(pyside / f"{module}.abi3.so")
+    for module in ("QtCore", "QtGui", "QtWidgets", "QtQml", "QtWebEngineCore"):
+        _touch(pyside / "Qt" / "lib" / f"{module}.framework" / "Versions" / "A" / module)
+    _touch(pyside / "Qt" / "plugins" / "platforms" / "libqcocoa.dylib")
+    _touch(pyside / "Qt" / "plugins" / "sqldrivers" / "libqsqlite.dylib")
+    _touch(pyside / "Qt" / "plugins" / "imageformats" / "libqpdf.dylib")
+    _touch(pyside / "Qt" / "qml" / "QtQuick" / "libqtquickplugin.dylib")
+    _touch(pyside / "Qt" / "libexec" / "QtWebEngineProcess")
+    _touch(pyside / "qmlls")
+    _touch(pyside / "Assistant.app" / "Contents" / "MacOS" / "Assistant")
+    _touch(pyside / "libpyside6.abi3.6.11.dylib")
+    _touch(pyside / "libpyside6qml.abi3.6.11.dylib")
+    (pyside / "Qt" / "translations").mkdir(parents=True, exist_ok=True)
+    for name in ("qtbase_zh_CN.qm", "qt_zh_CN.qm", "qt_help_zh_CN.qm", "assistant_zh_CN.qm", "qtmultimedia_zh_CN.qm"):
+        (pyside / "Qt" / "translations" / name).write_text("", encoding="utf-8")
+    return pyside
+
+
+def _fake_windows_pyside(site: Path) -> Path:
+    """创建 Windows 平铺 Qt 运行库和插件测试布局。
+
+    A PySide6 tree with the Windows wheel layout.
+
+    The Windows wheels keep no ``Qt`` directory: the Qt DLLs, the extension
+    modules and the tooling sit in the package root, and only ``plugins``,
+    ``qml``, ``translations`` and ``metatypes`` are beside them.
+    """
+    pyside = site / "PySide6"
+    for module in ("QtCore", "QtGui", "QtWidgets", "QtQml", "QtWebEngineCore"):
+        _touch(pyside / f"{module}.pyd")
+    for module in ("QtCore", "QtGui", "QtWidgets", "QtQml", "QtWebEngineCore", "QtPdf", "QtSql", "QtMultimedia"):
+        _touch(pyside / f"Qt6{module[2:]}.dll")
+    _touch(pyside / "pyside6.abi3.dll")
+    _touch(pyside / "pyside6qml.abi3.dll")
+    _touch(pyside / "msvcp140.dll")
+    # Loaded by name at runtime, never through an import table.
+    _touch(pyside / "opengl32sw.dll")
+    _touch(pyside / "plugins" / "platforms" / "qwindows.dll")
+    _touch(pyside / "plugins" / "sqldrivers" / "qsqlite.dll")
+    _touch(pyside / "plugins" / "imageformats" / "qpdf.dll")
+    _touch(pyside / "plugins" / "imageformats" / "qsvg.dll")
+    _touch(pyside / "plugins" / "multimedia" / "ffmpegmediaplugin.dll")
+    _touch(pyside / "qml" / "QtQuick" / "qtquickplugin.dll")
+    _touch(pyside / "QtWebEngineProcess.exe")
+    _touch(pyside / "assistant.exe")
+    _touch(pyside / "qmlls.exe")
+    _touch(pyside / "metatypes" / "qt6core_metatypes.json")
+    (pyside / "translations").mkdir(parents=True, exist_ok=True)
+    for name in ("qtbase_zh_CN.qm", "qt_zh_CN.qm", "qt_help_zh_CN.qm", "assistant_zh_CN.qm", "qtmultimedia_zh_CN.qm"):
+        (pyside / "translations" / name).write_text("", encoding="utf-8")
+    return pyside
+
+
+def _windows_dependencies(path: Path) -> list[str]:
+    """按文件名返回固定 Qt 依赖图，用于确定裁剪闭包。
+
+    The import graph of the fake Windows tree, keyed by file name."""
+    return {
+        "QtWidgets.pyd": ["Qt6Widgets.dll", "Qt6Gui.dll", "pyside6.abi3.dll"],
+        "QtGui.pyd": ["Qt6Gui.dll", "Qt6Core.dll", "pyside6.abi3.dll"],
+        "QtCore.pyd": ["Qt6Core.dll", "pyside6.abi3.dll"],
+        "Qt6Widgets.dll": ["Qt6Gui.dll", "msvcp140.dll"],
+        "Qt6Gui.dll": ["Qt6Core.dll", "msvcp140.dll"],
+        "Qt6Core.dll": ["msvcp140.dll"],
+        "qwindows.dll": ["Qt6Gui.dll", "Qt6Core.dll"],
+        "qsvg.dll": ["Qt6Gui.dll", "Qt6Core.dll"],
+        "qpdf.dll": ["Qt6Gui.dll", "Qt6Pdf.dll"],
+        "qsqlite.dll": ["Qt6Core.dll", "Qt6Sql.dll"],
+        "ffmpegmediaplugin.dll": ["Qt6Multimedia.dll"],
+    }.get(path.name, [])
+
+
+def test_qt_module_mapping_covers_platform_layouts():
+    """验证不同平台的 Qt 库名称都映射到统一模块名。"""
+    assert _qt_module_of("@rpath/QtGui.framework/Versions/A/QtGui") == "QtGui"
+    assert _qt_module_of("@rpath/libQt6Core.6.dylib") == "QtCore"
+    assert _qt_module_of("libQt6Gui.so.6.11.0") == "QtGui"
+    assert _qt_module_of("Qt6Widgets.dll") == "QtWidgets"
+    assert _qt_module_of("libqcocoa.dylib") is None
+
+
+def test_qt_module_mapping_ignores_system_frameworks():
+    """验证 macOS 系统 framework 不被误判为 Qt 模块。
+
+    System frameworks must not look like Qt modules.
+
+    Treating CoreVideo/IOSurface/ColorSync as Qt modules dropped the cocoa
+    platform plugin, because it links system frameworks the Qt wrapper closure
+    never mentions, and the packaged application then could not start.
+    """
+    assert _qt_module_of("/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo") is None
+    assert _qt_module_of("/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface") is None
+    assert _qt_module_of("/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit") is None
+    assert _qt_module_of("/usr/lib/libSystem.B.dylib") is None
+    assert _qt_module_of("/usr/lib/libobjc.A.dylib") is None
+
+
+def test_used_qt_modules_reads_application_sources(tmp_path):
+    """验证源码导入分析能发现实际使用的 Qt 模块。"""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "application.py").write_text(
+        "from PySide6.QtWidgets import QApplication\nimport PySide6.QtCore\n", encoding="utf-8"
+    )
+    (source / "main.py").write_text("print('no qt here')\n", encoding="utf-8")
+    assert used_qt_modules(source) == {"QtWidgets", "QtCore"}
+
+
+def test_used_qt_modules_reads_the_compat_shim(tmp_path):
+    """验证通过统一 Qt 适配层导入的模块也能被发现。
+
+    The shim names Qt modules exactly as directly as a binding import.
+
+    The application imports Qt from the shim, so a scanner that only knew
+    binding prefixes would report no Qt usage, configured_modules() would keep
+    the whole 665 MB payload, and the build would still pass — a silent
+    regression rather than a visible failure.
+    """
+    source = tmp_path / "src"
+    shim = source / Path(*QT_COMPAT_MODULE.split(".")).with_suffix(".py")
+    shim.parent.mkdir(parents=True)
+    shim.write_text("# binding-neutral shim, no import of its own\n", encoding="utf-8")
+    (source / "window.py").write_text(
+        f"from {QT_COMPAT_MODULE} import (\n    QtWidgets,\n    QtCore,\n)\n", encoding="utf-8"
+    )
+    (source / "main.py").write_text(
+        f"from {QT_COMPAT_MODULE} import QtWidgets, Signal\nimport {QT_COMPAT_MODULE}\n", encoding="utf-8"
+    )
+    # Signal is a factory, not a module: only names that could be a Qt
+    # submodule count, and a bare shim import names no module.
+    assert used_qt_modules(source) == {"QtWidgets", "QtCore"}
+
+
+def test_used_qt_modules_reports_a_source_it_cannot_parse(tmp_path):
+    """验证源码解析失败会报出文件而非静默漏算模块。"""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "broken.py").write_text("def f(:\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="broken.py"):
+        used_qt_modules(source)
+
+
+def test_qt_compat_module_names_a_real_shim():
+    """验证配置的 Qt 适配模块与应用实际使用路径一致。
+
+    The constant Qt pruning scans for must point at the application's shim.
+
+    Rotting on either side is invisible: the scanner finds nothing and keeps the
+    whole payload instead of failing.
+    """
+    from appbuild.config import APP
+    from appbuild.qt_prune import QT_COMPAT_MODULE
+
+    path = APP / "src" / Path(*QT_COMPAT_MODULE.split(".")).with_suffix(".py")
+    if not path.is_file():
+        pytest.skip(f"application shim {QT_COMPAT_MODULE} is not present")
+    assert "QtWidgets" in used_qt_modules(), "application sources name no Qt module through the shim"
+
+
+def test_prune_keeps_only_the_imported_qt_payload(tmp_path, monkeypatch):
+    """验证 POSIX 布局仅保留使用闭包中的 Qt 模块、插件和翻译。"""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_pyside(site)
+
+    def fake_dependencies(path: Path) -> list[str]:
+        """模拟测试布局的模块依赖，以驱动确定性的裁剪结果。"""
+        name = path.name
+        if name == "QtWidgets.abi3.so":
+            return ["@rpath/QtWidgets.framework/Versions/A/QtWidgets", "@rpath/QtGui.framework/Versions/A/QtGui"]
+        if name == "QtGui.abi3.so":
+            return ["@rpath/QtGui.framework/Versions/A/QtGui", "@rpath/QtCore.framework/Versions/A/QtCore"]
+        if name == "libqcocoa.dylib":
+            # A platform plugin links system frameworks and may even reference
+            # an extra Qt module; it must still be kept.
+            return [
+                "@rpath/QtGui.framework/Versions/A/QtGui",
+                "@rpath/QtCore.framework/Versions/A/QtCore",
+                "@rpath/QtPdf.framework/Versions/A/QtPdf",
+                "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+                "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+            ]
+        if name == "libqsqlite.dylib":
+            return ["@rpath/QtCore.framework/Versions/A/QtCore"]
+        if name == "libqpdf.dylib":
+            return ["@rpath/QtGui.framework/Versions/A/QtGui", "@rpath/QtPdf.framework/Versions/A/QtPdf"]
+        if name == "QtCore.framework":
+            return ["/usr/lib/libSystem.B.dylib"]
+        if name == "QtGui.framework":
+            return ["@rpath/QtCore.framework/Versions/A/QtCore"]
+        if name == "QtWidgets.framework":
+            return ["@rpath/QtGui.framework/Versions/A/QtGui"]
+        if name == "QtWebEngineCore.framework":
+            return ["@rpath/QtQml.framework/Versions/A/QtQml"]
+        return []
+
+    monkeypatch.setattr(qt_prune, "dependency_names", fake_dependencies)
+    # prune() receives the expanded module set, exactly as configured_modules()
+    # hands it over after resolving the runtime closure.
+    counters = prune(site, TARGETS["macos-arm64"], {"QtWidgets", "QtGui", "QtCore"})
+
+    assert counters and counters["bytes"] > 0
+    # kept: the imported module and its native closure
+    assert (pyside / "QtWidgets.abi3.so").exists()
+    assert (pyside / "QtGui.abi3.so").exists()
+    assert (pyside / "QtCore.abi3.so").exists()
+    assert (pyside / "Qt" / "lib" / "QtWidgets.framework").exists()
+    assert (pyside / "Qt" / "plugins" / "platforms" / "libqcocoa.dylib").exists()
+    # dropped: unimported modules, their libraries, plugins and tooling
+    assert not (pyside / "QtWebEngineCore.abi3.so").exists()
+    assert not (pyside / "QtQml.abi3.so").exists()
+    assert not (pyside / "Qt" / "lib" / "QtWebEngineCore.framework").exists()
+    assert not (pyside / "Qt" / "lib" / "QtQml.framework").exists()
+    assert not (pyside / "Qt" / "plugins" / "sqldrivers").exists()
+    # an image format that needs a Qt module the app never imports goes too
+    assert not (pyside / "Qt" / "plugins" / "imageformats" / "libqpdf.dylib").exists()
+    assert (pyside / "Qt" / "plugins" / "imageformats").exists()
+    assert not (pyside / "Qt" / "qml").exists()
+    assert not (pyside / "Qt" / "libexec").exists()
+    assert not (pyside / "libpyside6qml.abi3.6.11.dylib").exists()
+    assert (pyside / "libpyside6.abi3.6.11.dylib").exists()
+    assert not (pyside / "qmlls").exists()
+    assert not (pyside / "Assistant.app").exists()
+    # translations: Qt's own strings stay, tooling and unused modules go
+    assert (pyside / "Qt" / "translations" / "qtbase_zh_CN.qm").exists()
+    assert (pyside / "Qt" / "translations" / "qt_zh_CN.qm").exists()
+    assert not (pyside / "Qt" / "translations" / "qt_help_zh_CN.qm").exists()
+    assert not (pyside / "Qt" / "translations" / "assistant_zh_CN.qm").exists()
+    assert not (pyside / "Qt" / "translations" / "qtmultimedia_zh_CN.qm").exists()
+
+
+def test_prune_keeps_only_the_imported_qt_payload_on_windows(tmp_path, monkeypatch):
+    """验证 Windows 布局裁剪无用模块同时保留 GUI 必需库与插件。
+
+    The Windows wheel has no Qt/ directory, so every path has to be derived.
+
+    Reading only the POSIX layout left the whole Windows payload in place: the
+    Qt DLLs, the SQL drivers, the multimedia stack and the QML tree all stayed
+    in the bundle, and the native closure then failed on the optional payload
+    those extra modules link (the database clients, the ffmpeg libraries).
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    counters = prune(site, TARGETS["windows-x86_64"], {"QtWidgets", "QtGui", "QtCore"})
+
+    assert counters and counters["bytes"] > 0
+    # kept: the imported modules, the Qt libraries they link and the runtime
+    # images that closure needs
+    assert (pyside / "QtCore.pyd").exists()
+    assert (pyside / "QtGui.pyd").exists()
+    assert (pyside / "QtWidgets.pyd").exists()
+    assert (pyside / "Qt6Core.dll").exists()
+    assert (pyside / "Qt6Gui.dll").exists()
+    assert (pyside / "Qt6Widgets.dll").exists()
+    assert (pyside / "pyside6.abi3.dll").exists()
+    assert (pyside / "msvcp140.dll").exists()
+    assert (pyside / "plugins" / "platforms" / "qwindows.dll").exists()
+    assert (pyside / "plugins" / "imageformats" / "qsvg.dll").exists()
+    # kept although nothing imports it: QtGui loads it by name
+    assert (pyside / "opengl32sw.dll").exists()
+    # dropped: unimported modules and everything that belongs to them
+    assert not (pyside / "QtQml.pyd").exists()
+    assert not (pyside / "QtWebEngineCore.pyd").exists()
+    assert not (pyside / "Qt6Qml.dll").exists()
+    assert not (pyside / "Qt6WebEngineCore.dll").exists()
+    assert not (pyside / "Qt6Sql.dll").exists()
+    assert not (pyside / "Qt6Multimedia.dll").exists()
+    assert not (pyside / "plugins" / "sqldrivers").exists()
+    assert not (pyside / "plugins" / "multimedia").exists()
+    # an image format that needs a Qt module the app never imports goes too
+    assert not (pyside / "plugins" / "imageformats" / "qpdf.dll").exists()
+    assert not (pyside / "Qt6Pdf.dll").exists()
+    assert not (pyside / "qml").exists()
+    assert not (pyside / "pyside6qml.abi3.dll").exists()
+    assert not (pyside / "metatypes").exists()
+    # tooling: the Windows wheels append .exe to every name
+    assert not (pyside / "assistant.exe").exists()
+    assert not (pyside / "qmlls.exe").exists()
+    # the WebEngine helper process follows the payload it belongs to
+    assert not (pyside / "QtWebEngineProcess.exe").exists()
+    # translations: Qt's own strings stay, tooling and unused modules go
+    assert (pyside / "translations" / "qtbase_zh_CN.qm").exists()
+    assert (pyside / "translations" / "qt_zh_CN.qm").exists()
+    assert not (pyside / "translations" / "qt_help_zh_CN.qm").exists()
+    assert not (pyside / "translations" / "assistant_zh_CN.qm").exists()
+    assert not (pyside / "translations" / "qtmultimedia_zh_CN.qm").exists()
+
+
+def test_windows_pruning_never_touches_the_package_itself(tmp_path, monkeypatch):
+    """验证 Qt 裁剪保留 binding 的包初始化及辅助 Python 模块。
+
+    Only DLLs are payload; the package's own files must survive the sweep.
+
+    On Windows the Qt libraries live in the package root next to the importable
+    extension modules and the packaging metadata, so a reachability sweep that
+    treated every entry as a library would delete the modules it just kept.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    (pyside / "__init__.py").write_text("", encoding="utf-8")
+    (pyside / "QtCore.pyi").write_text("", encoding="utf-8")
+    (pyside / "helper").mkdir()
+    (pyside / "helper" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtWidgets", "QtGui", "QtCore"})
+
+    assert (pyside / "__init__.py").exists()
+    assert (pyside / "QtCore.pyi").exists()
+    assert (pyside / "helper" / "__init__.py").exists()
+
+
+def test_windows_pruning_drops_the_binding_prefixed_tool_copy(tmp_path, monkeypatch):
+    """验证裁剪同时删除普通工具名及带 binding 前缀的副本。
+
+    PySide ships lupdate twice, and the prefixed copy is the one that leaks.
+
+    The Windows wheels carry ``pyside2-lupdate.exe`` beside ``lupdate.exe``. Only
+    the bare name was listed as tooling, so the prefixed executable survived the
+    sweep while the Qt5Xml.dll it links did not (the application never imports
+    QtXml) and the build stopped at "Unresolved native dependencies:
+    site-packages/PySide2/pyside2-lupdate.exe: Qt5Xml.dll" -- over a translation
+    tool that is developer tooling, not runtime payload.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = site / "PySide2"
+    _touch(pyside / "QtCore.pyd")
+    _touch(pyside / "Qt5Core.dll")
+    _touch(pyside / "pyside2.abi3.dll")
+    _touch(pyside / "lupdate.exe")
+    _touch(pyside / "pyside2-lupdate.exe")
+
+    def dependencies(path: Path) -> list[str]:
+        """提供 Qt5 核心和开发工具的区别依赖。"""
+        return {
+            "QtCore.pyd": ["Qt5Core.dll", "pyside2.abi3.dll"],
+            "pyside2-lupdate.exe": ["Qt5Xml.dll"],
+        }.get(path.name, [])
+
+    monkeypatch.setattr(qt_prune, "dependency_names", dependencies)
+
+    counters = prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert counters and counters["files"] >= 2
+    assert not (pyside / "lupdate.exe").exists()
+    assert not (pyside / "pyside2-lupdate.exe").exists()
+    # The payload the application does import is untouched.
+    assert (pyside / "QtCore.pyd").exists()
+    assert (pyside / "Qt5Core.dll").exists()
+    assert (pyside / "pyside2.abi3.dll").exists()
+
+
+def test_configured_modules_expands_explicit_lists_through_the_closure(tmp_path, monkeypatch):
+    """验证显式 Qt 模块列表扩展为完整运行时依赖闭包。"""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    _fake_pyside(site)
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt": ["QtWidgets"]})
+    monkeypatch.setattr(qt_prune, "_runtime_closure", lambda site, target, modules: modules | {"QtGui", "QtCore"})
+    assert qt_prune.configured_modules(TARGETS["macos-arm64"], site) == {"QtWidgets", "QtGui", "QtCore"}
+
+
+def test_configured_modules_rejects_unknown_settings(tmp_path, monkeypatch):
+    """验证 Qt 模块配置拒绝未知模式或非法值。"""
+    from appbuild import qt_prune
+
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt": "everything"})
+    try:
+        qt_prune.configured_modules(TARGETS["macos-arm64"], tmp_path)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected a rejection of an unknown qt setting")
+
+
+def test_configured_modules_reports_a_runtime_that_cannot_import_the_payload(tmp_path, monkeypatch):
+    """验证可运行目标解释器导入 Qt 失败时明确报告。
+
+    A failed closure probe is an error, never a narrower payload.
+
+    Falling back to the requested modules deletes everything they link
+    indirectly, because importing QtWidgets alone never mentions QtCore and
+    QtGui; the bundle then only breaks in the packaged smoke run.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    _fake_pyside(site)
+    # A real wheel ships PySide6/__init__.py. Without it the probe would import
+    # whichever PySide6 the test interpreter happens to have installed instead
+    # of the staged payload.
+    (site / "PySide6" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt": "imports"})
+    monkeypatch.setattr(qt_prune, "used_qt_modules", lambda *args, **kwargs: {"QtWidgets"})
+    monkeypatch.setattr(qt_prune, "_native_runtime_python", lambda target: Path(sys.executable))
+    with pytest.raises(RuntimeError, match="QtWidgets"):
+        qt_prune.configured_modules(TARGETS["macos-arm64"], site)
+
+
+def test_configured_modules_keeps_the_payload_when_the_target_cannot_run(tmp_path, monkeypatch):
+    """验证交叉目标无法探测时保留 Qt 内容，不猜测裁剪闭包。
+
+    Without the target interpreter the closure is unknown, so nothing goes."""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    _fake_pyside(site)
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt": "imports"})
+    monkeypatch.setattr(qt_prune, "used_qt_modules", lambda *args, **kwargs: {"QtWidgets"})
+    monkeypatch.setattr(qt_prune, "_native_runtime_python", lambda target: None)
+    assert qt_prune.configured_modules(TARGETS["macos-arm64"], site) is None
+
+
+def test_prune_ignores_a_site_without_a_qt_payload(tmp_path, monkeypatch):
+    """验证没有 Qt 安装时跳过裁剪且不启动探测。
+
+    A staged site without PySide6 has nothing to prune, so nothing is probed."""
+    from appbuild import qt_prune
+
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt": "imports"})
+
+    def fail(*args, **kwargs):
+        """若无 Qt 场景仍进入依赖探测则令测试失败。"""
+        raise AssertionError("the module closure must not be probed without a Qt payload")
+
+    monkeypatch.setattr(qt_prune, "_runtime_closure", fail)
+    assert prune(tmp_path / "site-packages", TARGETS["macos-arm64"]) is None
+
+
+def test_prune_is_disabled_by_default(tmp_path, monkeypatch):
+    """验证默认不启用动态 Qt 模块裁剪。"""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_pyside(site)
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {})
+    monkeypatch.setattr(qt_prune, "dependency_names", lambda path: [])
+    assert prune(site, TARGETS["macos-arm64"]) is None
+    assert (pyside / "QtWebEngineCore.abi3.so").exists()
+
+
+def test_runtime_closure_probe_inherits_the_host_environment(tmp_path, monkeypatch):
+    """验证闭包探测保留宿主环境，同时设置测试路径并禁止写字节码。
+
+    The closure probe must not hand the target interpreter a built environment.
+
+    It needs PYTHONPATH (the staged payload) and PYTHONDONTWRITEBYTECODE, but
+    everything else has to come from the host. A block containing only those two
+    plus a POSIX PATH is not a smaller host environment: on Windows the target
+    interpreter dies during preinit without SystemRoot, reporting
+    "_Py_HashRandomization_Init: failed to get random numbers to initialize
+    Python", which failed every Windows host build with qt = "imports" before
+    the launcher step.
+    """
+    from appbuild import qt_prune
+
+    monkeypatch.setenv("PYTHONPATH", "host-python-path")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "0")
+    monkeypatch.setenv("SystemRoot", "host-system-root")
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    recorded: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        """记录探测环境并返回已加载 Qt 模块集合。"""
+        recorded["cmd"] = cmd
+        recorded["env"] = kwargs["env"]
+        loaded = '["PySide6.QtWidgets", "PySide6.QtCore"]'
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{loaded}\n", stderr="")
+
+    monkeypatch.setattr(qt_prune, "_native_runtime_python", lambda target: Path(sys.executable))
+    monkeypatch.setattr(qt_prune.subprocess, "run", fake_run)
+
+    closure = qt_prune._runtime_closure(site, TARGETS["macos-arm64"], {"QtWidgets"})
+
+    assert closure == {"QtWidgets", "QtCore"}
+    env = recorded["env"]
+    assert env["PYTHONPATH"] == str(site)
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    overrides = {"PYTHONPATH", "PYTHONDONTWRITEBYTECODE"}
+    dropped = {
+        name: value for name, value in os.environ.items()
+        if name not in overrides and env.get(name) != value
+    }
+    assert not dropped, f"the probe dropped host variables: {sorted(dropped)}"
+
+
+def test_prune_drops_build_payload_and_webengine_resources(tmp_path, monkeypatch):
+    """验证未使用 WebEngine 时移除其资源及通用开发内容。
+
+    Headers, examples, WebEngine resources and the WebGL platform plugin.
+
+    None of these can be reached from an import: the C++ headers and example
+    tree are build payload, ``resources`` belongs to QtWebEngineCore, and
+    ``qwebgl`` is Qt's streaming platform plugin rather than a desktop one.
+    ``qoffscreen`` has to stay because the headless smoke test opens a window
+    through it.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    _touch(pyside / "examples" / "widgets" / "demo.py")
+    _touch(pyside / "include" / "QtWidgets" / "qwidget.h")
+    _touch(pyside / "resources" / "icudtl.dat")
+    _touch(pyside / "plugins" / "platforms" / "qwebgl.dll")
+    _touch(pyside / "plugins" / "platforms" / "qoffscreen.dll")
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    counters = prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert counters and counters["bytes"] > 0
+    assert not (pyside / "examples").exists()
+    assert not (pyside / "include").exists()
+    assert not (pyside / "resources").exists()
+    assert not (pyside / "plugins" / "platforms" / "qwebgl.dll").exists()
+    assert (pyside / "plugins" / "platforms" / "qoffscreen.dll").exists()
+    # The platform category itself survives, so a real desktop plugin would too.
+    assert (pyside / "plugins" / "platforms").is_dir()
+
+
+def test_prune_keeps_webengine_resources_when_the_module_is_used(tmp_path, monkeypatch):
+    """验证使用 WebEngine 时保留其运行资源但仍移除开发头文件。
+
+    ``resources`` is WebEngine payload, not unconditional build output."""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    _touch(pyside / "resources" / "qtwebengine_resources.pak")
+    _touch(pyside / "include" / "QtCore" / "qobject.h")
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore", "QtWebEngineCore"})
+
+    assert (pyside / "resources" / "qtwebengine_resources.pak").exists()
+    assert not (pyside / "include").exists()
+
+
+@pytest.mark.parametrize(("binding", "qt_dir"), [
+    ("PySide2", "Qt"),
+    ("PySide6", "Qt"),
+    ("PyQt5", "Qt5"),
+    ("PyQt6", "Qt6"),
+])
+def test_qt_layout_reads_each_bindings_payload_directory(tmp_path, binding, qt_dir):
+    """验证每种 Qt binding 的运行库、插件和翻译目录被正确定位。
+
+    PySide POSIX uses ``Qt``; PyQt uses ``Qt<major>`` on every platform.
+
+    Recognising only ``Qt`` made a PyQt POSIX tree look like the flat Windows
+    layout: ``plugins``, ``qml`` and ``translations`` were then read from the
+    package root, where they do not exist, and pruning became a no-op.
+    """
+    from appbuild import qt_prune
+
+    package = tmp_path / "site-packages" / binding
+    plugins = package / qt_dir / "plugins"
+    plugins.mkdir(parents=True)
+    (package / qt_dir / "bin").mkdir()
+    (package / qt_dir / "translations").mkdir()
+
+    layout = qt_prune._qt_layout(package, binding)
+
+    assert layout.root == package / qt_dir
+    assert layout.plugins == plugins
+    assert layout.translations == package / qt_dir / "translations"
+    assert package / qt_dir / "bin" in layout.libraries
+    assert layout.library_names is None
+
+
+def test_qt_layout_falls_back_to_the_flat_windows_pyside_root(tmp_path):
+    """验证 Windows PySide 平铺布局以包根目录作为运行资源根。"""
+    from appbuild import qt_prune
+
+    package = tmp_path / "site-packages" / "PySide2"
+    (package / "plugins" / "platforms").mkdir(parents=True)
+
+    layout = qt_prune._qt_layout(package, "PySide2")
+
+    assert layout.root == package
+    assert layout.plugins == package / "plugins"
+    assert layout.library_names == "*.dll"
+
+
+def test_prune_reads_the_pyqt_payload_directory(tmp_path, monkeypatch):
+    """验证 PyQt 的 Qt6 子目录遵循与 PySide 一致的裁剪策略。
+
+    The payload root is not hard-coded to ``Qt``.
+
+    A PyQt6 tree keeps its libraries, plugins and translations under ``Qt6``.
+    ``prune()`` used to derive that root from ``pyside / "Qt"`` alone, so on
+    PyQt it treated the package root as the payload root and left examples,
+    headers and unused translations in the bundle.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    package = site / "PyQt6"
+    _touch(package / "QtCore.pyd")
+    _touch(package / "Qt6" / "bin" / "Qt6Core.dll")
+    _touch(package / "Qt6" / "plugins" / "platforms" / "qwindows.dll")
+    _touch(package / "Qt6" / "translations" / "qtbase_zh_CN.qm")
+    _touch(package / "Qt6" / "translations" / "qtmultimedia_zh_CN.qm")
+    _touch(package / "Qt6" / "examples" / "widgets" / "main.cpp")
+    _touch(package / "Qt6" / "include" / "QtCore" / "qobject.h")
+
+    def dependencies(path: Path) -> list[str]:
+        """返回 PyQt 核心模块及平台插件的最小依赖图。"""
+        return {
+            "QtCore.pyd": ["Qt6Core.dll"],
+            "qwindows.dll": ["Qt6Core.dll"],
+        }.get(path.name, [])
+
+    monkeypatch.setattr(qt_prune, "dependency_names", dependencies)
+
+    counters = prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert counters and counters["bytes"] > 0
+    assert (package / "Qt6" / "bin" / "Qt6Core.dll").exists()
+    assert (package / "Qt6" / "plugins" / "platforms" / "qwindows.dll").exists()
+    assert (package / "Qt6" / "translations" / "qtbase_zh_CN.qm").exists()
+    assert not (package / "Qt6" / "translations" / "qtmultimedia_zh_CN.qm").exists()
+    assert not (package / "Qt6" / "examples").exists()
+    assert not (package / "Qt6" / "include").exists()
+
+def test_prune_drops_binding_tooling_docs_and_link_libraries(tmp_path, monkeypatch):
+    """验证移除开发文档、导入库和无用 VC 库，同时保留运行必需库。
+
+    Wheel docs, .lib import libraries and unused MSVC runtimes are dead weight.
+
+    The reference PySide2 deployment keeps only the runtime DLLs and the
+    shiboken signature directory. ``docs`` alone is ~1.9 MB, and ``.lib`` files
+    are link-time inputs no frozen application can use.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    _touch(pyside / "docs" / "index.html")
+    _touch(pyside / "pyside6.abi3.lib")
+    shiboken = site / "shiboken6"
+    _touch(shiboken / "docs" / "index.html")
+    _touch(shiboken / "shiboken6.abi3.lib")
+    _touch(shiboken / "msvcp140.dll")
+    _touch(shiboken / "vcruntime140.dll")
+    _touch(shiboken / "vcamp140.dll")
+    _touch(shiboken / "concrt140.dll")
+    _touch(shiboken / "vcomp140.dll")
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert not (pyside / "docs").exists()
+    assert not (pyside / "pyside6.abi3.lib").exists()
+    assert not (shiboken / "docs").exists()
+    assert not (shiboken / "shiboken6.abi3.lib").exists()
+    # The runtimes the extension modules link stay; tooling-only ones go.
+    assert (shiboken / "msvcp140.dll").exists()
+    assert (shiboken / "vcruntime140.dll").exists()
+    assert not (shiboken / "vcamp140.dll").exists()
+    assert not (shiboken / "concrt140.dll").exists()
+    assert not (shiboken / "vcomp140.dll").exists()
+
+
+def test_prune_drops_posix_docs_headers_cmake_and_stale_stubs(tmp_path, monkeypatch):
+    """验证 POSIX 布局移除开发材料和已裁剪模块的类型桩。
+
+    The POSIX wheel uses ``doc``/``include``/``lib``, not only ``docs``/``.lib``.
+
+    PySide6 ships the documentation as ``doc`` on every platform, and the
+    headers plus CMake package files sit beside the binding on POSIX too. The
+    type stubs of pruned wrappers describe modules that are no longer shipped.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_pyside(site)
+    _touch(pyside / "doc" / "qtcore.rst")
+    _touch(pyside / "include" / "QtCore" / "qobject.h")
+    _touch(pyside / "lib" / "cmake" / "PySide6" / "PySide6Config.cmake")
+    _touch(pyside / "QtWebEngineCore.pyi")
+    _touch(pyside / "QtCore.pyi")
+    shiboken = site / "shiboken6"
+    _touch(shiboken / "doc" / "index.rst")
+    _touch(shiboken / "include" / "basewrapper.h")
+    _touch(shiboken / "lib" / "cmake" / "Shiboken6" / "Shiboken6Config.cmake")
+    monkeypatch.setattr(qt_prune, "dependency_names", lambda path: [])
+
+    prune(site, TARGETS["macos-arm64"], {"QtCore"})
+
+    assert not (pyside / "doc").exists()
+    assert not (pyside / "include").exists()
+    assert not (pyside / "lib").exists()
+    assert not (shiboken / "doc").exists()
+    assert not (shiboken / "include").exists()
+    assert not (shiboken / "lib").exists()
+    assert not (pyside / "QtWebEngineCore.pyi").exists()
+    assert (pyside / "QtCore.pyi").exists()
+
+
+def test_prune_platform_allowlist_spans_every_desktop_layout(tmp_path, monkeypatch):
+    """验证平台插件白名单覆盖各桌面系统并删除非选中插件。
+
+    One policy keeps the desktop plugin for each host and drops fallbacks.
+
+    Qt names the plugin ``qwindows.dll`` on Windows, ``libqcocoa.dylib`` on
+    macOS and ``libqxcb.so``/``libqwayland-*.so`` on Linux. The allowlist is
+    matched after normalizing those spellings, so a Windows build does not need
+    a different configuration from a Linux or macOS build.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    platforms = pyside / "plugins" / "platforms"
+    _touch(platforms / "qoffscreen.dll")
+    for name in (
+        "libqcocoa.dylib",
+        "libqxcb.so",
+        "libqwayland-egl.so",
+        "libqwayland-generic.so",
+        "qminimal.dll",
+        "qdirect2d.dll",
+        "qwebgl.dll",
+    ):
+        _touch(platforms / name)
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert (platforms / "qwindows.dll").exists()
+    assert (platforms / "qoffscreen.dll").exists()
+    assert (platforms / "libqcocoa.dylib").exists()
+    assert (platforms / "libqxcb.so").exists()
+    assert (platforms / "libqwayland-egl.so").exists()
+    assert (platforms / "libqwayland-generic.so").exists()
+    assert not (platforms / "qminimal.dll").exists()
+    assert not (platforms / "qdirect2d.dll").exists()
+    assert not (platforms / "qwebgl.dll").exists()
+
+
+def test_prune_image_format_allowlist_drops_svg_and_unused_formats(tmp_path, monkeypatch):
+    """验证图片插件白名单可移除 SVG 及无用格式和对应依赖。
+
+    Image plugins are loaded by MIME type, so an allowlist has to name them.
+
+    Dropping the SVG image plugin also drops the SVG icon engine and Qt5Svg:
+    nothing else in a widgets-only application reaches that library.
+    """
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    formats = pyside / "plugins" / "imageformats"
+    icons = pyside / "plugins" / "iconengines"
+    for name in ("qgif.dll", "qico.dll", "qjpeg.dll", "qsvg.dll", "qwebp.dll", "qtiff.dll", "qwbmp.dll"):
+        _touch(formats / name)
+    _touch(icons / "qsvgicon.dll")
+    _touch(pyside / "Qt5Svg.dll")
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt_image_formats": ["gif", "ico", "jpeg"]})
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore", "QtGui"})
+
+    assert (formats / "qgif.dll").exists()
+    assert (formats / "qico.dll").exists()
+    assert (formats / "qjpeg.dll").exists()
+    assert not (formats / "qsvg.dll").exists()
+    assert not (formats / "qwebp.dll").exists()
+    assert not (formats / "qtiff.dll").exists()
+    assert not (formats / "qwbmp.dll").exists()
+    assert not (icons / "qsvgicon.dll").exists()
+    # Qt5Svg was only reachable through the plugins that just went away.
+    assert not (pyside / "Qt5Svg.dll").exists()
+
+
+@pytest.mark.parametrize(
+    ("locales", "kept", "dropped"),
+    [
+        (["zh_CN"], {"qtbase_zh_CN.qm", "qt_zh_CN.qm"}, {"qtbase_zh_TW.qm", "qtbase_de.qm"}),
+        (["zh"], {"qtbase_zh_CN.qm", "qt_zh_CN.qm", "qtbase_zh_TW.qm"}, {"qtbase_de.qm"}),
+        (["de"], {"qtbase_de.qm"}, {"qtbase_zh_CN.qm", "qt_zh_CN.qm", "qtbase_zh_TW.qm"}),
+    ],
+)
+def test_prune_locale_allowlist_keeps_the_requested_translations(
+    tmp_path, monkeypatch, locales, kept, dropped
+):
+    """验证只保留指定语言且与使用模块匹配的翻译。"""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    for name in ("qtbase_zh_TW.qm", "qtbase_de.qm"):
+        (pyside / "translations" / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt_locales": locales})
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    translations = pyside / "translations"
+    for name in kept:
+        assert (translations / name).exists(), name
+    for name in dropped:
+        assert not (translations / name).exists(), name
+    # Tooling translations stay out regardless of the locale list.
+    assert not (translations / "qt_help_zh_CN.qm").exists()
+    assert not (translations / "assistant_zh_CN.qm").exists()
+
+
+def test_prune_can_drop_the_software_opengl_fallback(tmp_path, monkeypatch):
+    """验证显式配置可移除软件 OpenGL 回退库。
+
+    ``qt_software_opengl = false`` removes the ~20 MB DLL."""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    pyside = _fake_windows_pyside(site)
+    monkeypatch.setattr(qt_prune, "optimize_config", lambda: {"qt_software_opengl": False})
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    prune(site, TARGETS["windows-x86_64"], {"QtCore"})
+
+    assert not (pyside / "opengl32sw.dll").exists()
+
+
+def test_prune_rejects_malformed_payload_options(tmp_path, monkeypatch):
+    """验证资源裁剪选项的错误类型或不合法值被拒绝。"""
+    from appbuild import qt_prune
+
+    site = tmp_path / "site-packages"
+    _fake_windows_pyside(site)
+    monkeypatch.setattr(qt_prune, "dependency_names", _windows_dependencies)
+
+    for config, name in (
+        ({"qt_image_formats": []}, "qt_image_formats"),
+        ({"qt_locales": ["zh_CN", ""]}, "qt_locales"),
+        ({"qt_platforms": 3}, "qt_platforms"),
+        ({"qt_software_opengl": "no"}, "qt_software_opengl"),
+    ):
+        monkeypatch.setattr(qt_prune, "optimize_config", lambda cfg=config: cfg)
+        with pytest.raises(RuntimeError, match=name):
+            prune(site, TARGETS["windows-x86_64"], {"QtCore"})

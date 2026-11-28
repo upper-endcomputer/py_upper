@@ -49,6 +49,7 @@ constexpr std::uint32_t kEndOfCentralDirectory = 0x06054b50;
 constexpr std::uint32_t kCentralDirectoryEntry = 0x02014b50;
 constexpr std::uint32_t kLocalFileHeader = 0x04034b50;
 
+/** @brief 将单个十六进制字符转为半字节；无效字符返回 -1。 */
 inline int hex_value(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -56,6 +57,7 @@ inline int hex_value(char c) {
     return -1;
 }
 
+/** @brief 解析至少 16 字节的十六进制密钥；失败返回 false 并设置 error。 */
 inline bool parse_key(const std::string& text, std::vector<std::uint8_t>& key, std::string& error) {
     if (text.empty()) {
         error = "egg key is empty";
@@ -83,6 +85,7 @@ inline bool parse_key(const std::string& text, std::vector<std::uint8_t>& key, s
     return true;
 }
 
+/** @brief 从 ZIP 字节数组按小端读取 16 位数；越界返回 false。 */
 inline bool read_u16(const std::vector<std::uint8_t>& data, std::size_t offset, std::uint16_t& value) {
     if (offset + 2 > data.size()) return false;
     value = static_cast<std::uint16_t>(data[offset]) |
@@ -90,6 +93,7 @@ inline bool read_u16(const std::vector<std::uint8_t>& data, std::size_t offset, 
     return true;
 }
 
+/** @brief 从 ZIP 字节数组按小端读取 32 位数；越界返回 false。 */
 inline bool read_u32(const std::vector<std::uint8_t>& data, std::size_t offset, std::uint32_t& value) {
     if (offset + 4 > data.size()) return false;
     value = static_cast<std::uint32_t>(data[offset]) |
@@ -99,6 +103,7 @@ inline bool read_u32(const std::vector<std::uint8_t>& data, std::size_t offset, 
     return true;
 }
 
+/** @brief 检查合并库成员前缀及相对路径段；不匹配或不安全时返回 false。 */
 inline bool safe_member_name(const std::string& name, const std::string& prefix, std::string& error) {
     if (name.compare(0, prefix.size(), prefix) != 0) return false;
     if (name.size() <= prefix.size() || name.back() == '/') {
@@ -124,6 +129,7 @@ inline bool safe_member_name(const std::string& name, const std::string& prefix,
     return true;
 }
 
+/** @brief 把 length 字节编码为小写十六进制字符串，输入缓冲区保持借用。 */
 inline std::string hex(const std::uint8_t* bytes, std::size_t length) {
     static const char* digits = "0123456789abcdef";
     std::string text;
@@ -137,6 +143,7 @@ inline std::string hex(const std::uint8_t* bytes, std::size_t length) {
 
 // Constant-time compare: the tag check must not leak how many leading bytes
 // matched, even though an attacker reaching it already controls the archive.
+/** @brief 遍历完整指定长度比较标签，避免按首个差异提前返回。 */
 inline bool equal_constant_time(const std::uint8_t* left, const std::uint8_t* right, std::size_t length) {
     unsigned difference = 0;
     for (std::size_t i = 0; i < length; ++i) difference |= static_cast<unsigned>(left[i] ^ right[i]);
@@ -145,11 +152,12 @@ inline bool equal_constant_time(const std::uint8_t* left, const std::uint8_t* ri
 
 }  // namespace egg_detail
 
-// Decrypts an egg, verifying its authentication tag when the layout carries one.
+// Authenticate the current egg format before decrypting it.
 //
-// `cache_key` is the tag (v2) or a digest of the plaintext (v1): it identifies
+// `cache_key` is the current format authentication tag: it identifies
 // the exact archive a cache directory was produced from, so a rebuilt egg never
 // reuses a stale cache.
+/** @brief 仅接受当前认证格式，先校验标签再解密；payload 和 cache_key 接收成功结果。 */
 inline bool open_egg(const std::vector<std::uint8_t>& raw,
                      const std::string& key_hex,
                      std::vector<std::uint8_t>& payload,
@@ -204,7 +212,7 @@ inline bool open_egg(const std::vector<std::uint8_t>& raw,
         return true;
     }
 
-    error = "egg is not authenticated: rebuild it with this version of py_upper";
+    error = "egg is not authenticated: rebuild it with this version of appbuild";
     return false;
 }
 
@@ -217,6 +225,7 @@ struct EggContents {
     bool ok = false;
 };
 
+/** @brief 完整读取归档并认证解密，返回拥有 payload 内存的结果对象。 */
 inline EggContents read_egg(const std::filesystem::path& egg_path,
                             const std::string& key_hex) {
     EggContents result;
@@ -244,6 +253,7 @@ inline EggContents read_egg(const std::filesystem::path& egg_path,
 }
 
 // Parses bundle members out of an already-decrypted payload.
+/** @brief 从已认证 ZIP 中提取指定前缀的未压缩合并库；拒绝 ZIP64、重复和越界条目。 */
 inline bool read_bundles_from_payload(const std::vector<std::uint8_t>& payload,
                                       const std::string& prefix,
                                       std::vector<EggBundleFile>& files,

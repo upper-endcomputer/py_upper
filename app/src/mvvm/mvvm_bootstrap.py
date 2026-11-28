@@ -14,7 +14,9 @@ from mvvm.models import ApplicationModel
 
 
 def create_application(argv: list[str] | None = None):
-    """Create or reuse the QApplication for the detected binding.
+    """通过统一 binding 创建或复用 QApplication；Qt5 DPI 属性在新实例创建前设置。
+
+    Create or reuse the QApplication for the detected binding.
 
     The Qt names are imported here rather than at module level: importing this
     module must not require a binding, or every importer of the application
@@ -42,6 +44,7 @@ class MVVMQtApplication:
     """
 
     def __init__(self, argv: list[str] | None = None) -> None:
+        """准备 Qt 应用并初始化容器和异步退出状态。"""
         self.qt_app = create_application(argv)
         self.mvvm_app: Optional[MVVMApplication] = None
         self.async_lifecycle = None
@@ -83,7 +86,9 @@ class MVVMQtApplication:
                 self.mvvm_app.stop()
 
     def run_async(self, *, headless: bool = False) -> int:
-        """Opt-in qasync loop; add qasync to the application's dependencies."""
+        """启用可选 qasync 循环；关闭受管任务和服务后再释放 MVVM 容器。
+
+        Opt-in qasync loop; add qasync to the application's dependencies."""
         import asyncio
         from qasync import QEventLoop
         from mvvm.async_lifecycle import AsyncLifecycle
@@ -97,6 +102,7 @@ class MVVMQtApplication:
         loop = QEventLoop(self.qt_app)
 
         async def main():
+            """驱动异步装配与退出等待；无论正常退出或异常，都按顺序清理应用资源。"""
             try:
                 self.prepare()
                 if headless:

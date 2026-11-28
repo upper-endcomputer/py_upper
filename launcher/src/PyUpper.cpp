@@ -45,13 +45,13 @@
 
 namespace fs = std::filesystem;
 
-#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
-// The entry programs, written by tools/py_upper at packaging time; see
+#ifdef APPBUILD_HAS_EMBEDDED_SOURCE
+// The entry programs, written by tools/appbuild at packaging time; see
 // write_embedded_source(). Declared here, at file scope, because that is where
 // the generated translation unit defines them: a declaration inside the
 // anonymous namespace below would name a different, internal symbol and the
 // link would fail with "has internal linkage but is not defined".
-namespace py_upper_embedded {
+namespace appbuild_embedded {
 extern const char* const kEntry;
 extern const char* const kSmoke;
 extern const char* const kEggLoader;
@@ -59,7 +59,7 @@ extern const unsigned char kEggKeyMasked[];
 extern const unsigned char kEggKeyMask[];
 extern const unsigned int kEggKeyLength;
 extern const char* const kEggBackend;
-}  // namespace py_upper_embedded
+}  // namespace appbuild_embedded
 #endif
 
 namespace {
@@ -87,19 +87,19 @@ constexpr const char* kRuntimeEntrySymbol = "PyConfig_InitIsolatedConfig";
 // Entry file that does not depend on the executable name, so a launcher built
 // without an embedded entry still finds its application after being renamed
 // (PyStand's _pystand_static.int).
-constexpr const char* kStaticEntry = "_py_upper_static.int";
+constexpr const char* kStaticEntry = "_appbuild_static.int";
 
 // The encrypted application archive. It lives in its own directory so the
 // bundle root stays readable, and one name keeps the build and the loader in
 // sync without another setting.
 constexpr const char* kEggDir = "bundle";
-constexpr const char* kEggFile = "py_upper.dat";
+constexpr const char* kEggFile = "appbuild.dat";
 
 // Merged application extensions. They are loaded and registered with CPython's
 // inittab before Py_Initialize, because PyImport_ExtendInittab only accepts
 // built-in modules while the interpreter is still unborn.
-constexpr const char* kBundlesDir = "py_upper_bundles";
-constexpr const char* kBundlesPrefix = "py_upper_bundles/";
+constexpr const char* kBundlesDir = "appbuild_bundles";
+constexpr const char* kBundlesPrefix = "appbuild_bundles/";
 // Keep the existing 16-byte tag prefix for native cache directories.
 constexpr std::size_t kBundleCacheKeyLength = 32;
 
@@ -107,11 +107,12 @@ constexpr std::size_t kBundleCacheKeyLength = 32;
 // binary and a macOS bundle started from Finder has no terminal, so a broken
 // package would otherwise look like nothing happened at all. Non-interactive
 // runs (smoke tests, CI) opt out instead of blocking on a dialog.
-constexpr const char* kNoDialogEnv = "PY_UPPER_NO_DIALOG";
+constexpr const char* kNoDialogEnv = "APPBUILD_NO_DIALOG";
 constexpr unsigned kDialogTimeoutSeconds = 120;
 constexpr std::size_t kMaxDialogChars = 4000;
 
 #ifdef _WIN32
+/** @brief 把 UTF-8 文本转为平台宽字符；用于 CPython 配置和 Windows 路径。 */
 std::wstring W(const std::string& s) {
     int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), (int)s.size(), nullptr, 0);
     if (n <= 0) throw std::runtime_error("UTF-8 conversion failed");
@@ -119,13 +120,20 @@ std::wstring W(const std::string& s) {
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), (int)s.size(), r.data(), n);
     return r;
 }
+/** @brief 从已加载库句柄查找导出符号；返回借用地址，不转移库所有权。 */
 void* symbol(void* h, const char* n) { return reinterpret_cast<void*>(GetProcAddress((HMODULE)h, n)); }
+/** @brief 释放非空动态库句柄；与成功加载操作配对。 */
 void unload(void* h) { if (h) FreeLibrary((HMODULE)h); }
+/** @brief 返回当前进程号，用于区分临时文件与诊断路径。 */
 unsigned long process_id() { return (unsigned long)GetCurrentProcessId(); }
 #else
+/** @brief 把 UTF-8 文本转为平台宽字符；用于 CPython 配置和 Windows 路径。 */
 std::wstring W(const std::string& s) { return std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(s); }
+/** @brief 从已加载库句柄查找导出符号；返回借用地址，不转移库所有权。 */
 void* symbol(void* h, const char* n) { return dlsym(h, n); }
+/** @brief 释放非空动态库句柄；与成功加载操作配对。 */
 void unload(void* h) { if (h) dlclose(h); }
+/** @brief 返回当前进程号，用于区分临时文件与诊断路径。 */
 unsigned long process_id() { return (unsigned long)getpid(); }
 #endif
 
@@ -135,15 +143,20 @@ unsigned long process_id() { return (unsigned long)getpid(); }
 // fs::path(std::string) would mangle a non-ASCII install path. These two helpers
 // are the only sanctioned conversions between the two encodings.
 #ifdef _WIN32
+/** @brief 把 UTF-8 文本转换为本机 filesystem 路径，Windows 保留 Unicode。 */
 fs::path path_from_utf8(const std::string& text) { return fs::u8path(text); }
+/** @brief 把本机路径编码为 UTF-8，供 Python 源码和日志使用。 */
 std::string path_to_utf8(const fs::path& path) { return path.u8string(); }
 #else
+/** @brief 把 UTF-8 文本转换为本机 filesystem 路径，Windows 保留 Unicode。 */
 fs::path path_from_utf8(const std::string& text) { return fs::path(text); }
+/** @brief 把本机路径编码为 UTF-8，供 Python 源码和日志使用。 */
 std::string path_to_utf8(const fs::path& path) { return path.string(); }
 #endif
 
 // Environment paths use the same Unicode representation as the filesystem.
 // The narrow Windows CRT environment uses the local code page, not UTF-8.
+/** @brief 读取路径型环境变量；Windows 使用宽字符 API 避免本地代码页损失。 */
 fs::path environment_path(const char* name) {
 #ifdef _WIN32
     const std::wstring key = W(name);
@@ -165,6 +178,7 @@ fs::path environment_path(const char* name) {
 #endif
 }
 
+/** @brief 设置进程环境变量；Windows 使用 Unicode API。 */
 void set_env(const std::string& name, const std::string& value) {
 #ifdef _WIN32
     SetEnvironmentVariableW(W(name).c_str(), W(value).c_str());
@@ -173,6 +187,7 @@ void set_env(const std::string& name, const std::string& value) {
 #endif
 }
 
+/** @brief 检查是否已有可见标准流，决定是否需要图形错误提示。 */
 bool visible_stream() {
 #ifdef _WIN32
     return _isatty(_fileno(stdout)) != 0 || _isatty(_fileno(stderr)) != 0;
@@ -185,6 +200,7 @@ bool visible_stream() {
 // cmd.exe, PowerShell or a CI shell it joins the parent console so its own
 // diagnostics still reach the caller. Streams that already exist win, because
 // `> run.log` must keep capturing the launcher and the application.
+/** @brief 尝试连接父控制台并保留已继承的有效标准流。 */
 void attach_parent_console() {
 #ifdef _WIN32
     if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
@@ -199,6 +215,7 @@ void attach_parent_console() {
 }
 
 #if !defined(_WIN32) && !defined(__APPLE__)
+/** @brief 为 POSIX shell 参数生成单引号转义文本。 */
 std::string shell_quote(const std::string& text) {
     std::string quoted = "'";
     for (char c : text) {
@@ -209,6 +226,7 @@ std::string shell_quote(const std::string& text) {
 }
 #endif
 
+/** @brief 按平台显示错误；无交互模式或可见标准流时避免阻塞对话框。 */
 void show_error(const std::string& title, const std::string& message) {
 #ifdef _WIN32
     try {
@@ -249,18 +267,21 @@ void show_error(const std::string& title, const std::string& message) {
 #endif
 }
 
+/** @brief 限制错误对话框文本长度；完整错误仍由日志保存。 */
 std::string clip_for_dialog(const std::string& text) {
     if (text.size() <= kMaxDialogChars) return text;
     return text.substr(0, kMaxDialogChars) + "\n... (truncated)";
 }
 
+/** @brief 同时输出错误日志与必要的图形提示。 */
 void report_fatal(const std::string& message) {
-    std::cerr << "py_upper: " << message << "\n";
+    std::cerr << "appbuild: " << message << "\n";
     if (std::getenv(kNoDialogEnv)) return;
     if (visible_stream()) return;
-    show_error("py_upper", clip_for_dialog(message));
+    show_error("appbuild", clip_for_dialog(message));
 }
 
+/** @brief 从操作系统读取实际加载镜像路径，不信任 argv[0]。 */
 fs::path executable_path() {
     // argv[0] may be a bare PATH name or supplied by another launcher. Only
     // the OS knows which image was loaded; every bundle path derives from it.
@@ -290,6 +311,7 @@ fs::path executable_path() {
 // The file layout a launcher built without an embedded entry resolves, which is
 // how a hand-made bundle ships its application. A packaged launcher carries the
 // entry itself and never looks here.
+/** @brief 列出手工构建无嵌入入口时的邻近脚本候选；正式打包使用嵌入入口。 */
 std::vector<fs::path> entry_candidates(const fs::path& dir, const std::string& stem) {
     return {
         dir / (stem + ".int"),
@@ -300,19 +322,21 @@ std::vector<fs::path> entry_candidates(const fs::path& dir, const std::string& s
 }
 
 // The programs the launcher runs. A packaged launcher carries both compiled in
-// (tools/py_upper generates them); a launcher built by hand has neither and
+// (tools/appbuild generates them); a launcher built by hand has neither and
 // resolves its entry from a file next to the executable instead.
+/** @brief 返回编译进 launcher 的入口文本借用指针；无嵌入内容返回空。 */
 const char* embedded_entry() {
-#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
-    return py_upper_embedded::kEntry;
+#ifdef APPBUILD_HAS_EMBEDDED_SOURCE
+    return appbuild_embedded::kEntry;
 #else
     return nullptr;
 #endif
 }
 
+/** @brief 返回嵌入冒烟文本借用指针；无嵌入内容返回空。 */
 const char* embedded_smoke() {
-#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
-    return py_upper_embedded::kSmoke;
+#ifdef APPBUILD_HAS_EMBEDDED_SOURCE
+    return appbuild_embedded::kSmoke;
 #else
     return nullptr;
 #endif
@@ -320,9 +344,10 @@ const char* embedded_smoke() {
 
 // The egg loader and the key it needs. Both are null/empty in a launcher built
 // without an egg, which makes the bootstrap skip installation entirely.
+/** @brief 返回内嵌 loader 借用指针；未启用 egg 时为空。 */
 const char* embedded_egg_loader() {
-#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
-    return py_upper_embedded::kEggLoader;
+#ifdef APPBUILD_HAS_EMBEDDED_SOURCE
+    return appbuild_embedded::kEggLoader;
 #else
     return nullptr;
 #endif
@@ -339,15 +364,16 @@ const char* embedded_egg_loader() {
 // A copy of the key exists in memory while the archive is being read; that is
 // unavoidable for any local decryptor. The point is to stop the two-second
 // static read, not to defeat a debugger.
+/** @brief 组合掩码数组得到调用者持有的十六进制密钥；客户端密钥不具备保密保证。 */
 std::string embedded_egg_key() {
-#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
-    const unsigned int length = py_upper_embedded::kEggKeyLength;
+#ifdef APPBUILD_HAS_EMBEDDED_SOURCE
+    const unsigned int length = appbuild_embedded::kEggKeyLength;
     if (length == 0) return std::string();
     std::string key(length * 2, '\0');
     static const char* digits = "0123456789abcdef";
     for (unsigned int i = 0; i < length; ++i) {
         const unsigned char byte = static_cast<unsigned char>(
-            py_upper_embedded::kEggKeyMasked[i] ^ py_upper_embedded::kEggKeyMask[i]);
+            appbuild_embedded::kEggKeyMasked[i] ^ appbuild_embedded::kEggKeyMask[i]);
         key[i * 2] = digits[byte >> 4];
         key[i * 2 + 1] = digits[byte & 0x0f];
     }
@@ -357,9 +383,10 @@ std::string embedded_egg_key() {
 #endif
 }
 
+/** @brief 返回内嵌加载后端；未提供嵌入源时采用 auto。 */
 const char* embedded_egg_backend() {
-#ifdef PY_UPPER_HAS_EMBEDDED_SOURCE
-    return py_upper_embedded::kEggBackend;
+#ifdef APPBUILD_HAS_EMBEDDED_SOURCE
+    return appbuild_embedded::kEggBackend;
 #else
     return "auto";
 #endif
@@ -368,6 +395,7 @@ const char* embedded_egg_backend() {
 // A crash report has to survive the interpreter: the bootstrap writes the
 // traceback here before the exception unwinds past PyRun_SimpleString, where a
 // SystemExit would otherwise terminate the process before the launcher can act.
+/** @brief 选择按进程区分的临时 traceback 文件路径。 */
 fs::path crash_report_path() {
 #ifdef _WIN32
     std::wstring buffer(MAX_PATH + 1, L'\0');
@@ -377,9 +405,10 @@ fs::path crash_report_path() {
     const char* tmp = std::getenv("TMPDIR");
     fs::path directory = (tmp && *tmp) ? fs::path(tmp) : fs::path("/tmp");
 #endif
-    return directory / ("py_upper-" + std::to_string(process_id()) + ".log");
+    return directory / ("appbuild-" + std::to_string(process_id()) + ".log");
 }
 
+/** @brief 读取文件全部字节为文本；打开失败返回空字符串。 */
 std::string read_text_file(const fs::path& path) {
     std::ifstream stream(path, std::ios::binary);
     if (!stream) return std::string();
@@ -390,6 +419,7 @@ std::string read_text_file(const fs::path& path) {
 // literal cannot work here: it would preserve a backslash that has to escape
 // itself, so a Windows path arrived at Python with every separator doubled.
 // UTF-8 bytes above ASCII pass through unescaped; the program text is UTF-8.
+/** @brief 转义 Python 普通字符串字面量；保留 UTF-8 字节并处理控制字符。 */
 std::string py_quote(const std::string& s) {
     std::string r = "'";
     for (unsigned char c : s) {
@@ -420,7 +450,7 @@ import os
 import sys
 
 
-def _py_upper_streams():
+def _appbuild_streams():
     if sys.stdout is not None and sys.stderr is not None:
         return
     stream = None
@@ -443,7 +473,7 @@ def _py_upper_streams():
         sys.stderr = stream
 
 
-def _py_upper_report():
+def _appbuild_report():
     import traceback
     if ENTRY_SOURCE is not None:
         import linecache
@@ -456,7 +486,7 @@ def _py_upper_report():
         pass
 
 
-def _py_upper_run():
+def _appbuild_run():
     if ENTRY_SOURCE is not None:
         # The entry rides in the launcher, so there is no file to read. The
         # namespace is the one runpy gives a script, and __file__ is a path that
@@ -474,33 +504,34 @@ def _py_upper_run():
         runpy.run_path(ENTRY_SCRIPT, run_name="__main__")
 
 
-def _py_upper_install_egg():
+def _appbuild_install_egg():
     if EGG_LOADER_SOURCE is None:
         return
-    namespace = {"__name__": "py_upper_eggloader", "__file__": EGG_PATH}
-    exec(compile(EGG_LOADER_SOURCE, "<py_upper_eggloader>", "exec"), namespace)
+    namespace = {"__name__": "appbuild_eggloader", "__file__": EGG_PATH}
+    exec(compile(EGG_LOADER_SOURCE, "<appbuild_eggloader>", "exec"), namespace)
     namespace["install_from_launcher"](
-        EGG_PATH, globals().pop("_py_upper_opened_egg"), EGG_CACHE_KEY, EGG_BACKEND)
+        EGG_PATH, globals().pop("_appbuild_opened_egg"), EGG_CACHE_KEY, EGG_BACKEND)
 
 
-_py_upper_streams()
+_appbuild_streams()
 # The launcher exports the bundle paths through SetEnvironmentVariableW on
 # Windows. Python's os.environ is a snapshot of the CRT environment, which that
 # API does not refresh, so publish the same values inside the interpreter too.
 os.environ.update(LAUNCHER_ENV)
 try:
-    _py_upper_install_egg()
-    _py_upper_run()
+    _appbuild_install_egg()
+    _appbuild_run()
 except SystemExit:
     raise
 except BaseException:
-    _py_upper_report()
+    _appbuild_report()
     raise
 )PYUPPER";
 
 // The program the launcher runs arrives from one of two places: compiled into
 // the binary, or as a file next to it. The bootstrap below carries whichever
 // applies as a literal, so the Python side stays one program with one branch.
+/** @brief 生成传递入口、归档和环境的 Python 引导源码；参数均通过字面量编码。 */
 std::string bootstrap(const fs::path& script, const fs::path& entry_file, const char* source,
                       const fs::path& egg_path, const char* egg_loader, const std::string& egg_cache_key,
                       const char* egg_backend, const fs::path& crash_report,
@@ -522,7 +553,7 @@ std::string bootstrap(const fs::path& script, const fs::path& entry_file, const 
     if (source != nullptr) {
         // The generator refuses a payload that carries a triple double quote,
         // which is what keeps this raw literal from ending early
-        // (see write_embedded_source in tools/py_upper/package.py).
+        // (see write_embedded_source in tools/appbuild/package.py).
         text += std::string("ENTRY_SOURCE = r\"\"\"") + source + "\"\"\"\n";
     } else {
         text += "ENTRY_SCRIPT = " + py_quote(path_to_utf8(script)) + "\n";
@@ -530,6 +561,7 @@ std::string bootstrap(const fs::path& script, const fs::path& entry_file, const 
     return text + kBootstrapBody;
 }
 
+/** @brief 检查 CPython 状态并打印错误；非成功状态返回真。 */
 bool failed(PyStatus s) {
     if (s._type != 0) {
         if (s.err_msg) std::cerr << "CPython: " << s.err_msg << "\n";
@@ -555,6 +587,7 @@ struct RuntimeLoad {
 struct RuntimeGuard {
     void* handle{};
     std::vector<void*> bundles;
+    /** @brief 先逆序卸载依赖 libpython 的合并库，再释放 Python runtime。 */
     ~RuntimeGuard() {
         // Bundles depend on libpython, so they leave before it does.
         for (auto it = bundles.rbegin(); it != bundles.rend(); ++it) unload(*it);
@@ -565,34 +598,36 @@ struct RuntimeGuard {
 // Bundles shipped in the egg are extracted here, before CPython exists. The
 // cache is content-addressed by the decrypted archive, so a rebuilt egg gets a
 // fresh directory and a warm start reuses the old one without rewriting it.
+/** @brief 选择用户缓存或显式缓存目录；尚未叠加应用标识。 */
 fs::path unscoped_bundle_cache_root() {
-    const fs::path override = environment_path("PY_UPPER_EGG_CACHE");
+    const fs::path override = environment_path("APPBUILD_EGG_CACHE");
     if (!override.empty()) return override;
 #ifdef _WIN32
     const fs::path local = environment_path("LOCALAPPDATA");
-    if (!local.empty()) return local / "py_upper" / "cache" / "eggs";
+    if (!local.empty()) return local / "appbuild" / "cache" / "eggs";
     const fs::path profile = environment_path("USERPROFILE");
     if (!profile.empty()) {
-        return profile / "AppData" / "Local" / "py_upper" / "cache" / "eggs";
+        return profile / "AppData" / "Local" / "appbuild" / "cache" / "eggs";
     }
 #elif defined(__APPLE__)
     const fs::path home = environment_path("HOME");
-    if (!home.empty()) return home / "Library" / "Caches" / "py_upper" / "eggs";
+    if (!home.empty()) return home / "Library" / "Caches" / "appbuild" / "eggs";
 #else
     const fs::path xdg = environment_path("XDG_CACHE_HOME");
-    if (!xdg.empty()) return xdg / "py_upper" / "eggs";
+    if (!xdg.empty()) return xdg / "appbuild" / "eggs";
     const fs::path home = environment_path("HOME");
-    if (!home.empty()) return home / ".cache" / "py_upper" / "eggs";
+    if (!home.empty()) return home / ".cache" / "appbuild" / "eggs";
 #endif
     std::error_code ec;
     fs::path fallback = fs::temp_directory_path(ec);
     if (ec) fallback = fs::path(".");
-    return fallback / "py_upper" / "eggs";
+    return fallback / "appbuild" / "eggs";
 }
 
+/** @brief 在缓存根追加编译时应用命名空间，避免不同应用互相淘汰。 */
 fs::path bundle_cache_root() {
-#ifdef PY_UPPER_CACHE_NAMESPACE
-    return unscoped_bundle_cache_root() / PY_UPPER_CACHE_NAMESPACE;
+#ifdef APPBUILD_CACHE_NAMESPACE
+    return unscoped_bundle_cache_root() / APPBUILD_CACHE_NAMESPACE;
 #else
     return unscoped_bundle_cache_root();
 #endif
@@ -604,22 +639,28 @@ fs::path bundle_cache_root() {
 struct CacheLease {
 #ifdef _WIN32
     HANDLE handle = INVALID_HANDLE_VALUE;
+    /** @brief 尝试非阻塞共享或独占缓存租约；句柄由本对象析构释放。 */
     CacheLease(const fs::path& path, bool exclusive) {
         handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
             exclusive ? 0 : FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     }
+    /** @brief 判断当前对象是否成功持有租约。 */
     bool valid() const { return handle != INVALID_HANDLE_VALUE; }
+    /** @brief 释放持有的文件句柄或锁，允许后续缓存清理。 */
     ~CacheLease() { if (valid()) CloseHandle(handle); }
 #else
     int handle = -1;
+    /** @brief 尝试非阻塞共享或独占缓存租约；句柄由本对象析构释放。 */
     CacheLease(const fs::path& path, bool exclusive) {
         handle = open(path.c_str(), O_CREAT | O_RDWR, 0600);
         if (handle >= 0 && flock(handle, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0) {
             close(handle); handle = -1;
         }
     }
+    /** @brief 判断当前对象是否成功持有租约。 */
     bool valid() const { return handle >= 0; }
+    /** @brief 释放持有的文件句柄或锁，允许后续缓存清理。 */
     ~CacheLease() { if (valid()) close(handle); }
 #endif
 };
@@ -634,6 +675,7 @@ std::vector<std::unique_ptr<CacheLease>> active_cache_leases;
 // which turns an unwritable cache into an application that will not start at
 // all. The Python loader already falls back to a temporary directory in that
 // case; this is the same rule on the C++ side.
+/** @brief 创建缓存根并实际写入探针，避免只检查目录存在性。 */
 bool cache_root_usable(const fs::path& root) {
     std::error_code ec;
     if (root.empty()) return false;
@@ -655,13 +697,14 @@ bool cache_root_usable(const fs::path& root) {
 
 // The cache root that will actually be used: the preferred one when writable,
 // otherwise a per-process directory under the system temp dir.
+/** @brief 优先使用可写用户缓存；不可写时尝试进程独占临时目录。 */
 fs::path usable_cache_root() {
     const fs::path preferred = bundle_cache_root();
     if (cache_root_usable(preferred)) return preferred;
     std::error_code ec;
     fs::path temp = fs::temp_directory_path(ec);
     if (ec) temp = fs::path(".");
-    const fs::path fallback = temp / ("py_upper-" + std::to_string(process_id()));
+    const fs::path fallback = temp / ("appbuild-" + std::to_string(process_id()));
     if (cache_root_usable(fallback)) return fallback;
     return preferred;
 }
@@ -674,6 +717,7 @@ fs::path usable_cache_root() {
 // Best effort: another running instance may still be using an older entry, and
 // a leftover directory only costs disk space.
 // 除当前版本外保留最近版本；遇到活跃租约时允许暂时超过容量，优先保护运行实例。
+/** @brief 保留当前与最近版本；只有取得独占租约才能删除旧缓存。 */
 void prune_bundle_cache(const fs::path& base, const std::string& keep) {
     std::error_code ec;
     std::vector<std::pair<fs::file_time_type, fs::path>> entries;
@@ -697,6 +741,7 @@ void prune_bundle_cache(const fs::path& base, const std::string& keep) {
     }
 }
 
+/** @brief 持有使用期租约并原子发布完整合并库缓存；空字符串表示成功，root 接收目录。 */
 std::string publish_bundle_cache(const std::vector<pyupper::EggBundleFile>& files,
                                  const std::string& cache_key, fs::path& root) {
     std::error_code ec;
@@ -790,6 +835,7 @@ std::string publish_bundle_cache(const std::vector<pyupper::EggBundleFile>& file
 // Load every merged bundle and hand its module table to CPython. This has to
 // run before Py_InitializeFromConfig: after initialization the inittab is
 // frozen and the modules would stay invisible to the import system.
+/** @brief 在解释器初始化前加载全部合并库并注册模块；句柄交给 RuntimeGuard。 */
 std::string load_module_bundles(const fs::path& site, const pyupper::EggContents& egg, RuntimeGuard& guard) {
     fs::path directory = site / kBundlesDir;
     std::error_code ec;
@@ -834,9 +880,9 @@ std::string load_module_bundles(const fs::path& site, const pyupper::EggContents
         }
 #endif
         guard.bundles.push_back(handle);
-        auto register_modules = (RegisterModules)symbol(handle, "py_upper_register_modules");
+        auto register_modules = (RegisterModules)symbol(handle, "appbuild_register_modules");
         if (!register_modules) {
-            return "Module bundle " + path_to_utf8(path) + " does not export py_upper_register_modules";
+            return "Module bundle " + path_to_utf8(path) + " does not export appbuild_register_modules";
         }
         if (register_modules() != 0) {
             return "Registering modules from " + path_to_utf8(path) + " failed";
@@ -847,6 +893,7 @@ std::string load_module_bundles(const fs::path& site, const pyupper::EggContents
 
 // Transfer ownership to the interpreter. The moved native buffer is freed
 // on return and the bootstrap consumes the Python global before the entry.
+/** @brief 将已认证 ZIP 转成 Python bytes 存入 __main__；递减本地新引用，模块持有后续所有权。 */
 bool publish_egg_payload(void* handle, std::vector<std::uint8_t> payload) {
     auto add_module = reinterpret_cast<decltype(&PyImport_AddModule)>(
         symbol(handle, "PyImport_AddModule"));
@@ -861,11 +908,12 @@ bool publish_egg_payload(void* handle, std::vector<std::uint8_t> payload) {
     PyObject* data = make_bytes(reinterpret_cast<const char*>(payload.data()),
                                 static_cast<Py_ssize_t>(payload.size()));
     if (!data) return false;
-    const int result = set_attr(main, "_py_upper_opened_egg", data);
+    const int result = set_attr(main, "_appbuild_opened_egg", data);
     decref(data);
     return result == 0;
 }
 
+/** @brief 加载包内目标 libpython 并定位标准库；失败详情随结果返回。 */
 RuntimeLoad load_python(const fs::path& home) {
     RuntimeLoad r;
     r.python_root = home;
@@ -964,12 +1012,13 @@ RuntimeLoad load_python(const fs::path& home) {
 }  // namespace
 
 // 初始化顺序约束：解包并注册内建模块必须先于 CPython 初始化，不能挪入 Python 入口。
+/** @brief 初始化隔离的内嵌 Python、安装归档并执行应用；返回应用或启动失败码，退出时释放库。 */
 int PyUpper::run(const std::vector<std::string>& argv) {
     auto previous_phase = std::chrono::steady_clock::now();
-    const bool timing = std::getenv("PY_UPPER_STARTUP_TIMING") != nullptr;
+    const bool timing = std::getenv("APPBUILD_STARTUP_TIMING") != nullptr;
     auto phase = [&](const char* name) {
         const auto now = std::chrono::steady_clock::now();
-        if (timing) std::cerr << "PY_UPPER_TIMING " << name << " "
+        if (timing) std::cerr << "APPBUILD_TIMING " << name << " "
             << std::chrono::duration<double, std::milli>(now - previous_phase).count() << " ms\n";
         previous_phase = now;
     };
@@ -1008,7 +1057,7 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         const fs::path egg = entry_dir / kEggDir / kEggFile;
         const char* egg_loader = embedded_egg_loader();
 
-        const char* smoke = std::getenv("PY_UPPER_SMOKE");
+        const char* smoke = std::getenv("APPBUILD_SMOKE");
         const bool smoke_mode = smoke && std::string(smoke) == "1";
 
         // The program compiled into the launcher wins over a file next to it: a
@@ -1042,27 +1091,27 @@ int PyUpper::run(const std::vector<std::string>& argv) {
 
         // The bundle layout is exported so the application never has to guess its
         // own location by counting parent directories (PyStand exports
-        // PYSTAND_HOME for the same reason).
+        // APPBUILD_HOME for the same reason).
         std::vector<std::pair<std::string, std::string>> exported_env;
         auto export_env = [&](const std::string& name, const std::string& value) {
             set_env(name, value);
             exported_env.emplace_back(name, value);
         };
-        export_env("PY_UPPER_HOME", path_to_utf8(entry_dir));
-        export_env("PY_UPPER_RUNTIME", path_to_utf8(home));
-        export_env("PY_UPPER_SITE_PACKAGES", path_to_utf8(site));
+        export_env("APPBUILD_HOME", path_to_utf8(entry_dir));
+        export_env("APPBUILD_RUNTIME", path_to_utf8(home));
+        export_env("APPBUILD_SITE_PACKAGES", path_to_utf8(site));
         // Exported only when the entry really is a file. A packaged launcher
         // carries its entry, and naming a path that does not exist would be
         // worse than saying nothing.
-        if (!script.empty()) export_env("PY_UPPER_SCRIPT", path_to_utf8(script));
-        if (egg_loader) export_env("PY_UPPER_EGG", path_to_utf8(egg));
-        export_env("PY_UPPER_EXECUTABLE", exe);
-#ifdef PY_UPPER_APP_NAME
-        export_env("PY_UPPER_APP_NAME", PY_UPPER_APP_NAME);
+        if (!script.empty()) export_env("APPBUILD_SCRIPT", path_to_utf8(script));
+        if (egg_loader) export_env("APPBUILD_EGG", path_to_utf8(egg));
+        export_env("APPBUILD_EXECUTABLE", exe);
+#ifdef APPBUILD_APP_NAME
+        export_env("APPBUILD_APP_NAME", APPBUILD_APP_NAME);
 #else
         // A launcher built by hand has no compiled-in name; the executable stem
         // is the best answer available.
-        export_env("PY_UPPER_APP_NAME", stem);
+        export_env("APPBUILD_APP_NAME", stem);
 #endif
         std::string launcher_env = "LAUNCHER_ENV = {\n";
         for (const auto& entry : exported_env) {
@@ -1070,8 +1119,8 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         }
         launcher_env += "}\n";
 
-#ifdef PY_UPPER_CACHE_NAMESPACE
-        launcher_env += "__import__('os').environ['PY_UPPER_CACHE_NAMESPACE'] = '" PY_UPPER_CACHE_NAMESPACE "'\n";
+#ifdef APPBUILD_CACHE_NAMESPACE
+        launcher_env += "__import__('os').environ['APPBUILD_CACHE_NAMESPACE'] = '" APPBUILD_CACHE_NAMESPACE "'\n";
 #endif
         RuntimeLoad loaded = load_python(home);
         runtime.handle = loaded.handle;

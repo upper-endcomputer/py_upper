@@ -1,0 +1,304 @@
+# 中文维护说明：验证多模块合并及注册符号；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
+"""Native bundle grouping, symbol rewriting and layout checks."""
+from __future__ import annotations
+
+import hashlib
+import shutil
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from appbuild import python_build, verify
+from appbuild.config import TARGETS
+from appbuild.egg import EggConfig, pack_egg
+from appbuild.toolchain import Toolchain
+
+
+def _source(app_root: Path, relative: str) -> Path:
+    """创建给定模块路径的应用源文件。"""
+    path = app_root / "src" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x = 1\n", encoding="utf-8")
+    return path
+
+
+def _cython_c(directory: Path, name: str, basename: str) -> Path:
+    """生成包含指定初始化符号的最小 Cython C 测试文件。"""
+    path = directory / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"/* generated */\n"
+        f"PyObject* PyInit_{basename}(void) {{ return 0; }}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize(("mode", "expected"), [
+    ("directory", {"_root": ["main"], "pkg": ["pkg.a", "pkg.sub.b"], "utils": ["utils.paths"]}),
+    ("all", {"_all": ["main", "pkg.a", "pkg.sub.b", "utils.paths"]}),
+])
+def test_merged_groups_leave_package_markers_out(tmp_path, monkeypatch, mode, expected):
+    """验证合并分组只收录叶子模块，保留包初始化标记。"""
+    app_root = tmp_path / "app"
+    monkeypatch.setattr(python_build, "APP", app_root)
+    sources = [
+        _source(app_root, "main.py"),
+        _source(app_root, "pkg/__init__.py"),
+        _source(app_root, "pkg/a.py"),
+        _source(app_root, "pkg/sub/__init__.py"),
+        _source(app_root, "pkg/sub/b.py"),
+        _source(app_root, "utils/__init__.py"),
+        _source(app_root, "utils/paths.py"),
+    ]
+
+    groups = python_build.merged_groups(sources, mode)
+
+    assert {group: [python_build.module_name(path) for path in paths]
+            for group, paths in groups.items()} == expected
+    assert python_build.merged_groups([source for source in sources if source.name == "__init__.py"], mode) == {}
+
+
+def test_entry_point_rewrite_is_unique_and_rejects_ambiguous_units(tmp_path, monkeypatch):
+    """验证初始化符号重命名唯一且拒绝包含歧义入口的单元。"""
+    app_root = tmp_path / "app"
+    source = _source(app_root, "demo.py")
+    monkeypatch.setattr(python_build, "APP", app_root)
+    text = "PyObject* PyInit_demo(void) { return 0; }\n"
+
+    renamed = python_build._renamed_translation_unit(text, "PyInit_appbuild_demo_abc", source)
+
+    assert "PyInit_demo" not in renamed
+    assert "PyInit_appbuild_demo_abc" in renamed
+    with pytest.raises(RuntimeError, match="no PyInit"):
+        python_build._renamed_translation_unit("/* empty */\n", "PyInit_x", source)
+    with pytest.raises(RuntimeError, match="more than one"):
+        python_build._renamed_translation_unit(
+            "PyObject* PyInit_a(void);\nPyObject* PyInit_b(void);\n", "PyInit_x", source
+        )
+
+
+def test_registration_table_names_every_module(tmp_path, monkeypatch):
+    """验证每个合并模块有唯一初始化符号并登记到内建模块表。"""
+    app_root = tmp_path / "app"
+    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
+    first = _source(app_root, "pkg/shared.py")
+    second = _source(app_root, "utils/shared.py")
+    generated = {
+        first: _cython_c(tmp_path / "gen", "pkg/shared.c", "shared"),
+        second: _cython_c(tmp_path / "gen", "utils/shared.c", "shared"),
+    }
+
+    inputs, register = python_build.prepare_merged_group(TARGETS["linux-x86_64"], "_all", [first, second], generated)
+
+    assert len(inputs) == 2
+    text = register.read_text(encoding="utf-8")
+    names = ["pkg.shared", "utils.shared"]
+    symbols = [python_build.merged_init_symbol(name) for name in names]
+    assert len(set(symbols)) == 2
+    for name, symbol, path in zip(names, symbols, inputs):
+        assert f'(char*)"{name}", {symbol}' in text
+        rewritten = path.read_text(encoding="utf-8")
+        assert symbol + "(" in rewritten
+        assert "PyInit_shared(" not in rewritten
+    assert "PyImport_ExtendInittab" in text
+    assert "appbuild_register_modules" in text
+
+
+def test_windows_merged_setup_exports_the_registration_entry_point(tmp_path):
+    # MSVC's build_ext appends /EXPORT:PyInit_<extension name> unless the command
+    # overrides get_export_symbols. A merged bundle has no such entry point: its
+    # translation units were renamed and register.c exports the launcher symbol.
+    # Without the override the Windows link fails with LNK2001.
+    """验证 Windows 合并扩展只导出统一注册入口。"""
+    script = python_build.windows_merged_setup_script(
+        tmp_path / "include",
+        tmp_path / "libs",
+        ["python313"],
+        {"pkg": [tmp_path / "0000_a.c", tmp_path / "register.c"]},
+        ".cp313-win_amd64.pyd",
+    )
+
+    assert "def get_export_symbols(self, ext):" in script
+    assert "return ['appbuild_register_modules']" in script
+    assert "PyInit_appbuild" not in script
+
+
+def test_merged_compile_links_every_translation_unit_once(tmp_path, monkeypatch):
+    """验证所有 C 单元只链接一次，重复构建命中缓存。"""
+    target = TARGETS["linux-x86_64"]
+    include = tmp_path / "sdk" / "include"
+    include.mkdir(parents=True)
+    target_python = SimpleNamespace(include_dir=include, extension_suffix=".cpython-313-x86_64-linux-gnu.so")
+    toolchain = Toolchain(target, {}, "gcc", "g++", "gcc", None)
+    app_root = tmp_path / "app"
+    first = _source(app_root, "pkg/a.py")
+    second = _source(app_root, "pkg/b.py")
+    generated = {
+        first: _cython_c(tmp_path / "gen", "a.c", "a"),
+        second: _cython_c(tmp_path / "gen", "b.c", "b"),
+    }
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        """记录链接命令并创建合并扩展文件。"""
+        commands.append([str(token) for token in cmd])
+        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"")
+
+    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(python_build, "BUILD", tmp_path / "build")
+    monkeypatch.setattr(python_build, "resolve_target_python", lambda value: target_python)
+    monkeypatch.setattr(python_build, "resolve_toolchain", lambda value: toolchain)
+    monkeypatch.setattr(python_build.subprocess, "run", fake_run)
+
+    outputs = python_build.compile_merged_unix_extensions(target, {"pkg": [first, second]}, generated)
+    second_run = python_build.compile_merged_unix_extensions(target, {"pkg": [first, second]}, generated)
+
+    assert outputs == second_run
+    assert [path.name for path in outputs] == ["appbuild_pkg.cpython-313-x86_64-linux-gnu.so"]
+    assert len(commands) == 1
+    cmd = commands[0]
+    linked = [Path(token).name for token in cmd if token.endswith(".c")]
+    assert linked == ["0000_pkg_a.c", "0001_pkg_b.c", "register.c"]
+    assert outputs[0].parent.name == python_build.BUNDLE_DIR
+
+
+@pytest.mark.parametrize(("mode", "group"), [("directory", "pkg"), ("all", "_all")])
+def test_merge_mode_cythonizes_only_leaves(tmp_path, monkeypatch, mode, group):
+    """验证合并构建只翻译叶子模块，不编译包标记文件。"""
+    app_root = tmp_path / "app"
+    marker = _source(app_root, "pkg/__init__.py")
+    leaf = _source(app_root, "pkg/a.py")
+    generated = {leaf: _cython_c(tmp_path / "gen", "a.c", "a")}
+    seen: dict[str, object] = {}
+
+    def fake_cython(sources, host):
+        """记录待翻译源码并返回预设的 C 输出映射。"""
+        seen["sources"] = list(sources)
+        return generated
+
+    def fake_merged(target, groups, generated_arg, host):
+        """记录合并分组而不执行真实编译。"""
+        seen["groups"] = groups
+        return []
+
+    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(python_build, "cython_merge_mode", lambda: mode)
+    monkeypatch.setattr(python_build, "require_local_python", lambda: Path("/fake/python3"))
+    monkeypatch.setattr(python_build, "cythonize_to_c", fake_cython)
+    monkeypatch.setattr(python_build, "build_merged_extensions", fake_merged)
+
+    assert python_build.build_target_extensions(TARGETS["linux-x86_64"], [marker, leaf]) == []
+    assert seen["sources"] == [leaf]
+    assert seen["groups"] == {group: [leaf]}
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="no C++ compiler")
+def test_native_egg_reader_matches_the_python_egg_format(tmp_path):
+    """编译 C++ 读取探针，验证与 Python 归档格式互通且拒绝篡改。"""
+    from appbuild.egg_loader import open_egg
+
+    config = EggConfig()
+    relative = "appbuild_bundles/appbuild_pkg.so"
+    payload = b"\x7fELF" + bytes(range(256)) * 4
+    site = tmp_path / "site"
+    (site / "pkg").mkdir(parents=True)
+    (site / "pkg" / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (site / relative).parent.mkdir(parents=True)
+    (site / relative).write_bytes(payload)
+    egg = pack_egg(site, tmp_path / "appbuild.dat", ["pkg/mod.py", relative], config)
+
+    source = tmp_path / "probe.cpp"
+    source.write_text(
+        '#include "egg_bundles.h"\n'
+        '#include <iostream>\n'
+        'int main(int argc, char** argv) {\n'
+        '    std::vector<pyupper::EggBundleFile> files;\n'
+        '    auto egg = pyupper::read_egg(argv[1], argv[2]);\n'
+        '    std::string error = egg.error;\n'
+        '    if (!egg.ok || !pyupper::read_bundles_from_payload(egg.payload, "appbuild_bundles/", files, error)) {\n'
+        '        std::cout << "ERROR " << error << "\\n";\n'
+        '        return 1;\n'
+        '    }\n'
+        '    std::cout << "KEY " << egg.cache_key << "\\n";\n'
+        '    std::cout << "PAYLOAD " << egg.payload.size() << "\\n";\n'
+        '    for (const auto& file : files) {\n'
+        '        std::cout << "FILE " << file.name << " " << file.data.size() << "\\n";\n'
+        '    }\n'
+        '    return 0;\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    include = Path(__file__).parents[2] / "launcher" / "src"
+    binary = tmp_path / "probe"
+    subprocess.run(
+        [shutil.which("c++"), "-std=c++17", "-I" + str(include), str(source), "-o", str(binary)],
+        check=True,
+        capture_output=True,
+    )
+
+    result = subprocess.run([str(binary), str(egg), config.key_hex], check=True, capture_output=True, text=True)
+    # The launcher's cache key is the authentication tag, so a rebuilt archive
+    # gets a fresh cache directory instead of reusing a stale one.
+    plaintext, digest = open_egg(egg.read_bytes(), bytes.fromhex(config.key_hex))
+    assert result.stdout.splitlines()[:2] == [f"KEY {digest}", f"PAYLOAD {len(plaintext)}"]
+    assert f"FILE {relative} {len(payload)}" in result.stdout
+    assert "pkg/mod.py" not in result.stdout
+
+    bad = subprocess.run([str(binary), str(egg), "00" * 16], capture_output=True, text=True)
+    assert bad.returncode == 1
+    assert "authentication failed" in bad.stdout
+
+
+@pytest.mark.parametrize(("mode", "group"), [("directory", "pkg"), ("all", "_all")])
+def test_merged_layout_keeps_markers_and_reads_bundles_from_egg(tmp_path, monkeypatch, mode, group):
+    """验证合并布局保留包标记并能从归档识别原生 bundle。"""
+    app_root = tmp_path / "app"
+    marker = _source(app_root, "pkg/__init__.py")
+    leaf = _source(app_root, "pkg/a.py")
+    site = tmp_path / "site-packages"
+    (site / "pkg").mkdir(parents=True)
+    (site / "pkg" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    relative = f"appbuild_bundles/appbuild_{group}.cp313-darwin.so"
+    bundle = site / relative
+    bundle.parent.mkdir(parents=True)
+    bundle.write_bytes(b"bundle")
+
+    monkeypatch.setattr(python_build, "APP", app_root)
+    monkeypatch.setattr(verify, "APP", app_root)
+    monkeypatch.setattr(verify, "cython_merge_mode", lambda: mode)
+    monkeypatch.setattr(verify, "runtime_spec", lambda target: SimpleNamespace(major_minor="3.13", abi_tag="cp313"))
+    monkeypatch.setattr(verify, "target_extension_suffix", lambda target, major, abi: ".cp313-darwin.so")
+    monkeypatch.setattr(verify, "verify_arch", lambda path, target: None)
+
+    # A build without an egg still has a loose bundle, and verification accepts it.
+    target = TARGETS["macos-arm64"]
+    checks = verify._checks_for_application(site, [marker, leaf], target)
+    assert all(ok for ok, _ in checks), checks
+
+    config = EggConfig()
+    egg = pack_egg(site, tmp_path / "bundle" / "appbuild.dat", ["pkg/__init__.py", relative], config)
+    (site / "pkg" / "__init__.py").unlink()
+    bundle.unlink()
+    bundle.parent.rmdir()
+    checks = verify._checks_for_application(
+        site, [marker, leaf], target, egg_input=(egg, config.key_hex),
+    )
+    assert all(ok for ok, _ in checks), checks
+    assert any("merged bundle stored" in label for ok, label in checks if ok)
+
+
+def test_launcher_registers_bundles_before_interpreter_initialization():
+    """检查启动器先注册内建模块，再初始化解释器并移交归档。"""
+    launcher = Path(__file__).parents[2] / "launcher" / "src" / "PyUpper.cpp"
+    text = launcher.read_text(encoding="utf-8")
+    assert "appbuild_bundles" in text
+    assert "appbuild_register_modules" in text
+    native = text.index("load_module_bundles(site, egg_contents, runtime)")
+    init = text.index("PyStatus status = init(&config)")
+    handoff = text.index("publish_egg_payload(loaded.handle")
+    assert native < init < handoff < text.index("run_simple(source.c_str())")

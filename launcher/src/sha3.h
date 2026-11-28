@@ -26,20 +26,24 @@
 
 namespace pyupper {
 
+/** @brief 对 64 位值循环左移；调用点保证 bits 在 1 到 63 之间。 */
 inline std::uint64_t rotl64(std::uint64_t value, int bits) {
     return (value << bits) | (value >> (64 - bits));
 }
 
+/** @brief 从至少 8 字节缓冲区读取一条 lane；当前实现要求小端宿主，不要求地址对齐。 */
 inline std::uint64_t load_le64(const std::uint8_t* data) {
     std::uint64_t value = 0;
     std::memcpy(&value, data, sizeof(value));
     return value;
 }
 
+/** @brief 向至少 8 字节缓冲区写一条 lane；当前实现要求小端宿主。 */
 inline void store_le64(std::uint8_t* data, std::uint64_t value) {
     std::memcpy(data, &value, sizeof(value));
 }
 
+/** @brief 原地执行 24 轮 Keccak-f 置换；state 必须提供 25 条 64 位 lane。 */
 inline void keccak_f1600(std::uint64_t state[25]) {
     static const std::uint64_t round_constants[24] = {
         0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL,
@@ -90,8 +94,10 @@ inline void keccak_f1600(std::uint64_t state[25]) {
 
 class Shake256 {
 public:
+    /** @brief 初始化全零海绵状态，进入吸收阶段。 */
     Shake256() { std::memset(state_, 0, sizeof(state_)); }
 
+    /** @brief 吸收 length 字节；仅在 finalize 前调用，data 在调用期间有效。 */
     void absorb(const std::uint8_t* data, std::size_t length) {
         // Fill the current partial lane first, so the bulk of the input moves
         // eight bytes per iteration.
@@ -125,6 +131,7 @@ public:
         }
     }
 
+    /** @brief 写入 SHAKE 域分离及填充并切换到挤出阶段；每个实例调用一次。 */
     void finalize() {
         state_[position_ / 8] ^= static_cast<std::uint64_t>(0x1f) << (8 * (position_ % 8));
         state_[(kRate - 1) / 8] ^= static_cast<std::uint64_t>(0x80) << (8 * ((kRate - 1) % 8));
@@ -133,6 +140,7 @@ public:
     }
 
     // XORs the squeezed stream into `output`, which is what decryption wants.
+    /** @brief 将 length 字节输出流异或到可写缓冲区；必须已 finalize。 */
     void squeeze_xor(std::uint8_t* output, std::size_t length) {
         while (length > 0 && (position_ % 8) != 0) {
             if (position_ == kRate) {
@@ -167,6 +175,7 @@ public:
     }
 
     // Writes `length` bytes of the squeezed stream, for a plain digest.
+    /** @brief 写出 length 字节摘要，覆盖目标缓冲区；必须已 finalize。 */
     void squeeze(std::uint8_t* output, std::size_t length) {
         std::memset(output, 0, length);
         squeeze_xor(output, length);
@@ -178,6 +187,7 @@ private:
     std::size_t position_ = 0;
 };
 
+/** @brief 以给定 key 为输入产生字节流并原地异或 data；所有长度单位为字节。 */
 inline void shake256_xor(std::uint8_t* data, std::size_t length,
                          const std::uint8_t* key, std::size_t key_length) {
     Shake256 shake;
@@ -186,6 +196,7 @@ inline void shake256_xor(std::uint8_t* data, std::size_t length,
     shake.squeeze_xor(data, length);
 }
 
+/** @brief 依次吸收两段输入并写出指定字节数摘要；输入输出缓冲区由调用者持有。 */
 inline void shake256_digest(const std::uint8_t* first, std::size_t first_length,
                             const std::uint8_t* second, std::size_t second_length,
                             std::uint8_t* output, std::size_t output_length) {

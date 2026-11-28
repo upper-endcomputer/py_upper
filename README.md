@@ -42,10 +42,10 @@ CI 的构建与 headless 检查不代替正式签名、公证、真实桌面或�
 python -m pytest -q
 # 需要本机编译器，显式启用真实构建 E2E
 # Linux/macOS:
-PY_UPPER_E2E=1 python -m pytest tests/tools/test_e2e_local.py -q
+APPBUILD_E2E=1 python -m pytest app/tests/test_e2e_local.py -q
 ```
 
-工具回归位于 `tests/tools/`，示例回归位于 `app/tests/`。同一工作区构建使用互斥锁；多应用并行需要独立工作区。候选包通过检查后才替换旧包，发布不保证断电事务恢复。
+全部回归统一位于 `app/tests/`，公共 fixture 位于其中的 `conftest.py`。替换 app 时保留构建器回归。构建实现包为中性名称 `tools/appbuild`；配置统一使用 `[tool.appbuild]`，环境变量使用 `APPBUILD_*`，不提供旧版本兼容层。同一工作区构建使用互斥锁；多应用并行需要独立工作区。候选包通过检查后才替换旧包，发布不保证断电事务恢复。
 
 ## 文档入口
 

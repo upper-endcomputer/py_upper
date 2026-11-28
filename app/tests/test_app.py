@@ -10,12 +10,15 @@ from application import run_application
 
 
 def test_application(capsys):
+    """验证默认命令行入口输出项目问候语。"""
     run_application()
     assert "py_upper" in capsys.readouterr().out
 
 
 def test_resource_root_prefers_the_launcher_exported_home(monkeypatch, tmp_path):
-    """The launcher knows the bundle root; counting parent directories guesses."""
+    """验证资源目录优先采用启动器导出的应用目录，开发态回到源码资源目录。
+
+    The launcher knows the bundle root; counting parent directories guesses."""
     from utils import paths
 
     monkeypatch.delenv(paths.BUNDLE_HOME_ENV, raising=False)
@@ -28,8 +31,10 @@ def test_resource_root_prefers_the_launcher_exported_home(monkeypatch, tmp_path)
 
 
 def test_app_name_agrees_with_the_packaging_configuration(monkeypatch):
-    """The name is written once, in app/pyproject.toml, and read from there."""
-    from py_upper.config import app_name as packaged_app_name
+    """验证应用显示名与打包配置一致，并支持项目自定义名称。
+
+    The name is written once, in app/pyproject.toml, and read from there."""
+    from appbuild.config import app_name as packaged_app_name
     from utils import paths
 
     monkeypatch.delenv(paths.APP_NAME_ENV, raising=False)
@@ -41,7 +46,9 @@ def test_app_name_agrees_with_the_packaging_configuration(monkeypatch):
 
 
 def test_paths_survive_the_builtin_file_a_merged_bundle_reports(monkeypatch, tmp_path):
-    """A merged bundle is a built-in module: __file__ is "built-in", not a path."""
+    """验证合并扩展的内建模块路径不会被误当成源码路径。
+
+    A merged bundle is a built-in module: __file__ is "built-in", not a path."""
     from utils import paths
 
     monkeypatch.delenv(paths.BUNDLE_HOME_ENV, raising=False)
@@ -57,12 +64,13 @@ def test_paths_survive_the_builtin_file_a_merged_bundle_reports(monkeypatch, tmp
 
 
 def test_declared_app_name_ignores_the_project_section(tmp_path, monkeypatch):
+    """验证产品名称读取专用配置，而不误用发行包名称。"""
     from utils import paths
 
     project = tmp_path / "app" / "pyproject.toml"
     project.parent.mkdir(parents=True)
     project.write_text(
-        '[project]\nname = "not-the-app-name"\n\n[tool.py_upper.app]\nname = "Real App"  # inline comment\n',
+        '[project]\nname = "not-the-app-name"\n\n[tool.appbuild.app]\nname = "Real App"  # inline comment\n',
         encoding="utf-8",
     )
     module = project.parent / "src" / "utils" / "paths.py"
@@ -74,7 +82,9 @@ def test_declared_app_name_ignores_the_project_section(tmp_path, monkeypatch):
 
 
 def test_gui_opens_a_window_headlessly(monkeypatch, capsys):
-    """The Qt window is the real check that a bundled PySide6 payload works.
+    """运行无显示 GUI 入口，验证窗口初始化成功并正常退出。
+
+    The Qt window is the real check that a bundled PySide6 payload works.
 
     The development interpreter may not have PySide6 installed, so this is
     skipped there; the packaged application exercises the same code path in the
@@ -84,7 +94,7 @@ def test_gui_opens_a_window_headlessly(monkeypatch, capsys):
 
     from application import run_gui
 
-    monkeypatch.setenv("PY_UPPER_HEADLESS", "1")
+    monkeypatch.setenv("APPBUILD_HEADLESS", "1")
     monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
 
     assert run_gui() == 0

@@ -19,10 +19,11 @@ from utils.paths import app_name
 
 # Set by the build tool's smoke step and by CI: build the real window, pump the
 # event loop once and exit instead of blocking on a window server.
-HEADLESS_ENV = "PY_UPPER_HEADLESS"
+HEADLESS_ENV = "APPBUILD_HEADLESS"
 
 
 def run_application() -> None:
+    """输出示例服务的问候语，供命令行入口和基础回归验证。"""
     print(GreetingService().message())
 
 
@@ -30,6 +31,7 @@ class PyUpperApplication(MVVMQtApplication):
     """这个应用的装配：谁是谁的依赖，全在这里说清楚"""
 
     def initialize_viewmodels(self) -> None:
+        """装配应用配置、业务模型与服务，并在容器内注册主 ViewModel。"""
         application = self.mvvm_app
         # 数据来自配置的读取只发生在装配处；model 只持有值。
         application.model.app_name = app_name()
@@ -44,6 +46,7 @@ class PyUpperApplication(MVVMQtApplication):
         )
 
     def initialize_views(self) -> None:
+        """为同一个主 ViewModel 注册关于窗口和主窗口；关于窗口先注册以供主窗口引用。"""
         application = self.mvvm_app
         viewmodel = application.get_viewmodel("main")
         # 「关于」窗口由主窗口按 about_visible 开关，所以先注册它。
@@ -52,7 +55,9 @@ class PyUpperApplication(MVVMQtApplication):
 
 
 def run_gui() -> int:
-    """Open the Qt main window.
+    """创建真实 Qt 对象图并运行；headless 处理一轮事件后退出，不验证桌面首帧。
+
+    Open the Qt main window.
 
     This is the real Qt check for a packaged application: it builds the whole
     MVVM object graph on top of the detected Qt binding, so a broken Qt payload
@@ -73,6 +78,8 @@ def run_gui() -> int:
 
 
 def main() -> int:
-    """Packaged application entry point."""
+    """运行命令行示例和 GUI，返回事件循环退出码。
+
+    Packaged application entry point."""
     run_application()
     return run_gui()

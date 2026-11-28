@@ -4,29 +4,29 @@ project(PyUpperLauncher LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(PY_UPPER_LAUNCHER_CONSOLE "Build a console-subsystem launcher for debugging the packaged application." OFF)
+option(APPBUILD_LAUNCHER_CONSOLE "Build a console-subsystem launcher for debugging the packaged application." OFF)
 
-if(NOT PYSTAND_PYTHON_INCLUDE)
-  message(FATAL_ERROR "PYSTAND_PYTHON_INCLUDE is required (PBS target SDK include directory)")
+if(NOT APPBUILD_PYTHON_INCLUDE)
+  message(FATAL_ERROR "APPBUILD_PYTHON_INCLUDE is required (PBS target SDK include directory)")
 endif()
 
 add_executable(PyUpper src/main.cpp src/PyUpper.cpp src/PyUpper.h)
-target_include_directories(PyUpper PRIVATE "${PYSTAND_PYTHON_INCLUDE}")
+target_include_directories(PyUpper PRIVATE "${APPBUILD_PYTHON_INCLUDE}")
 
-if(PY_UPPER_APP_NAME)
+if(APPBUILD_APP_NAME)
   # The application name is compiled in at packaging time. The launcher cannot
   # read it from its own filename: the executable is allowed to be renamed.
-  target_compile_definitions(PyUpper PRIVATE PY_UPPER_APP_NAME="${PY_UPPER_APP_NAME}")
+  target_compile_definitions(PyUpper PRIVATE APPBUILD_APP_NAME="${APPBUILD_APP_NAME}")
 endif()
 
-if(PY_UPPER_EMBEDDED_SOURCE)
+if(APPBUILD_EMBEDDED_SOURCE)
   # Generated at packaging time: the translation unit that carries the
   # application entry and the smoke program. A packaged launcher then runs
   # without a script next to it, and the define is what tells PyUpper.cpp the
   # symbols exist. A launcher built by hand has neither, so the file chain is
   # what resolves its entry.
-  target_sources(PyUpper PRIVATE "${PY_UPPER_EMBEDDED_SOURCE}")
-  target_compile_definitions(PyUpper PRIVATE PY_UPPER_HAS_EMBEDDED_SOURCE)
+  target_sources(PyUpper PRIVATE "${APPBUILD_EMBEDDED_SOURCE}")
+  target_compile_definitions(PyUpper PRIVATE APPBUILD_HAS_EMBEDDED_SOURCE)
 endif()
 
 if(WIN32)
@@ -34,7 +34,7 @@ if(WIN32)
   # from Explorer. The launcher attaches to the parent console instead when one
   # exists, so diagnostics still reach cmd.exe and CI logs. The console build is
   # the debugging escape hatch: it keeps stdout/stderr attached unconditionally.
-  if(NOT PY_UPPER_LAUNCHER_CONSOLE)
+  if(NOT APPBUILD_LAUNCHER_CONSOLE)
     set_target_properties(PyUpper PROPERTIES WIN32_EXECUTABLE TRUE)
     # WIN32_EXECUTABLE only reaches MSVC's linker: it is spelled -mwindows for
     # everyone else, and clang's driver (the Zig cross build) reports it as an
@@ -45,7 +45,7 @@ if(WIN32)
       target_link_options(PyUpper PRIVATE "-Wl,--subsystem,windows")
     endif()
   else()
-    target_compile_definitions(PyUpper PRIVATE PY_UPPER_CONSOLE)
+    target_compile_definitions(PyUpper PRIVATE APPBUILD_CONSOLE)
   endif()
   if(MSVC)
     # CPython 3.8's pyerrors.h aliases snprintf to _snprintf unless
@@ -63,9 +63,9 @@ if(WIN32)
   # CommandLineToArgvW: the wide command line is the only lossless source of a
   # non-ASCII path.
   target_link_libraries(PyUpper PRIVATE shell32)
-  if(PY_UPPER_RESOURCE_RC)
+  if(APPBUILD_RESOURCE_RC)
     enable_language(RC)
-    target_sources(PyUpper PRIVATE "${PY_UPPER_RESOURCE_RC}")
+    target_sources(PyUpper PRIVATE "${APPBUILD_RESOURCE_RC}")
   endif()
 else()
   target_link_libraries(PyUpper PRIVATE ${CMAKE_DL_LIBS})
@@ -77,6 +77,6 @@ if(APPLE)
   target_link_libraries(PyUpper PRIVATE "-framework CoreFoundation")
 endif()
 
-if(DEFINED PY_UPPER_CACHE_NAMESPACE)
-  target_compile_definitions(PyUpper PRIVATE PY_UPPER_CACHE_NAMESPACE="${PY_UPPER_CACHE_NAMESPACE}")
+if(DEFINED APPBUILD_CACHE_NAMESPACE)
+  target_compile_definitions(PyUpper PRIVATE APPBUILD_CACHE_NAMESPACE="${APPBUILD_CACHE_NAMESPACE}")
 endif()

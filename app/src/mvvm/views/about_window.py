@@ -13,10 +13,12 @@ class AboutWindow(ViewBase):
     """关于窗口：显示 ViewModel 里的 about_title/about_body"""
 
     def __init__(self, viewmodel: MainViewModel) -> None:
+        """保存共享 ViewModel；对话框延迟至首次显示创建。"""
         super().__init__(viewmodel)
         self._dialog = None
 
     def _create_dialog(self):
+        """创建对话框并建立属性、关闭按钮及原生关闭信号的绑定。"""
         from utils.qt_compat import QtWidgets
 
         viewmodel = self.viewmodel
@@ -44,5 +46,6 @@ class AboutWindow(ViewBase):
         self._dialog.show()
 
     def close(self) -> None:
+        """关闭已创建的对话框；尚未创建时不做操作。"""
         if self._dialog is not None:
             self._dialog.close()

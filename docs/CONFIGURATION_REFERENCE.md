@@ -1,6 +1,6 @@
 # 配置与构建参考
 
-`py_upper` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
+`appbuild` 是一个面向 Windows、macOS、Linux 的独立 Python 应用运行时与打包工程。
 
 当前稳定开发线：**0.17.37**。
 
@@ -44,7 +44,7 @@ Application run
 - 应用目录的 `src/` 直接就是应用源码，不再套额外项目包名；默认示例是 `app/src/`，自有 `app` 可以用 `--app` 指向任意目录。
 - Build Tool Python 与最终 Target Python 完全独立；Build Tool 最低支持 Python 3.8。解压 PBS runtime 时，构建解释器必须包含 `tarfile.data_filter` 安全更新；缺少此能力会明确报错，避免退回不安全的解包方式。
 - 应用自己的 Python 模块默认 Cython 化；`__init__.py` 保留为 package marker。
-- 应用模块增量编译：只有内容变化的模块重新 Cython 化并编译，其余复用 `build/cache/` 里的产物；多个模块并行编译（`[tool.py_upper.build]`）。
+- 应用模块增量编译：只有内容变化的模块重新 Cython 化并编译，其余复用 `build/cache/` 里的产物；多个模块并行编译（`[tool.appbuild.build]`）。
 - 第三方依赖不 Cython 化，而是根据 Target 的 wheel compatibility tags 安装目标 wheel。
 - 应用目录 `src/` 下的 `.dylib/.so/.dll/.pyd` 是正式应用输入，会参加 native dependency closure。
 - `runtimes/` 是机器本地 Runtime 缓存，不进入 Git。
@@ -63,7 +63,7 @@ Application run
 ## 项目结构
 
 ```text
-py_upper/
+appbuild/
 ├── app/                        # 默认示例应用，可整体替换
 │   ├── pyproject.toml.example  # 配置模板（入库）
 │   ├── pyproject.toml          # 本地配置（Git ignored，从模板复制而来）
@@ -76,7 +76,7 @@ py_upper/
 ├── runtimes/                 # Git ignored，PBS/local runtime cache
 ├── tools/
 │   ├── build.py              # 唯一公共构建入口
-│   └── py_upper/             # 构建工具实现（模块清单见开发指南 §15）
+│   └── appbuild/             # 构建工具实现（模块清单见开发指南 §15）
 ├── .github/workflows/
 ├── build/                    # Git ignored
 └── dist/                     # Git ignored
@@ -92,7 +92,7 @@ Build Tool 不 import 应用代码，只读取应用目录；`app/` 只是仓库
 myapp/
 ├── pyproject.toml      # 必填，schema 同 app/pyproject.toml.example
 ├── src/                # 必填，src 下直接是包根
-│   └── main.py         # [tool.py_upper].entry 指定的入口
+│   └── main.py         # [tool.appbuild].entry 指定的入口
 ├── resources/          # 可选，存在就随包复制
 └── .venv/              # 可选，开发用解释器
 ```
@@ -108,12 +108,12 @@ python tools/build.py
 python tools/build.py --app ../myapp
 
 # 3. 环境变量（对 --doctor / build / run / verify / lock / clean 都生效）
-PY_UPPER_APP_DIR=../myapp python tools/build.py --doctor
+APPBUILD_APP_DIR=../myapp python tools/build.py --doctor
 ```
 
-`--app` 可以和其他命令组合，例如 `python tools/build.py --app ../myapp --run`。如果仓库根目录本身就是应用（根 `pyproject.toml` 带 `[tool.py_upper]`），删掉 `app/` 后也会自动识别根目录，不必额外传参。
+`--app` 可以和其他命令组合，例如 `python tools/build.py --app ../myapp --run`。如果仓库根目录本身就是应用（根 `pyproject.toml` 带 `[tool.appbuild]`），删掉 `app/` 后也会自动识别根目录，不必额外传参。
 
-`build/`、`dist/` 和 `py_upper.lock.json` 仍属于构建工具所在的仓库；应用目录只提供源码、配置、可选资源和开发 `.venv`。构建工具测试位于 `tests/tools`，应用与接合点测试位于 `app/tests`；替换示例时只调整应用测试，完整验证用 `python -m pytest`。
+`build/`、`dist/` 和 `appbuild.lock.json` 仍属于构建工具所在的仓库；应用目录只提供源码、配置、可选资源和开发 `.venv`。构建工具测试位于 `app/tests`，应用与接合点测试位于 `app/tests`；替换示例时只调整应用测试，完整验证用 `python -m pytest`。
 
 ## 首次使用
 
@@ -129,12 +129,12 @@ cp app/pyproject.toml.example app/pyproject.toml
 
 ## App 名称
 
-项目名固定为 `py_upper`。最终 App 名称只在**一处**配置：当前应用配置（默认示例是本地 `app/pyproject.toml`，不入库，克隆后由 `app/pyproject.toml.example` 复制而来；自有应用则是 `--app` 指向的 `pyproject.toml`）的 `[tool.py_upper.app]` 节，当前是 `Upper`：
+项目名固定为 `appbuild`。最终 App 名称只在**一处**配置：当前应用配置（默认示例是本地 `app/pyproject.toml`，不入库，克隆后由 `app/pyproject.toml.example` 复制而来；自有应用则是 `--app` 指向的 `pyproject.toml`）的 `[tool.appbuild.app]` 节，当前是 `Upper`：
 
 ```toml
-[tool.py_upper.app]
+[tool.appbuild.app]
 # APP NAME, single source of truth: 产物名 / Info.plist / Windows 版本资源
-# 都从这一行派生，并被编译进 launcher（PY_UPPER_APP_NAME）。改名后必须重新构建。
+# 都从这一行派生，并被编译进 launcher（APPBUILD_APP_NAME）。改名后必须重新构建。
 name = "Upper"
 identifier = "com.example.pyupper"   # macOS bundle id，与名字无关
 ```
@@ -150,18 +150,18 @@ identifier = "com.example.pyupper"   # macOS bundle id，与名字无关
 
 - 产物名：macOS 的 `dist/<name>.app`，含 `Contents/MacOS/<name>` 可执行文件与 `Info.plist` 的 `CFBundleExecutable` / `CFBundleName` / `CFBundleDisplayName`；Windows / Linux 的 `dist/<name>/` 目录与 `dist/<name>/<name>(.exe)`；
 - Windows 版本资源（`FileDescription` / `ProductName` / `OriginalFilename`）；`Info.plist` 里只有 `CFBundleIdentifier`（来自 `identifier`）和版本字段来自别处，其余名字字段都跟它走；
-- 运行时的 `PY_UPPER_APP_NAME`：这个值是**打包时编译进 launcher** 的，所以改名必须重新构建才生效，只改配置文件不会影响已经打好的包；
+- 运行时的 `APPBUILD_APP_NAME`：这个值是**打包时编译进 launcher** 的，所以改名必须重新构建才生效，只改配置文件不会影响已经打好的包；
 - 应用内展示位：应用侧统一调 `utils.paths.app_name()` 读它，示例 MVVM 应用直接把它当主窗口标题（`app/src/application.py` → `MainViewModel`）。
 
 ### `name` 不影响什么
 
 - **可执行文件允许被改名**：入口程序编译在 launcher 里（见 `docs/DEVELOPMENT_GUIDE.md` §10.1），把 `Upper.app` 改成 `Renamed.app` 或把 `Upper.exe` 改成 `Renamed.exe` 照常启动；
-- `identifier` 与项目名 `py_upper`（Python 包名、`tools/` 命令名）都跟这个值无关；
+- `identifier` 与项目名 `appbuild`（Python 包名、`tools/` 命令名）都跟这个值无关；
 - 开发态（没有 launcher）`app_name()` 会回读同一份 `pyproject.toml`，所以「`PYTHONPATH=src python src/main.py` 时看到的窗口标题」和打包产物自然一致。
 
 ### 不要做的事
 
-**不要在应用代码里再写一份名字。** 名字的唯一来源就是 `[tool.py_upper.app].name`。`app/src/utils/paths.py` 的 `_DEFAULT_APP_NAME` 与 `tools/py_upper/config.py` 的 `or "Upper"` 是「既没有 launcher、也读不到 `pyproject.toml`」时的兜底回退值，两处互为镜像，**改名时同样要一起改成新名**。
+**不要在应用代码里再写一份名字。** 名字的唯一来源就是 `[tool.appbuild.app].name`。`app/src/utils/paths.py` 的 `_DEFAULT_APP_NAME` 与 `tools/appbuild/config.py` 的 `or "Upper"` 是「既没有 launcher、也读不到 `pyproject.toml`」时的兜底回退值，两处互为镜像，**改名时同样要一起改成新名**。
 
 ## 构建
 
@@ -180,7 +180,7 @@ python tools/build.py --release
 
 `--run` 只允许运行当前宿主平台目标；交叉目标可以正常 build/verify，但不会冒充在当前机器运行。
 
-`build/cache/` 保存上一次构建的 Cython 产物与目标扩展，只有变化的模块会重新编译。`[tool.py_upper.build]` 的 `jobs`（默认 `0` = 每 CPU 一个任务）控制并行度，`incremental = false` 强制全量重编译，`--clean` 会连同缓存一起清掉。
+`build/cache/` 保存上一次构建的 Cython 产物与目标扩展，只有变化的模块会重新编译。`[tool.appbuild.build]` 的 `jobs`（默认 `0` = 每 CPU 一个任务）控制并行度，`incremental = false` 强制全量重编译，`--clean` 会连同缓存一起清掉。
 
 ## 换电脑部署
 
@@ -202,21 +202,21 @@ python tools/build.py --release
 PBS 模式只需要配置一个精确的目标 Python 版本。Windows 目标的发布 runtime 用 python.org 官方 embeddable ZIP，PBS full SDK 只用于编译与依赖解析；其他平台继续用 PBS `install_only_stripped` runtime。精确版本必须同时有对应官方 ZIP 与 PBS SDK（模板用 `3.13.5`；`3.11.13` 没有官方 ZIP）。
 
 ```toml
-[tool.py_upper.runtime]
+[tool.appbuild.runtime]
 provider = "pbs"
 python = "3.13.5"
 ```
 
-`[tool.py_upper.pbs].release` 可选。省略时，py_upper 使用精确版本 metadata 获取对应 PBS build tag，再读取该 release 的公开 `SHA256SUMS` 清单选择 full SDK 并验证下载。指定 release 时，runtime 与 SDK 都从同一份清单选择。整个过程不调用 GitHub API，不需要登录 GitHub、安装 `gh` 或配置 token。
+`[tool.appbuild.pbs].release` 可选。省略时，appbuild 使用精确版本 metadata 获取对应 PBS build tag，再读取该 release 的公开 `SHA256SUMS` 清单选择 full SDK 并验证下载。指定 release 时，runtime 与 SDK 都从同一份清单选择。整个过程不调用 GitHub API，不需要登录 GitHub、安装 `gh` 或配置 token。
 
 如需完全固定 release：
 
 ```toml
-[tool.py_upper.pbs]
+[tool.appbuild.pbs]
 release = "20241016"
 ```
 
-实际解析的 Runtime/SDK、wheel 集合和校验值可写入 `py_upper.lock.json`。`--locked` 只使用锁文件与本地缓存，不进行新的依赖解析。
+实际解析的 Runtime/SDK、wheel 集合和校验值可写入 `appbuild.lock.json`。`--locked` 只使用锁文件与本地缓存，不进行新的依赖解析。
 
 PBS 网络请求对临时 HTTP 408/425/429/5xx 有有限次重试，并使用 `.part` 下载文件避免半截 archive 被当成完整缓存。
 
@@ -236,14 +236,14 @@ dependencies = [
 ]
 ```
 
-py_upper 为目标 Python/平台下载兼容 wheel，并把完整 wheel 内容安装到最终 `site-packages`。第三方包不会进入 Cython 编译流程。
+appbuild 为目标 Python/平台下载兼容 wheel，并把完整 wheel 内容安装到最终 `site-packages`。第三方包不会进入 Cython 编译流程。
 
 解析 wheel 时使用的是**目标解释器**（`runtimes/<target>/<python>` 里的那个），而不是构建机上的 Python。pip 的 `--platform`/`--python-version` 只影响 wheel 兼容标签，环境标记（`sys_platform`、`python_full_version` 等）永远按运行 pip 的解释器求值；用宿主 Python 解析会漏掉目标版本才需要的依赖（例如 `bleak` 在 Python 3.10 上需要 `async-timeout`）。交叉目标无法执行目标解释器，此时退回宿主解释器并显式传入标签参数。
 
-下载使用 py_upper 自己的 pip 缓存（`.cache/pip`），重复构建和 CI 不会重新下载几百 MB 的 wheel。默认 socket 超时 120 秒、重试 10 次，可配置：
+下载使用 appbuild 自己的 pip 缓存（`.cache/pip`），重复构建和 CI 不会重新下载几百 MB 的 wheel。默认 socket 超时 120 秒、重试 10 次，可配置：
 
 ```toml
-[tool.py_upper.dependencies]
+[tool.appbuild.dependencies]
 find_links = ["wheelhouse"]
 no_index = true
 # PySide6 的 Linux wheel 是 manylinux_2_34 (x86_64) / manylinux_2_39 (aarch64)，
@@ -254,13 +254,13 @@ timeout = 120
 retries = 10
 ```
 
-也可用 `PY_UPPER_PIP_TIMEOUT` / `PY_UPPER_PIP_RETRIES` 覆盖。国内网络建议给本地构建设置镜像（CI 不受影响）：
+也可用 `APPBUILD_PIP_TIMEOUT` / `APPBUILD_PIP_RETRIES` 覆盖。国内网络建议给本地构建设置镜像（CI 不受影响）：
 
 ```bash
 export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-PySide6 这类带大量 Qt native libraries/plugins 的包会继续参加 native dependency scan；py_upper 不会只复制 Python 文件而丢掉 Qt `.dylib/.so/.pyd`。
+PySide6 这类带大量 Qt native libraries/plugins 的包会继续参加 native dependency scan；appbuild 不会只复制 Python 文件而丢掉 Qt `.dylib/.so/.pyd`。
 
 ## 第三方依赖优化
 
@@ -269,7 +269,7 @@ PySide6 这类带大量 Qt native libraries/plugins 的包会继续参加 native
 需要更激进的 site-packages 裁剪时：
 
 ```toml
-[tool.py_upper.optimize]
+[tool.appbuild.optimize]
 profile = "aggressive"
 remove_tests = true
 remove_docs = true
@@ -301,7 +301,7 @@ app/src/
 PySide6 的 wheel 会带上整个 Qt，`QtWebEngineCore` 一个就约 450 MB。模板策略是按 **import 裁剪**：读取应用 `src` 里引用的 `PySide6.Qt*` 模块，用目标 runtime 解析出传递闭包，然后删掉没用到的 wrapper 模块、Qt 库、插件类别、QML 树、shiboken 的 QML 辅助库、Qt 工具二进制和工具翻译。
 
 ```toml
-[tool.py_upper.optimize]
+[tool.appbuild.optimize]
 qt = "imports"          # 默认 "all"，即完整 Qt
 # qt = ["QtWidgets", "QtCore", "QtGui"]   # 也可以显式指定，会按同样规则展开闭包
 ```
@@ -309,7 +309,7 @@ qt = "imports"          # 默认 "all"，即完整 Qt
 可选的 Qt 负载开关（不设置时保持旧行为；`qt = "all"` 时全部不生效）：
 
 ```toml
-[tool.py_upper.optimize]
+[tool.appbuild.optimize]
 qt_software_opengl = false                  # 不打包 opengl32sw.dll（约 20 MB）
 qt_locales = ["zh_CN"]                     # 只保留指定语言；"all" 保留整套
 qt_image_formats = ["gif", "ico", "jpeg"]  # 不写 "svg" 会同时删除 SVG 图标引擎和 Qt5Svg/Qt6Svg
@@ -327,7 +327,7 @@ Linux / macOS 不需要各写一套规则。
 
 限制：动态加载的模块（`importlib`、QML 文件里 import）静态看不到，这类应用请显式列模块；交叉目标无法执行目标解释器，会保留完整 Qt。
 
-## 裁剪接口（`[tool.py_upper.trim]`）
+## 裁剪接口（`[tool.appbuild.trim]`）
 
 Qt 裁剪只删除 import 能证明的负载。开发负载由代码内置的全局规则删除，
 不用写进配置文件：
@@ -344,7 +344,7 @@ Qt 裁剪只删除 import 能证明的负载。开发负载由代码内置的全
 应用，所以不放进全局规则，Qt 应用可以在配置里显式删除：
 
 ```toml
-[tool.py_upper.trim]
+[tool.appbuild.trim]
 preset = "safe"
 site_packages = []
 site_packages_keep = []
@@ -381,24 +381,24 @@ runtime_keep = []
 
 ## 加密 egg（默认开启）
 
-`[tool.py_upper.egg]` 把应用自己的 Python 模块和本次构建产出的扩展收进一个
-`bundle/py_upper.dat`，不再以散文件留在 `site-packages`。归档格式是
+`[tool.appbuild.egg]` 把应用自己的 Python 模块和本次构建产出的扩展收进一个
+`bundle/appbuild.dat`，不再以散文件留在 `site-packages`。归档格式是
 `MAGIC2 (8 字节) + SALT (16) + TAG (32) + XOR(zip, SHAKE-256(key + SALT))`，
 `TAG = SHAKE-256(key + MAGIC2 + SALT + ciphertext)[:32]`；launcher 在导入应用入口前
 安装内存导入器，所以产物里不会再有 `main.py` / `main.pyd`。
 
 `TAG` 让归档具备完整性校验：重打包、改一个字节、或用自己的 zip 顶替归档，都会在
 导入任何模块之前失败（`egg authentication failed` / `egg is not authenticated`）。
-归档内还带 `py_upper_manifest.json`（逐成员 SHA-256），供 extract 缓存复用前核对。
+归档内还带 `appbuild_manifest.json`（逐成员 SHA-256），供 extract 缓存复用前核对。
 当前只接受 MAGIC2 归档：v1（只有 `MAGIC`）与普通 zip 在 launcher 和构建期工具里
 都会被拒绝，没有关闭认证的开关。
 
-加密默认开启：即使项目没有写 `[tool.py_upper.egg]` 段，普通构建也会生成
-`py_upper.dat`。要临时发一个散文件版本，用 `--no-egg`；要长期关闭，在配置里
+加密默认开启：即使项目没有写 `[tool.appbuild.egg]` 段，普通构建也会生成
+`appbuild.dat`。要临时发一个散文件版本，用 `--no-egg`；要长期关闭，在配置里
 写 `enabled = false`。
 
 ```toml
-[tool.py_upper.egg]
+[tool.appbuild.egg]
 enabled = true
 key_hex = "047636cf3ddbaae2346f597256416e858ee0b7c8b7448221e5babfbb4f74c20d"
 backend = "auto"          # auto / memory / extract
@@ -407,7 +407,7 @@ compression = "deflated"  # deflated / stored / lzma
 
 只有应用自己的代码进 egg：应用 `src` 下的 Python 模块、本次构建编译出的
 `.pyd`/`.so`，以及随应用分发的其它非原生文件。第三方 wheel、runtime 和
-`[tool.py_upper.native]` 依赖闭包需要看到的原生输入仍留在 `site-packages`，
+`[tool.appbuild.native]` 依赖闭包需要看到的原生输入仍留在 `site-packages`，
 否则闭合检查看不见它们。
 
 后端有三档：
@@ -417,12 +417,12 @@ compression = "deflated"  # deflated / stored / lzma
 - `extract`：所有平台。启动时解密到按内容寻址的缓存目录（目录名由认证 TAG
   派生）并插入 `sys.path`；首次启动解压一次，之后直接复用，重新构建的 egg 会
   自然切换到新目录。缓存是明文，所以复用前会按归档清单逐个核对 SHA-256，被改
-  过的目录会被删除重建（`PY_UPPER_EGG_CACHE_VERIFY=0` 可关闭这项检查；实测
+  过的目录会被删除重建（`APPBUILD_EGG_CACHE_VERIFY=0` 可关闭这项检查；实测
   对热启动的影响在测量噪声内，不建议为性能关闭）。缓存根默认是
-  `~/Library/Caches/py_upper/eggs`（macOS）、
-  `%LOCALAPPDATA%/py_upper/cache/eggs`（Windows）、
-  `$XDG_CACHE_HOME/py_upper/eggs` 或 `~/.cache/py_upper/eggs`（Linux），可用
-  `PY_UPPER_EGG_CACHE` 覆盖；目录不可写时回退到 `py_upper_egg_*` 临时目录。
+  `~/Library/Caches/appbuild/eggs`（macOS）、
+  `%LOCALAPPDATA%/appbuild/cache/eggs`（Windows）、
+  `$XDG_CACHE_HOME/appbuild/eggs` 或 `~/.cache/appbuild/eggs`（Linux），可用
+  `APPBUILD_EGG_CACHE` 覆盖；目录不可写时回退到 `appbuild_egg_*` 临时目录。
   Linux 没有稳定的内存 dlopen 接口；macOS 开启 hardened runtime 时，缓存目录
   里未签名的 `.so` 可能被 dyld 拒绝，需要
   `com.apple.security.cs.disable-library-validation`，或改用签名后的独立原生库。
@@ -439,10 +439,10 @@ python tools/build.py --egg --egg-key <HEX> --egg-backend extract --egg-compress
 ```
 
 Windows/Linux 下归档位于可执行文件旁的 `bundle/`，macOS 下位于
-`Contents/Resources/bundle/`，文件名固定为 `py_upper.dat`，不再暴露 egg/zip
+`Contents/Resources/bundle/`，文件名固定为 `appbuild.dat`，不再暴露 egg/zip
 字样。stage 下的 `egg.json` 记录本次构建实际使用的 key/backend/compression，
 `--verify` 和冒烟脚本以它为准，不会拿项目默认值去解一个被 CLI 覆盖过的 egg。
-`--verify` 会检查 `bundle/py_upper.dat` 的 MAGIC2、认证 TAG、成员清单与成员列表，
+`--verify` 会检查 `bundle/appbuild.dat` 的 MAGIC2、认证 TAG、成员清单与成员列表，
 并确认已打包的应用文件不再以散文件出现、launcher 二进制里没有明文十六进制密钥；
 `memory` 后端还必须带 `_memimporter.pyd`。
 
@@ -457,7 +457,7 @@ Windows/Linux 下归档位于可执行文件旁的 `bundle/`，macOS 下位于
 个别 wheel 会带上无法在 bundle 内满足依赖的可选组件，例如 PySide6 的 macOS wheel 把 ODBC/Mimer/PostgreSQL 三个 Qt SQL 驱动链接到构建机绝对路径，并引用了它自己没有附带的 `QtQuickShapesDesignHelpers` framework。这类组件可以在打包时显式丢弃：
 
 ```toml
-[tool.py_upper.native]
+[tool.appbuild.native]
 exclude = [
     "PySide6/Qt/plugins/sqldrivers/*qsqlodbc*",
     "PySide6/Qt/qml/QtQuick/Shapes/DesignHelpers/*",
@@ -469,14 +469,14 @@ exclude = [
 ## Runtime 与开发 Python
 
 ```toml
-[tool.py_upper.runtime]
+[tool.appbuild.runtime]
 provider = "pbs"
 python = "3.13.15"
 ```
 
 开发 Python 可以是 3.8–3.13 的另一个独立解释器。选择顺序：
 
-1. `PY_UPPER_PYTHON` / 兼容旧变量 `PYSTAND_PYTHON`
+1. `APPBUILD_PYTHON`
 2. 应用目录的 `.venv`（默认示例是 `app/.venv`）
 3. 当前执行 `tools/build.py` 的 Python
 4. `python` / `python3`
@@ -485,21 +485,21 @@ Windows XP 场景仍必须使用真正兼容 XP 的 custom/local CPython runtime
 
 ## 启动器与错误可见性
 
-`launcher/` 是不链接 libpython 的 C++ 可执行文件：运行时从 bundled runtime 解析 CPython 符号，所以换目标 Python 版本不需要重新链接。**入口程序（以及 `PY_UPPER_SMOKE=1` 用的 smoke 程序）在打包时编译进 launcher**，所以产物里没有 `.int` 脚本，**把可执行文件改名后应用照样能起来**，也不会出现"sidecar 被删掉或被改坏"这种故障。手工构建、没有生成源可内嵌的 launcher 才回退到按 `<可执行名>.int` → `.py` → `.pyw` → `_py_upper_static.int` 找入口文件。
+`launcher/` 是不链接 libpython 的 C++ 可执行文件：运行时从 bundled runtime 解析 CPython 符号，所以换目标 Python 版本不需要重新链接。**入口程序（以及 `APPBUILD_SMOKE=1` 用的 smoke 程序）在打包时编译进 launcher**，所以产物里没有 `.int` 脚本，**把可执行文件改名后应用照样能起来**，也不会出现"sidecar 被删掉或被改坏"这种故障。手工构建、没有生成源可内嵌的 launcher 才回退到按 `<可执行名>.int` → `.py` → `.pyw` → `_appbuild_static.int` 找入口文件。
 
-launcher 还向应用导出 `PY_UPPER_HOME`（入口目录）、`PY_UPPER_RUNTIME`、`PY_UPPER_SITE_PACKAGES`、`PY_UPPER_EXECUTABLE`，以及仅当入口真是文件时的 `PY_UPPER_SCRIPT`，应用不必靠数父目录猜自己在哪。
+launcher 还向应用导出 `APPBUILD_HOME`（入口目录）、`APPBUILD_RUNTIME`、`APPBUILD_SITE_PACKAGES`、`APPBUILD_EXECUTABLE`，以及仅当入口真是文件时的 `APPBUILD_SCRIPT`，应用不必靠数父目录猜自己在哪。
 
-致命错误先写 stderr，再按需弹原生对话框（Windows `MessageBoxW`、macOS `CFUserNotification`、Linux `zenity`/`xmessage`）——双击启动没有终端时，这是唯一能看到失败原因的通道。应用抛未捕获异常时，bootstrap 先把 traceback 落到 `TMPDIR/py_upper-<pid>.log`，`Py_FinalizeEx` 之后由 launcher 上报。CI 与自动化设 `PY_UPPER_NO_DIALOG=1`，失败只体现为退出码，不会卡在没人能点的对话框上。
+致命错误先写 stderr，再按需弹原生对话框（Windows `MessageBoxW`、macOS `CFUserNotification`、Linux `zenity`/`xmessage`）——双击启动没有终端时，这是唯一能看到失败原因的通道。应用抛未捕获异常时，bootstrap 先把 traceback 落到 `TMPDIR/appbuild-<pid>.log`，`Py_FinalizeEx` 之后由 launcher 上报。CI 与自动化设 `APPBUILD_NO_DIALOG=1`，失败只体现为退出码，不会卡在没人能点的对话框上。
 
 Windows 默认是 GUI 子系统（双击不弹控制台），从 cmd/CI 启动时自动 `AttachConsole` 到父控制台，并且链接静态 CRT（`/MT`），目标机不需要 VC++ 运行库。完整契约与退出码见开发指南 §10。
 
 ## 验证
 
-应用入口会打开 Qt 主窗口。CI 与 smoke 通过 `PY_UPPER_HEADLESS=1` 用 offscreen 平台构建同一个窗口后立即退出，因此既证明 Qt 可用，又不会卡住无显示环境。
+应用入口会打开 Qt 主窗口。CI 与 smoke 通过 `APPBUILD_HEADLESS=1` 用 offscreen 平台构建同一个窗口后立即退出，因此既证明 Qt 可用，又不会卡住无显示环境。
 
 `--verify` 是静态检查，`--run` 之前的最后一道门是**用目标 Python 真 import**：先由 bundled runtime 导入入口模块和所有直接声明的第三方依赖，再由打包好的 launcher 导入一次。这一步能抓住静态检查看不到的问题（扩展链接方式、stdlib 扩展目录、第三方依赖缺失、Qt 裁剪过度）。
 
-CI 在每个原生平台上都跑同一套真实链路：单元测试 → 本地端到端构建（第三方 wheel、应用自带 native 库、lock/`--locked` 往返）→ doctor → 完整 PBS 构建 → 运行。本地 E2E 默认跳过，设置 `PY_UPPER_E2E=1` 打开。触发范围只有 develop（`push` 与面向 develop 的 `pull_request`）：`feature_*` 分支上的中间提交不跑矩阵，需要单独验证时用 `gh workflow run validate.yml --ref <branch>`。
+CI 在每个原生平台上都跑同一套真实链路：单元测试 → 本地端到端构建（第三方 wheel、应用自带 native 库、lock/`--locked` 往返）→ doctor → 完整 PBS 构建 → 运行。本地 E2E 默认跳过，设置 `APPBUILD_E2E=1` 打开。触发范围只有 develop（`push` 与面向 develop 的 `pull_request`）：`feature_*` 分支上的中间提交不跑矩阵，需要单独验证时用 `gh workflow run validate.yml --ref <branch>`。
 
 ## Git
 

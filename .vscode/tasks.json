@@ -2,14 +2,14 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "py_upper: build",
+      "label": "appbuild: build",
       "type": "shell",
       "command": "python",
       "args": ["tools/build.py"],
       "problemMatcher": []
     },
     {
-      "label": "py_upper: run packaged app",
+      "label": "appbuild: run packaged app",
       "type": "shell",
       "command": "python",
       "args": ["tools/build.py", "--run"],

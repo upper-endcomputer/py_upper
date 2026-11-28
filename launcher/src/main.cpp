@@ -16,6 +16,7 @@ namespace {
 // packaged application does not open a console window, and the wide command
 // line is the only lossless source of a non-ASCII path on Windows. Converting
 // it to UTF-8 here keeps every path inside the launcher in one encoding.
+/** @brief 把 Windows UTF-16 参数转为 UTF-8；转换失败返回空字符串。 */
 std::string utf8(const std::wstring& text) {
     if (text.empty()) return std::string();
     int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), (int)text.size(), nullptr, 0, nullptr, nullptr);
@@ -25,6 +26,7 @@ std::string utf8(const std::wstring& text) {
     return result;
 }
 
+/** @brief 转换宽字符参数并调用公共入口，返回应用退出码。 */
 int run_wide(int argc, wchar_t** argv) {
     std::vector<std::string> args;
     args.reserve(argc > 0 ? (size_t)argc : 0);
@@ -34,9 +36,11 @@ int run_wide(int argc, wchar_t** argv) {
 
 }  // namespace
 
-#ifdef PY_UPPER_CONSOLE
+#ifdef APPBUILD_CONSOLE
+/** @brief 调试控制台入口；转交宽字符参数及退出码。 */
 int wmain(int argc, wchar_t** argv) { return run_wide(argc, argv); }
 #else
+/** @brief GUI 子系统入口；解析系统命令行，调用后用 LocalFree 释放参数数组。 */
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -48,6 +52,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 #endif
 
 #else
+/** @brief POSIX 入口；保留参数顺序并返回公共入口退出码。 */
 int main(int argc, char** argv) {
     std::vector<std::string> args;
     args.reserve(argc > 0 ? (size_t)argc : 0);

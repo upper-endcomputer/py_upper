@@ -12,6 +12,7 @@ class MVVMBinding:
     """MVVM数据绑定 - 将UI控件与ViewModel属性绑定"""
     
     def __init__(self, viewmodel: BaseViewModel, property_name: str):
+        """订阅指定 ViewModel 属性，并保存由本绑定管理的 UI 目标和退订句柄。"""
         self.viewmodel = viewmodel
         self.property_name = property_name
         self._ui_elements: List[Any] = []
@@ -94,6 +95,7 @@ class CommandBinding:
     """命令绑定 - 将UI事件与ViewModel命令绑定"""
     
     def __init__(self, viewmodel: BaseViewModel, command_name: str):
+        """定位 ViewModel 命令并初始化 UI 信号连接记录。"""
         self.viewmodel = viewmodel
         self.command_name = command_name
         self.command = getattr(viewmodel, f"{command_name}_command", None)
@@ -138,6 +140,7 @@ class ViewBase:
     """View基类 - 所有View应继承此类"""
     
     def __init__(self, viewmodel: Optional[BaseViewModel] = None):
+        """保存可选 ViewModel 并创建本视图独占的绑定集合。"""
         self.viewmodel = viewmodel
         self._bindings: List[MVVMBinding] = []
         self._command_bindings: List[CommandBinding] = []

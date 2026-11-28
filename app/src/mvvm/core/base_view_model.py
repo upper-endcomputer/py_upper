@@ -16,6 +16,7 @@ class BaseViewModel:
     """
     
     def __init__(self):
+        """建立属性与退订注册表，再调用子类属性初始化钩子。"""
         self._properties: Dict[str, ObservableProperty] = {}
         self._property_unsubscribers: Dict[str, Callable[[], None]] = {}
         self._property_changed_listeners: list = []
@@ -93,5 +94,6 @@ class BaseViewModel:
         self._property_changed_listeners.clear()
     
     def __repr__(self) -> str:
+        """返回 ViewModel 类型名称，不展开可能包含业务数据的属性。"""
         return f"{self.__class__.__name__}()"
 

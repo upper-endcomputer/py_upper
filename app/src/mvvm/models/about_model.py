@@ -34,16 +34,19 @@ class AboutModel(BaseModel):
     """「关于」窗口的数据"""
 
     def __init__(self, title: str = DEFAULT_TITLE, body: str | None = None) -> None:
+        """保存关于窗口标题和正文；未提供正文时生成默认分层说明。"""
         super().__init__()
         self.title: str = title
         self.body: str = default_body() if body is None else body
 
     def to_dict(self) -> dict:
+        """导出标题与正文，保持模型独立于窗口实现。"""
         return {
             'title': self.title,
             'body': self.body,
         }
 
     def from_dict(self, data: dict) -> None:
+        """从字典恢复标题和正文；缺失字段采用默认说明。"""
         self.title = data.get('title', DEFAULT_TITLE)
         self.body = data.get('body', default_body())

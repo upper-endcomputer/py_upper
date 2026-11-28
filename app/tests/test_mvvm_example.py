@@ -36,15 +36,19 @@ CREATED: dict[str, list] = {
 
 class FakeSignal:
     def __init__(self) -> None:
+        """初始化测试信号的订阅列表。"""
         self.handlers = []
 
     def connect(self, handler) -> None:
+        """将回调加入测试信号。"""
         self.handlers.append(handler)
 
     def disconnect(self, handler) -> None:
+        """从测试信号中移除指定回调。"""
         self.handlers.remove(handler)
 
     def emit(self, *args) -> None:
+        """使用回调快照派发信号，允许通知期间解绑。"""
         for handler in list(self.handlers):
             handler(*args)
 
@@ -53,6 +57,7 @@ class FakeWindow:
     """QWidget/QMainWindow/QDialog surface the views touch."""
 
     def __init__(self) -> None:
+        """初始化窗口可见性、焦点、标题和布局状态。"""
         self.visible = False
         self.raised = False
         self.activated = False
@@ -61,40 +66,50 @@ class FakeWindow:
         self.size = None
 
     def setWindowTitle(self, title: str) -> None:  # noqa: N802 - Qt spelling
+        """记录窗口标题以供装配断言检查。"""
         self.title = title
 
     def setCentralWidget(self, widget) -> None:  # noqa: N802 - Qt spelling
+        """记录主窗口持有的中心控件。"""
         self.central_widget = widget
 
     def resize(self, *size: int) -> None:
+        """记录窗口尺寸而不创建真实显示资源。"""
         self.size = size
 
     def show(self) -> None:
+        """标记窗口已显示。"""
         self.visible = True
 
     def raise_(self) -> None:  # noqa: N802 - Qt spelling
+        """记录窗口已提升至前台。"""
         self.raised = True
 
     def activateWindow(self) -> None:  # noqa: N802 - Qt spelling
+        """记录窗口激活请求。"""
         self.activated = True
 
     def close(self) -> None:
+        """标记窗口已隐藏。"""
         self.visible = False
 
 
 class FakeMainWindow(FakeWindow):
     def __init__(self) -> None:
+        """登记主窗口实例，供测试检查装配数量。"""
         super().__init__()
         CREATED["windows"].append(self)
 
 
 class FakeDialog(FakeWindow):
     def __init__(self) -> None:
+        """创建关闭信号并登记关于对话框。"""
         super().__init__()
         self.finished = FakeSignal()
         CREATED["dialogs"].append(self)
 
     def close(self) -> None:
+        """只在可见对话框实际关闭时触发 finished 信号。"""
         was_visible = self.visible
         super().close()
         if was_visible:
@@ -103,39 +118,47 @@ class FakeDialog(FakeWindow):
 
 class FakeLabel:
     def __init__(self, text: str = "") -> None:
+        """保存标签初始文本并登记实例。"""
         self.text = text
         CREATED["labels"].append(self)
 
     def setText(self, value: str) -> None:  # noqa: N802 - Qt spelling
+        """接收属性绑定推送的新文本。"""
         self.text = value
 
 
 class FakeButton:
     def __init__(self, text: str = "") -> None:
+        """保存按钮文本，创建点击信号并登记实例。"""
         self.text = text
         self.clicked = FakeSignal()
         CREATED["buttons"].append(self)
 
     def click(self) -> None:
+        """模拟 Qt 按钮点击，发送未选中状态参数。"""
         self.clicked.emit(False)
 
 
 class FakeTextBrowser:
     def __init__(self) -> None:
+        """初始化纯文本浏览器并登记实例。"""
         self.plain_text = ""
         CREATED["browsers"].append(self)
 
     def setPlainText(self, value: str) -> None:  # noqa: N802 - Qt spelling
+        """记录模型推送的纯文本内容。"""
         self.plain_text = value
 
 
 class FakeVBoxLayout:
     def __init__(self, parent=None) -> None:
+        """记录父控件并创建有序布局成员列表。"""
         self.parent = parent
         self.widgets: list = []
         CREATED["layouts"].append(self)
 
     def addWidget(self, widget) -> None:  # noqa: N802 - Qt spelling
+        """将控件按添加顺序加入布局。"""
         self.widgets.append(widget)
 
 
@@ -155,6 +178,7 @@ class FakeApplicationSurface:
     """
 
     def __init__(self, argv=None) -> None:
+        """记录应用参数以及事件处理和循环调用次数。"""
         self.argv = argv
         self.processed = 0
         self.loops = 0
@@ -162,24 +186,30 @@ class FakeApplicationSurface:
 
     @classmethod
     def instance(cls):
+        """模拟尚未创建全局 QApplication 的场景。"""
         return None
 
     @classmethod
     def setAttribute(cls, attribute) -> None:  # noqa: N802 - Qt spelling
         # Static in Qt: the application attributes are read while the instance is
         # built, which is why this records on the class and not on an object.
+        """记录实例创建前设置的 Qt 应用属性。"""
         CREATED["qt_attributes"].append(attribute)
 
     def processEvents(self) -> None:  # noqa: N802 - Qt spelling
+        """记录无阻塞事件处理次数。"""
         self.processed += 1
 
     def platformName(self) -> str:  # noqa: N802 - Qt spelling
+        """返回测试环境配置的平台插件名称。"""
         return os.environ.get("QT_QPA_PLATFORM", "unknown")
 
     def quit(self) -> None:
+        """提供无需真实事件循环的退出入口。"""
         pass
 
     def _enter_loop(self) -> int:
+        """记录循环进入次数并返回正常退出码。"""
         self.loops += 1
         return 0
 
@@ -188,6 +218,7 @@ class FakeApplication(FakeApplicationSurface):
     """PySide6/PyQt6 shape: the loop entry is ``exec``."""
 
     def exec(self) -> int:
+        """模拟 Qt6 的阻塞循环入口。"""
         return self._enter_loop()
 
 
@@ -206,15 +237,19 @@ class FakeQt5Application(FakeApplicationSurface):
     """
 
     def __init__(self, argv=None) -> None:
+        """断言高 DPI 属性已在 Qt5 应用创建前设置。"""
         assert CREATED["qt_attributes"], "Qt5 attributes must be set before the application exists"
         super().__init__(argv)
 
     def exec_(self) -> int:  # noqa: N802 - Qt spelling
+        """模拟 Qt5 的阻塞循环入口。"""
         return self._enter_loop()
 
 
 def _qt_widgets(application) -> dict[str, object]:
-    """The QtWidgets members the example's views and the bootstrap touch."""
+    """组装示例 GUI 实际使用的最小 QtWidgets 接口。
+
+    The QtWidgets members the example's views and the bootstrap touch."""
     return {
         "QApplication": application,
         "QMainWindow": FakeMainWindow,
@@ -229,7 +264,9 @@ def _qt_widgets(application) -> dict[str, object]:
 
 @pytest.fixture
 def fake_qt(monkeypatch):
-    """The Qt6 shape: PySide6, whose application spells the loop entry ``exec``."""
+    """隔离实例记录并安装具有 Qt6 接口的 binding 桩。
+
+    The Qt6 shape: PySide6, whose application spells the loop entry ``exec``."""
     for entries in CREATED.values():
         entries.clear()
     install_fake_binding(
@@ -241,7 +278,9 @@ def fake_qt(monkeypatch):
 
 @pytest.fixture
 def fake_qt5(monkeypatch):
-    """The Qt5 shape: PySide2, whose application only spells the loop entry ``exec_``."""
+    """隔离实例记录并安装具有 Qt5 接口的 binding 桩。
+
+    The Qt5 shape: PySide2, whose application only spells the loop entry ``exec_``."""
     for entries in CREATED.values():
         entries.clear()
     install_fake_binding(
@@ -252,12 +291,14 @@ def fake_qt5(monkeypatch):
 
 
 def button(text: str) -> FakeButton:
+    """按显示文字定位唯一按钮，歧义或缺失时让测试失败。"""
     matches = [item for item in CREATED["buttons"] if item.text == text]
     assert len(matches) == 1, f"expected exactly one {text!r} button, found {len(matches)}"
     return matches[0]
 
 
 def test_the_viewmodel_reads_its_model_and_service():
+    """验证 ViewModel 从模型和服务读取内容并维护关于窗口状态。"""
     from mvvm.models import AboutModel, ApplicationModel
     from mvvm.services import GreetingService
     from mvvm.view_models import MainViewModel
@@ -282,6 +323,7 @@ def test_the_viewmodel_reads_its_model_and_service():
 
 
 def test_about_model_round_trips():
+    """验证关于模型序列化往返及默认说明文本。"""
     from mvvm.models import AboutModel
 
     model = AboutModel(title="T", body="B")
@@ -294,6 +336,7 @@ def test_about_model_round_trips():
 
 
 def test_the_composition_root_registers_every_layer(fake_qt):
+    """验证装配入口注册服务、ViewModel 和两类视图。"""
     from application import PyUpperApplication
     from mvvm.services import GreetingService
 
@@ -309,6 +352,7 @@ def test_the_composition_root_registers_every_layer(fake_qt):
 
 
 def test_the_about_button_opens_and_closes_the_window(fake_qt):
+    """验证关于窗口延迟创建、文本绑定及重复打开时复用实例。"""
     from application import PyUpperApplication
 
     application = PyUpperApplication()
@@ -348,9 +392,10 @@ def test_the_about_button_opens_and_closes_the_window(fake_qt):
 
 
 def test_run_gui_headless_uses_the_same_assembly(fake_qt, monkeypatch, capsys):
+    """验证无显示入口使用相同对象装配并能清理窗口。"""
     from application import run_gui
 
-    monkeypatch.setenv("PY_UPPER_HEADLESS", "1")
+    monkeypatch.setenv("APPBUILD_HEADLESS", "1")
     monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
 
     assert run_gui() == 0
@@ -361,6 +406,7 @@ def test_run_gui_headless_uses_the_same_assembly(fake_qt, monkeypatch, capsys):
 
 
 def test_native_dialog_close_updates_state_and_allows_reopening(fake_qt):
+    """验证原生关闭事件同步模型状态且允许重新打开。"""
     from application import PyUpperApplication
 
     application = PyUpperApplication()
@@ -377,6 +423,7 @@ def test_native_dialog_close_updates_state_and_allows_reopening(fake_qt):
 
 
 def test_application_import_defers_asyncio_until_an_async_command_runs():
+    """通过独立进程确认同步应用导入不会提前加载 asyncio。"""
     result = subprocess.run(
         [sys.executable, "-IS", "-c", """
 import sys
@@ -403,7 +450,9 @@ finally:
 
 
 def test_run_gui_enters_the_loop_the_binding_ships(fake_qt5, monkeypatch):
-    """The interactive path, on the binding the packaged Windows application used.
+    """验证 GUI 使用当前 Qt binding 提供的循环入口。
+
+    The interactive path, on the binding the packaged Windows application used.
 
     Every other test here and the build smoke step take the headless branch,
     which calls ``processEvents()`` and never opens a loop, and every real-Qt leg
@@ -414,14 +463,16 @@ def test_run_gui_enters_the_loop_the_binding_ships(fake_qt5, monkeypatch):
     """
     from application import run_gui
 
-    monkeypatch.delenv("PY_UPPER_HEADLESS", raising=False)
+    monkeypatch.delenv("APPBUILD_HEADLESS", raising=False)
 
     assert run_gui() == 0
     assert fake_qt5["applications"][-1].loops == 1
 
 
 def test_the_qt5_high_dpi_attribute_is_set_before_the_window(fake_qt5):
-    """Qt5 only reads the high-DPI attributes while the QApplication is built.
+    """验证 Qt5 高 DPI 属性只设置一次且早于窗口创建。
+
+    Qt5 only reads the high-DPI attributes while the QApplication is built.
 
     The old call sat on the instance, after construction, so Qt logged
     ``Attribute Qt::AA_EnableHighDpiScaling must be set before QCoreApplication is
@@ -437,6 +488,7 @@ def test_the_qt5_high_dpi_attribute_is_set_before_the_window(fake_qt5):
 
 
 def test_prepare_reuses_the_running_object_graph(fake_qt):
+    """验证重复准备应用复用对象和状态，不重复创建窗口。"""
     from application import PyUpperApplication
 
     application = PyUpperApplication()
@@ -451,6 +503,7 @@ def test_prepare_reuses_the_running_object_graph(fake_qt):
 
 
 def test_main_window_dispose_detaches_its_custom_subscription(fake_qt):
+    """验证主窗口释放后不再响应自定义的关于窗口订阅。"""
     from application import PyUpperApplication
 
     application = PyUpperApplication()
@@ -468,6 +521,7 @@ def test_main_window_dispose_detaches_its_custom_subscription(fake_qt):
 
 @pytest.mark.parametrize("headless", [False, True])
 def test_run_cleans_up_the_container_on_normal_exit(fake_qt, headless):
+    """验证正常退出后容器、模型、视图与窗口全部清理。"""
     from application import PyUpperApplication
 
     application = PyUpperApplication()
@@ -484,6 +538,7 @@ def test_run_cleans_up_the_container_on_normal_exit(fake_qt, headless):
 @pytest.mark.parametrize("headless", [False, True])
 @pytest.mark.parametrize("stage", ["initialize_views", "start", "events"])
 def test_run_cleans_up_after_partial_start_or_event_failure(fake_qt, monkeypatch, headless, stage):
+    """验证部分启动或事件处理失败后仍清理已创建资源。"""
     from application import PyUpperApplication
 
     application = PyUpperApplication()
@@ -498,6 +553,7 @@ def test_run_cleans_up_after_partial_start_or_event_failure(fake_qt, monkeypatch
     original = getattr(owner, method)
 
     def fail():
+        """向所选生命周期阶段注入异常，覆盖清理路径。"""
         original()
         raise RuntimeError("injected lifecycle failure")
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 def main():
+    """在指定真实桌面平台启动示例并记录窗口 exposed 时间与截图；不替代物理显示延迟测量。"""
     parser = argparse.ArgumentParser()
     parser.add_argument('--platform', required=True, choices=['xcb', 'wayland', 'windows', 'cocoa'])
     parser.add_argument('--output', type=Path, required=True)
@@ -26,6 +27,7 @@ def main():
     assert result['platform'] == args.platform
     timer = QtCore.QTimer()
     def check():
+        """轮询窗口暴露状态；成功截图或超时后停止计时器并退出。"""
         window = app.mvvm_app.get_view('main')._window
         handle = window.windowHandle()
         if handle and handle.isExposed():

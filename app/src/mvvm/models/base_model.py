@@ -13,10 +13,12 @@ class BaseModel(ABC):
     """Model基类"""
     
     def __init__(self):
+        """初始化尚未分配的模型标识。"""
         self._id: Optional[Any] = None
     
     @property
     def id(self) -> Optional[Any]:
+        """返回模型当前标识；未分配时为 None。"""
         return self._id
     
     @abstractmethod
@@ -30,6 +32,7 @@ class BaseModel(ABC):
         pass
     
     def __repr__(self) -> str:
+        """显示模型类型和标识，供日志定位对象。"""
         return f"{self.__class__.__name__}(id={self._id})"
 
 
@@ -37,6 +40,7 @@ class CANDeviceModel(BaseModel):
     """CAN设备模型"""
     
     def __init__(self):
+        """初始化 CAN 配置和断开状态；不会连接硬件。"""
         super().__init__()
         self.bustype: str = "pcan"
         self.channel: str = "PCAN_USBBUS1"
@@ -45,6 +49,7 @@ class CANDeviceModel(BaseModel):
         self.device_type: Optional[str] = None
     
     def to_dict(self) -> dict:
+        """导出 CAN 配置及连接状态为普通字典。"""
         return {
             'bustype': self.bustype,
             'channel': self.channel,
@@ -54,6 +59,7 @@ class CANDeviceModel(BaseModel):
         }
     
     def from_dict(self, data: dict) -> None:
+        """按字典更新 CAN 字段；缺失字段恢复示例默认值。"""
         self.bustype = data.get('bustype', 'pcan')
         self.channel = data.get('channel', 'PCAN_USBBUS1')
         self.bitrate = data.get('bitrate', 500000)
@@ -65,6 +71,7 @@ class SerialDeviceModel(BaseModel):
     """串口设备模型"""
     
     def __init__(self):
+        """初始化串口参数和断开状态，不打开设备。"""
         super().__init__()
         self.port: str = "COM1"
         self.baudrate: int = 19200
@@ -72,6 +79,7 @@ class SerialDeviceModel(BaseModel):
         self.slave_addr: int = 1
     
     def to_dict(self) -> dict:
+        """导出串口配置和状态，不包含设备句柄。"""
         return {
             'port': self.port,
             'baudrate': self.baudrate,
@@ -80,6 +88,7 @@ class SerialDeviceModel(BaseModel):
         }
     
     def from_dict(self, data: dict) -> None:
+        """读取串口字段；缺失参数采用示例默认值。"""
         self.port = data.get('port', 'COM1')
         self.baudrate = data.get('baudrate', 19200)
         self.is_connected = data.get('is_connected', False)
@@ -90,6 +99,7 @@ class OTAModel(BaseModel):
     """OTA升级模型"""
     
     def __init__(self):
+        """初始化升级进度和空闲状态，不发起升级流程。"""
         super().__init__()
         self.file_path: Optional[str] = None
         self.is_upgrading: bool = False
@@ -100,6 +110,7 @@ class OTAModel(BaseModel):
         self.total_blocks: int = 0
     
     def to_dict(self) -> dict:
+        """导出升级文件、进度、状态及错误信息。"""
         return {
             'file_path': self.file_path,
             'is_upgrading': self.is_upgrading,
@@ -111,6 +122,7 @@ class OTAModel(BaseModel):
         }
     
     def from_dict(self, data: dict) -> None:
+        """从字典恢复升级展示状态；缺失字段恢复初值。"""
         self.file_path = data.get('file_path')
         self.is_upgrading = data.get('is_upgrading', False)
         self.progress = data.get('progress', 0.0)
@@ -124,6 +136,7 @@ class ApplicationModel(BaseModel):
     """应用程序全局模型"""
     
     def __init__(self):
+        """构造子模型并初始化应用状态；应用名称由装配入口注入。"""
         super().__init__()
         self.can_device = CANDeviceModel()
         self.serial_device = SerialDeviceModel()
@@ -134,6 +147,7 @@ class ApplicationModel(BaseModel):
         self.app_version: str = "1.0.0"
     
     def to_dict(self) -> dict:
+        """递归导出应用及其设备、升级子模型的状态。"""
         return {
             'can_device': self.can_device.to_dict(),
             'serial_device': self.serial_device.to_dict(),
@@ -144,6 +158,7 @@ class ApplicationModel(BaseModel):
         }
     
     def from_dict(self, data: dict) -> None:
+        """仅加载输入中存在的子模型，再更新应用级字段。"""
         if 'can_device' in data:
             self.can_device.from_dict(data['can_device'])
         if 'serial_device' in data:

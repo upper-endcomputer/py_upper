@@ -1,5 +1,5 @@
 # 中文维护说明：验证 develop 的宿主兼容与原生目标；headless 检查不代替签名公证和真实桌面验收。
-name: py_upper validation
+name: appbuild validation
 
 # Only develop runs the matrix. Development happens on feature_* / fix_*
 # branches cut from develop and merged back after self-testing, so their
@@ -36,8 +36,8 @@ jobs:
       - name: Verify Build Tool imports
         run: |
           python tools/check_comments.py
-          python -m compileall -q tools/py_upper
-          python -c "import sys; sys.path.insert(0, 'tools'); import py_upper.config; import py_upper.compat; print(sys.version)"
+          python -m compileall -q tools/appbuild
+          python -c "import sys; sys.path.insert(0, 'tools'); import appbuild.config; import appbuild.compat; print(sys.version)"
       - name: Run compatibility tests
         run: |
           # setuptools is a real build dependency here: the Windows target
@@ -46,7 +46,7 @@ jobs:
           # >= 3.12 no longer ships setuptools with the interpreter, so it has
           # to be installed explicitly.
           python -m pip install -U 'pip<25.1' 'setuptools' 'pytest<8'
-          python -m pytest tests/tools/test_build_tool_compat.py tests/tools/test_py_upper_config.py -q
+          python -m pytest app/tests/test_build_tool_compat.py app/tests/test_config.py -q
 
   native-integration:
     strategy:
@@ -114,18 +114,18 @@ jobs:
         env:
           # The application's own dependency set, unless the matrix entry
           # overrides it because no wheel of it exists for that target.
-          PY_UPPER_CI_DEPENDENCIES: ${{ matrix.dependencies || '["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]' }}
+          APPBUILD_CI_DEPENDENCIES: ${{ matrix.dependencies || '["PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0"]' }}
           # The template pins the newest supported runtime. The Windows 3.8
           # compatibility entry overrides it to exercise the older runtime line.
-          PY_UPPER_CI_RUNTIME_PYTHON: ${{ matrix.runtime-python || '3.13.5' }}
+          APPBUILD_CI_RUNTIME_PYTHON: ${{ matrix.runtime-python || '3.13.5' }}
         run: |
           python - <<'PY'
           import os
           import re
           from pathlib import Path
 
-          dependencies = os.environ['PY_UPPER_CI_DEPENDENCIES']
-          runtime_python = os.environ['PY_UPPER_CI_RUNTIME_PYTHON']
+          dependencies = os.environ['APPBUILD_CI_DEPENDENCIES']
+          runtime_python = os.environ['APPBUILD_CI_RUNTIME_PYTHON']
           text = Path('app/pyproject.toml.example').read_text(encoding='utf-8')
           text, runtime_replaced = re.subn(
               r'^python = "[^"]+"$',
@@ -146,7 +146,7 @@ jobs:
           Path('app/pyproject.toml').write_text(text, encoding='utf-8')
           PY
 
-      - name: Cache py_upper build inputs
+      - name: Cache appbuild build inputs
         uses: actions/cache@v4
         with:
           path: |
@@ -179,7 +179,7 @@ jobs:
           ninja --version
 
       - name: Unit tests
-        run: python -m pytest tests/tools app/tests -q --junitxml=unit-results.xml
+        run: python -m pytest app/tests -q --junitxml=unit-results.xml
 
       - name: Report failing tests
         if: failure()
@@ -199,8 +199,8 @@ jobs:
 
       - name: Local end-to-end build with third-party wheel
         env:
-          PY_UPPER_E2E: '1'
-        run: python -m pytest tests/tools/test_e2e_local.py -q
+          APPBUILD_E2E: '1'
+        run: python -m pytest app/tests/test_e2e_local.py -q
 
       - name: Doctor
         run: python tools/build.py --doctor --target ${{ matrix.target }}
@@ -210,20 +210,20 @@ jobs:
         # drive letters in native CPython's archive arguments as remote hosts.
         shell: python
         env:
-          PY_UPPER_CI_TARGET: ${{ matrix.target }}
-          PY_UPPER_CI_APP_RUN: ${{ matrix.run }}
-          PY_UPPER_HEADLESS: '1'
+          APPBUILD_CI_TARGET: ${{ matrix.target }}
+          APPBUILD_CI_APP_RUN: ${{ matrix.run }}
+          APPBUILD_HEADLESS: '1'
           # A failed launcher must exit non-zero, never block the job on a
           # native error dialog that nobody can dismiss.
-          PY_UPPER_NO_DIALOG: '1'
+          APPBUILD_NO_DIALOG: '1'
         run: |
           import os
           from pathlib import Path
           import subprocess
           import sys
 
-          run_gui = os.environ["PY_UPPER_CI_APP_RUN"] == "true"
-          command = [sys.executable, "tools/build.py", "--target", os.environ["PY_UPPER_CI_TARGET"]]
+          run_gui = os.environ["APPBUILD_CI_APP_RUN"] == "true"
+          command = [sys.executable, "tools/build.py", "--target", os.environ["APPBUILD_CI_TARGET"]]
           if run_gui:
               command.append("--run")
 
@@ -294,7 +294,7 @@ jobs:
 
           data = {
               'format': 1,
-              'project': 'py_upper',
+              'project': 'appbuild',
               'version': str(project['version']),
               'targets': entries,
           }

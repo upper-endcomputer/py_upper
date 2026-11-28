@@ -26,7 +26,7 @@ for mode in ['all','directory','none']:
   values=[]
   for i in range(5):
    if kind=='cold' and cache.exists():shutil.rmtree(cache)
-   env=dict(os.environ,PY_UPPER_EGG_CACHE=str(cache),PY_UPPER_HEADLESS='1',PY_UPPER_NO_DIALOG='1',PY_UPPER_STARTUP_TIMING='1')
+   env=dict(os.environ,APPBUILD_EGG_CACHE=str(cache),APPBUILD_HEADLESS='1',APPBUILD_NO_DIALOG='1',APPBUILD_STARTUP_TIMING='1')
    start=time.perf_counter();p=subprocess.run([str(exe)],env=env,capture_output=True,text=True,timeout=60);values.append(time.perf_counter()-start)
    (work/f'{mode}-{kind}-{i}.log').write_text(p.stdout+p.stderr)
    if p.returncode or 'GUI OK' not in p.stdout: raise RuntimeError(f'{mode} {kind}: {p.stdout} {p.stderr}')

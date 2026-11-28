@@ -17,6 +17,7 @@ class MainWindow(ViewBase):
     """主窗口：一句话 + 一个按钮，按钮走 CommandBinding → ViewModel 命令"""
 
     def __init__(self, viewmodel: MainViewModel, about_window: Optional[AboutWindow] = None) -> None:
+        """创建主窗口、属性绑定与命令绑定；保存自定义订阅以便释放。"""
         super().__init__(viewmodel)
         from utils.qt_compat import QtWidgets  # 只在真的要建窗口时加载 binding
 
@@ -52,6 +53,7 @@ class MainWindow(ViewBase):
             self._about_window.close()
 
     def show(self) -> None:
+        """显示并激活窗口，避免冷启动后落在其他应用后面。"""
         self._window.show()
         # A cold start can take long enough that LaunchServices' activation
         # expires, leaving the new window behind the previously active app.
@@ -60,9 +62,11 @@ class MainWindow(ViewBase):
         self._window.activateWindow()
 
     def close(self) -> None:
+        """向 Qt 主窗口发送关闭请求。"""
         self._window.close()
 
     def dispose(self) -> None:
+        """先解除自定义 ViewModel 订阅，再释放基类管理的绑定。"""
         if self._unsubscribe_viewmodel is not None:
             self._unsubscribe_viewmodel()
             self._unsubscribe_viewmodel = None

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 import time
 import os
 import shutil
@@ -12,32 +11,34 @@ import subprocess
 import sys
 from pathlib import Path
 
-from py_upper.appdir import APP_DIR_ENV, resolve_app_dir, select_from_argv
+from appbuild.appdir import APP_DIR_ENV, resolve_app_dir, select_from_argv
 
 # --app has to reach config.py before the module-level APP/APP_CONFIG paths are
-# resolved. Programmatic callers can set PY_UPPER_APP_DIR instead.
+# resolved. Programmatic callers can set APPBUILD_APP_DIR instead.
 select_from_argv(sys.argv[1:])
 
-from py_upper.config import (
+from appbuild.config import (
     APP, ROOT, BUILD, DIST, TARGETS, app_name, host_description, host_target, pbs_release,
     pbs_sdk_dir, python_version, runtime_provider, target_runtime_dir,
     trim_policy, validate_build_python_version, validate_target, require_local_python,
 )
-from py_upper.egg import COMPRESSIONS, egg_config
-from py_upper.lock import verify_lock, write_lock
-from py_upper.package import _publish, build_launcher, package, write_release_manifest
-from py_upper.python_build import build_python_package
-from py_upper.runtime import ensure_runtime, ensure_sdk
-from py_upper.fs import retire_tree
-from py_upper.verify import run_launcher_smoke, run_packaged_launcher, run_target_python_smoke
-from py_upper.toolchain import describe_toolchain
-from py_upper.third_party import resolve_wheels
-from py_upper.trim import PRESETS
-from py_upper.egg_loader import BACKENDS
-from py_upper.verify import verify
+from appbuild.egg import COMPRESSIONS, egg_config
+from appbuild.lock import verify_lock, write_lock
+from appbuild.package import _publish, build_launcher, package, write_release_manifest
+from appbuild.python_build import build_python_package
+from appbuild.runtime import ensure_runtime, ensure_sdk
+from appbuild.signing import release
+from appbuild.fs import retire_tree
+from appbuild.verify import run_launcher_smoke, run_packaged_launcher, run_target_python_smoke
+from appbuild.toolchain import describe_toolchain
+from appbuild.third_party import resolve_wheels
+from appbuild.trim import PRESETS
+from appbuild.egg_loader import BACKENDS
+from appbuild.verify import verify
 
 
 def _run_app(out: Path, target) -> int:
+    """启动已打包目标应用并返回退出码；缺少可执行文件时报错。"""
     name = app_name()
     executable = out / (f"{name}.exe" if target.os == "windows" else name)
     if target.os == "macos":
@@ -52,6 +53,7 @@ def _run_app(out: Path, target) -> int:
 def _clean() -> int:
     # dist/ carries a working interpreter that environment discovery tools
     # execute, so deleting it in place races with the bytecode they write.
+    """先退役 dist 再删除 build，降低运行中解释器与目录删除的竞争。"""
     retire_tree(DIST, trash=BUILD / "retired")
     if BUILD.exists():
         shutil.rmtree(BUILD)
@@ -60,6 +62,7 @@ def _clean() -> int:
 
 
 def _doctor(target) -> int:
+    """报告宿主、应用、runtime 和工具链状态；关键工具不可用返回非零。"""
     print("host:", host_description())
     print("app:", APP)
     print("target:", target.key, target.triple)
@@ -92,10 +95,11 @@ def _doctor(target) -> int:
 
 
 def main(argv=None) -> int:
+    """在配置导入前选择应用并持有工作区锁；帮助请求直接交给参数解析器。"""
     if argv is not None:
         requested = select_from_argv(argv)
         if requested is not None and resolve_app_dir(requested) != APP:
-            # config.APP is fixed when py_upper.config is imported. The normal
+            # config.APP is fixed when appbuild.config is imported. The normal
             # CLI path selects it before that import; a programmatic caller
             # that already imported this module is re-run in a child process
             # so the same --app contract still applies.
@@ -109,7 +113,7 @@ def main(argv=None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     if "--help" in arguments or "-h" in arguments:
         return _main(argv)
-    from py_upper.workspace_lock import workspace_lock
+    from appbuild.workspace_lock import workspace_lock
     try:
         with workspace_lock(ROOT):
             return _main(argv)
@@ -119,8 +123,9 @@ def main(argv=None) -> int:
 
 
 def _main(argv=None) -> int:
+    """解析 CLI，顺序执行构建、验证、签名和发布；失败候选包不替换已发布版本。"""
     validate_build_python_version()
-    parser = argparse.ArgumentParser(description="py_upper - standalone Python application builder")
+    parser = argparse.ArgumentParser(description="appbuild - standalone Python application builder")
     parser.add_argument("command", nargs="?", choices=["doctor", "build", "run", "verify", "lock", "release", "clean"])
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--doctor", action="store_true")
@@ -131,7 +136,7 @@ def _main(argv=None) -> int:
     actions.add_argument("--clean", action="store_true")
     parser.add_argument("--app", metavar="DIR",
                         help="application directory containing pyproject.toml and src/ "
-                             "(default: <repo>/app; env PY_UPPER_APP_DIR)")
+                             "(default: <repo>/app; env APPBUILD_APP_DIR)")
     parser.add_argument("--target", choices=list(TARGETS))
     parser.add_argument("--locked", action="store_true")
     parser.add_argument("--linux-format", action="append", choices=["TGZ", "DEB", "RPM"],
@@ -155,7 +160,7 @@ def _main(argv=None) -> int:
     egg_actions.add_argument("--no-egg", dest="egg", action="store_false", default=None,
                              help="ship loose application files even when the project enables the egg")
     parser.add_argument("--egg-key", metavar="HEX",
-                        help="override [tool.py_upper.egg].key_hex (at least 16 hex bytes)")
+                        help="override [tool.appbuild.egg].key_hex (at least 16 hex bytes)")
     parser.add_argument("--egg-backend", choices=BACKENDS, metavar="NAME",
                         help="egg extension loader: auto, memory or extract")
     parser.add_argument("--egg-compression", choices=COMPRESSIONS, metavar="NAME",
@@ -196,8 +201,7 @@ def _main(argv=None) -> int:
             raise RuntimeError(f"--run requires host target; host={host_target().key}, target={target.key}")
         if args.locked:
             verify_lock(target)
-            os.environ["PY_UPPER_LOCKED"] = "1"
-            os.environ["PYSTAND_LOCKED"] = "1"
+            os.environ["APPBUILD_LOCKED"] = "1"
 
         trim = trim_policy(args.trim_preset).merge(
             site_packages=args.trim_site,
@@ -211,6 +215,7 @@ def _main(argv=None) -> int:
         started = time.perf_counter()
         timings = {}
         def phase(name):
+            """记录上一阶段耗时并推进计时起点，供本次构建诊断使用。"""
             nonlocal started
             now = time.perf_counter()
             timings[name] = round(now - started, 6)
@@ -222,7 +227,7 @@ def _main(argv=None) -> int:
         print("[2/6] Third-party dependencies")
         signing_identity = None
         if action == "release" and target.os == "macos":
-            signing_identity = args.identity or os.environ.get("PY_UPPER_CODESIGN_IDENTITY") or os.environ.get("PYSTAND_CODESIGN_IDENTITY")
+            signing_identity = args.identity or os.environ.get("APPBUILD_CODESIGN_IDENTITY")
             if not signing_identity:
                 raise RuntimeError("macOS release requires --identity")
         build_python_package(target, trim, egg, signing_identity=signing_identity)
@@ -242,7 +247,7 @@ def _main(argv=None) -> int:
         run_launcher_smoke(target, out / ("Contents/MacOS/" + app_name() if target.os == "macos" else (app_name() + ".exe" if target.os == "windows" else app_name())))
 
         phase("smoke")
-        from py_upper.build_info import write_build_info
+        from appbuild.build_info import write_build_info
         write_build_info(out, target, {"egg": egg.enabled, "backend": egg.backend,
                                       "compression": egg.compression, "trim": vars(trim)})
         timing_path = BUILD / "timings" / (target.key + ".json")
@@ -253,7 +258,7 @@ def _main(argv=None) -> int:
             run_launcher_smoke(target, out / ("Contents/MacOS/" + app_name() if target.os == "macos" else app_name() + ".exe"))
 
         if action == "release" and target.os == "linux":
-            from py_upper.linux_release import linux_release
+            from appbuild.linux_release import linux_release
             print("Linux release:", linux_release(target, args.linux_format or ("TGZ", "DEB"), args.linux_deb_depends, source=out))
         out = _publish(out.parent, out, DIST / out.name)
         if action == "run":
@@ -269,46 +274,10 @@ def _main(argv=None) -> int:
         return exc.returncode or 1
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}")
-        if os.environ.get("PY_UPPER_TRACEBACK") == "1":
+        if os.environ.get("APPBUILD_TRACEBACK") == "1":
             raise
         return 1
 
-
-def release(target, identity=None, notary_profile=None, *, output=None) -> int:
-    if target.os == "linux":
-        print("Linux release: use your distribution signing/package system.")
-        return 0
-    if target.os == "windows":
-        tool = shutil.which("signtool")
-        cert = os.environ.get("PY_UPPER_SIGN_CERT") or os.environ.get("PYSTAND_SIGN_CERT")
-        if not tool or not cert:
-            raise RuntimeError("Windows release requires signtool and PY_UPPER_SIGN_CERT")
-        for path in (output or (DIST / app_name())).rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".exe", ".dll", ".pyd"}:
-                subprocess.run([tool, "sign", "/fd", "SHA256", "/a", "/f", cert, str(path)], check=True)
-        return 0
-    app = output or (DIST / f"{app_name()}.app")
-    codesign = shutil.which("codesign")
-    xcrun = shutil.which("xcrun")
-    ident = identity or os.environ.get("PY_UPPER_CODESIGN_IDENTITY") or os.environ.get("PYSTAND_CODESIGN_IDENTITY")
-    if not codesign or not xcrun or not ident:
-        raise RuntimeError("macOS release requires codesign/xcrun and --identity")
-    from py_upper.signing import sign_macos_files
-    sign_macos_files(app.rglob("*"), ident)
-    subprocess.run([codesign, "--force", "--timestamp", "--options", "runtime", "--sign", ident, str(app)], check=True)
-    subprocess.run([codesign, "--verify", "--deep", "--strict", "--verbose=2", str(app)], check=True)
-    if notary_profile:
-        temporary_root = ROOT / ".tmp"
-        temporary_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="notary-", dir=str(temporary_root)) as work:
-            archive = Path(work) / (app.name + ".zip")
-            subprocess.run(["ditto", "-c", "-k", "--keepParent", str(app), str(archive)], check=True)
-            result = subprocess.run([xcrun, "notarytool", "submit", str(archive), "--keychain-profile", notary_profile, "--wait", "--output-format", "json"], check=True, capture_output=True, text=True)
-            if json.loads(result.stdout).get("status") != "Accepted":
-                raise RuntimeError("Notarization was not accepted: " + result.stdout)
-        subprocess.run([xcrun, "stapler", "staple", str(app)], check=True)
-        subprocess.run([xcrun, "stapler", "validate", str(app)], check=True)
-    return 0
 
 
 if __name__ == "__main__":

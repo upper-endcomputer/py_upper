@@ -1,0 +1,292 @@
+# 中文维护说明：选择 runtime 提供方并准备目标解释器；只裁剪复制树，不破坏共享原始 runtime。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
+"""Target runtime: provider dispatch, PBS acquisition and release-safe optimization."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import tarfile
+import urllib.error
+import zipfile
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+from .config import (
+    CACHE, Target, optimize_config, pbs_release, python_version, runtime_provider,
+    runtime_spec, target_runtime_dir,
+)
+from .fs import copy_tree_contents, sha256
+from .manifest import build_manifest, read_manifest, validate_manifest, write_manifest
+from .net import download
+from .pbs import ensure_pbs_sdk, resolve_inputs, sdk_info as pbs_sdk_info, windows_embed_asset
+
+
+RUNTIME_MARKER = ".appbuild-runtime.json"
+
+
+def safe_extract(tar_path: Path, dest: Path) -> None:
+    """使用 tarfile data filter 解压 runtime；拒绝路径越界和缺少安全过滤支持的解释器。"""
+    if not hasattr(tarfile, "data_filter"):
+        raise RuntimeError("Safe runtime extraction requires a Python security update with tarfile.data_filter")
+    dest.mkdir(parents=True, exist_ok=True)
+    root = dest.resolve()
+    with tarfile.open(tar_path, "r:gz") as tf:
+        for member in tf.getmembers():
+            target = (dest / member.name).resolve()
+            if os.path.commonpath([str(root), str(target)]) != str(root):
+                raise RuntimeError(f"Unsafe archive path: {member.name}")
+        # Check each member at extraction time too: an earlier archive member
+        # can introduce a symlink that did not exist during the path precheck.
+        tf.extractall(dest, filter="data")
+
+
+def ensure_pbs_runtime(target: Target) -> Path:
+    """复用匹配标记的 PBS runtime，或校验下载后重新解压；旧 full-build 复用 SDK 的 install 树。"""
+    out = target_runtime_dir(target)
+    marker = out / RUNTIME_MARKER
+    if marker.exists():
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            expected_tag = str(data.get("tag") or "")
+            if (
+                data.get("format") == 1
+                and data.get("target") == target.key
+                and data.get("python") == python_version()
+                and (not pbs_release() or expected_tag == pbs_release())
+                and out.exists()
+            ):
+                return out
+        except (OSError, ValueError):
+            pass
+
+    inputs = resolve_inputs(target)
+    if inputs.source == "metadata-full":
+        # Releases before 20210724 publish no install-only runtime. Their full
+        # build is the SDK as well, and ensure_pbs_sdk already unpacked it with
+        # a zstd-capable tar: reuse its install/ tree instead of feeding the
+        # .tar.zst archive to tarfile, which only reads gzip. This also avoids
+        # downloading and extracting the same archive twice.
+        sdk = ensure_pbs_sdk(target)
+        source = sdk / "install"
+        if not source.is_dir():
+            raise RuntimeError(f"PBS full-build SDK has no install runtime tree: {source}")
+        if out.exists():
+            shutil.rmtree(out)
+        copy_tree_contents(source, out)
+        marker.write_text(json.dumps({
+            "format": 1, "provider": "pbs", "tag": inputs.tag, "asset": inputs.runtime.name,
+            "url": inputs.runtime.url, "sha256": inputs.runtime.sha256 or "",
+            "target": target.key, "python": python_version(),
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return out
+
+    archive = CACHE / "pbs" / inputs.tag / target.key / inputs.runtime.name
+    download(inputs.runtime.url, archive)
+    actual = sha256(archive)
+    if inputs.runtime.sha256 and actual.lower() != inputs.runtime.sha256.lower():
+        raise RuntimeError(f"PBS runtime SHA256 mismatch: expected {inputs.runtime.sha256}, got {actual}")
+    extract = CACHE / "pbs" / inputs.tag / target.key / "runtime-extract"
+    if extract.exists():
+        shutil.rmtree(extract)
+    safe_extract(archive, extract)
+    source = extract / "python"
+    if not source.exists():
+        raise RuntimeError(f"Unexpected PBS runtime archive layout: {extract}")
+    if out.exists():
+        shutil.rmtree(out)
+    copy_tree_contents(source, out)
+    marker.write_text(json.dumps({
+        "format": 1, "provider": "pbs", "tag": inputs.tag, "asset": inputs.runtime.name,
+        "url": inputs.runtime.url, "sha256": actual, "target": target.key, "python": python_version(),
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
+
+
+def ensure_windows_embed_runtime(target: Target) -> Path:
+    """验证官方 embeddable ZIP 结构后写入 runtime；拒绝重复、越界和缺少必要文件的归档。
+
+    Cache the unmodified python.org Windows embeddable ZIP as runtime.
+
+    The ZIP contains a stdlib ZIP and flat .pyd files rather than Lib/DLLs.
+    Keep its _pth file: the packaged launcher sets its paths explicitly, while
+    invoking python.exe during a build needs isolation from host site-packages.
+    """
+    if target.os != "windows":
+        raise ValueError(f"No Windows embeddable runtime for {target.key}")
+    out = target_runtime_dir(target)
+    asset = windows_embed_asset(target, python_version())
+    marker = out / RUNTIME_MARKER
+    if marker.is_file():
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            if (data.get("format") == 2 and data.get("source") == "python.org"
+                    and data.get("asset") == asset.name and data.get("target") == target.key
+                    and data.get("python") == python_version()):
+                return out
+        except (OSError, ValueError):
+            pass
+
+    archive = CACHE / "python.org" / python_version() / target.key / asset.name
+    try:
+        download(asset.url, archive)
+    except urllib.error.HTTPError as exc:
+        # The pinned version has to exist as an official ZIP for every Windows
+        # architecture; PBS covers more versions than python.org does.
+        if exc.code == 404:
+            raise RuntimeError(
+                f"Python {python_version()} has no official embeddable ZIP for {target.key} "
+                f"({asset.url}); pin a version python.org publishes an embeddable ZIP for"
+            ) from exc
+        raise
+    actual = sha256(archive)
+    required = {"python.exe", "python3.dll", "LICENSE.txt"}
+    digits = "".join(python_version().split(".")[:2])
+    required.update({f"python{digits}.dll", f"python{digits}.zip", f"python{digits}._pth"})
+    with zipfile.ZipFile(archive) as source:
+        entries = source.infolist()
+        names = {entry.filename for entry in entries}
+        if len(names) != len(entries):
+            raise RuntimeError(f"Duplicate member in Python embeddable ZIP: {asset.name}")
+        for entry in entries:
+            name = entry.filename
+            if (not name or name.endswith("/") or "/" in name or "\\" in name
+                    or PureWindowsPath(name).drive or PurePosixPath(name).is_absolute()
+                    or name in {".", ".."}):
+                raise RuntimeError(f"Unsafe embed archive path: {name}")
+        if not required <= names:
+            raise RuntimeError(f"Incomplete Python embeddable ZIP {asset.name}: missing {sorted(required - names)}")
+        if out.exists():
+            shutil.rmtree(out)
+        out.mkdir(parents=True)
+        for entry in entries:
+            with source.open(entry) as stream, (out / entry.filename).open("wb") as destination:
+                shutil.copyfileobj(stream, destination)
+    marker.write_text(json.dumps({
+        "format": 2, "provider": "pbs", "source": "python.org", "asset": asset.name,
+        "url": asset.url, "sha256": actual, "target": target.key, "python": python_version(),
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
+
+
+def _local_info(target: Target) -> dict:
+    """校验本地 runtime 清单并返回绝对 SDK 编译输入，不下载资源。"""
+    spec = runtime_spec(target)
+    if not spec.root.exists() or not spec.sdk_root.exists():
+        raise RuntimeError(f"Local runtime/SDK missing: runtime={spec.root} sdk={spec.sdk_root}")
+    manifest = read_manifest(spec.root)
+    validate_manifest(manifest, target, spec)
+    return {
+        "provider": "local",
+        "target": target.key,
+        "target_triple": target.triple,
+        "runtime_root": str(spec.root),
+        "sdk_root": str(spec.sdk_root),
+        "python_executable": str((spec.sdk_root / manifest["python_executable"]).resolve()),
+        "include_dir": str((spec.sdk_root / manifest["include_dir"]).resolve()),
+        "python": manifest["python"],
+        "python_major_minor": manifest["python_major_minor"],
+        "python_tag": manifest["python_abi"],
+        "python_platform_tag": manifest["python_platform_tag"],
+        "manifest": manifest,
+    }
+
+
+def ensure_sdk(target: Target) -> Path:
+    """按提供方准备或验证 SDK，返回其根目录。"""
+    if runtime_provider() == "pbs":
+        return ensure_pbs_sdk(target)
+    _local_info(target)
+    return runtime_spec(target).sdk_root
+
+
+def ensure_runtime(target: Target) -> Path:
+    """按提供方准备 runtime，并验证或写入可迁移清单。"""
+    spec = runtime_spec(target)
+    if runtime_provider() == "pbs":
+        root = ensure_windows_embed_runtime(target) if target.os == "windows" else ensure_pbs_runtime(target)
+        data = build_manifest(spec, pbs_sdk_info(target))
+        validate_manifest(data, target, spec)
+        write_manifest(root, data)
+        return root
+    _local_info(target)
+    return spec.root
+
+
+def sdk_info(target: Target) -> dict:
+    """分派到 PBS 或本地清单，返回当前目标的 SDK 元信息。"""
+    if runtime_provider() == "pbs":
+        return pbs_sdk_info(target)
+    return _local_info(target)
+
+
+def runtime_site_packages(root: Path) -> list[Path]:
+    """列出 runtime 中 POSIX 和 Windows 布局的 site-packages 目录。
+
+    ``site-packages`` directories of a runtime tree, for either layout.
+
+    A POSIX runtime nests them under ``lib/python3.X``; the Windows runtime has
+    no version directory and keeps them under ``Lib``.
+    """
+    found = [path for path in sorted(root.glob("lib/python*/site-packages")) if path.is_dir()]
+    windows = root / "Lib" / "site-packages"
+    if windows.is_dir():
+        found.append(windows)
+    return found
+
+
+def runtime_pip_payloads(root: Path) -> list[Path]:
+    """集中识别 pip 和 ensurepip 文件，供裁剪与校验使用同一规则。
+
+    ``pip`` and ``ensurepip`` payloads inside a runtime tree.
+
+    The cleanup below and the package check in ``verify`` share this function
+    on purpose. A Windows runtime keeps its pip because the check only knew the
+    POSIX layout is exactly the failure this prevents: the build removes the
+    payload, the check looks somewhere else, and both report success.
+    """
+    found: list[Path] = []
+    for site in runtime_site_packages(root):
+        found.extend(sorted(site.glob("pip")))
+        found.extend(sorted(site.glob("pip-*.dist-info")))
+    found.extend(path for path in sorted(root.glob("lib/python*/ensurepip")) if path.is_dir())
+    windows_ensurepip = root / "Lib" / "ensurepip"
+    if windows_ensurepip.is_dir():
+        found.append(windows_ensurepip)
+    return found
+
+
+def optimize_runtime_tree(root: Path, trim=None) -> dict[str, int]:
+    """裁剪调用者传入的 runtime 副本并返回删除计数；不得传入共享原始树。
+
+    Apply release-safe cleanup to a copied runtime tree, never the source runtime."""
+    cfg = optimize_config()
+    removed_files = 0
+    removed_dirs = 0
+    remove_caches = bool(cfg.get("remove_python_caches", True))
+    remove_pip = bool(cfg.get("remove_runtime_pip", True))
+    if remove_caches:
+        for path in sorted(root.rglob("__pycache__"), key=lambda p: len(p.parts), reverse=True):
+            if path.is_dir():
+                shutil.rmtree(path)
+                removed_dirs += 1
+        for path in sorted(root.rglob("*.pyc")) + sorted(root.rglob("*.pyo")):
+            if path.is_file():
+                path.unlink()
+                removed_files += 1
+    if remove_pip:
+        for path in runtime_pip_payloads(root):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+                removed_dirs += 1
+            elif path.is_file() or path.is_symlink():
+                path.unlink()
+                removed_files += 1
+    if trim is not None and trim.has_runtime_rules:
+        from .trim import trim_tree
+
+        report = trim_tree(root, trim.runtime, trim.runtime_keep)
+        if report:
+            print(report.describe("runtime"))
+            removed_files += report.removed_files
+            removed_dirs += report.removed_dirs
+    return {"removed_files": removed_files, "removed_dirs": removed_dirs}

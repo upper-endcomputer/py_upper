@@ -20,6 +20,7 @@ class ServiceLocator:
     """
 
     def __init__(self) -> None:
+        """创建实例级服务表，避免不同应用容器共享注册状态。"""
         self._services: Dict[str, Any] = {}
 
     def register_service(self, service_name: str, service_instance: Any) -> None:
@@ -42,6 +43,7 @@ class MVVMApplication:
     """MVVM 应用容器：持有 root model、ViewModel/View 注册表与生命周期"""
 
     def __init__(self, model: Optional[ApplicationModel] = None) -> None:
+        """持有根模型并建立应用独占的视图、ViewModel 和服务容器。"""
         self.model = model or ApplicationModel()
         self.viewmodels: Dict[str, BaseViewModel] = {}
         self.views: Dict[str, ViewBase] = {}
@@ -94,6 +96,7 @@ class MVVMApplication:
         self._cleanup()
 
     def _cleanup(self) -> None:
+        """先清空注册表再逐项关闭视图与释放 ViewModel；收集异常后统一报告。"""
         views, viewmodels = list(self.views.values()), list(self.viewmodels.values())
         self.views.clear()
         self.viewmodels.clear()
@@ -114,4 +117,5 @@ class MVVMApplication:
         return self._is_running
 
     def __repr__(self) -> str:
+        """显示注册的视图和 ViewModel 数量，供生命周期诊断。"""
         return f"MVVMApplication(viewmodels={len(self.viewmodels)}, views={len(self.views)})"

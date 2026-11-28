@@ -9,20 +9,21 @@ from pathlib import Path
 # Exported by the packaged launcher: the directory that holds `runtime/`,
 # `site-packages/` and the entry script. Counting parent directories only works
 # for the layout of the day; the launcher knows the real answer.
-BUNDLE_HOME_ENV = "PY_UPPER_HOME"
+BUNDLE_HOME_ENV = "APPBUILD_HOME"
 
 # Exported by the packaged launcher: the application name compiled in at
 # packaging time. The launcher cannot read it from its own filename, because
 # renaming the executable is supported.
-APP_NAME_ENV = "PY_UPPER_APP_NAME"
+APP_NAME_ENV = "APPBUILD_APP_NAME"
 
-_APP_NAME_SECTION = "tool.py_upper.app"
+_APP_NAME_SECTION = "tool.appbuild.app"
 # Mirrors the packager's own fallback, for the case where neither a launcher nor
 # a pyproject.toml is reachable.
 _DEFAULT_APP_NAME = "Upper"
 
 
 def bundle_home() -> Path | None:
+    """读取 launcher 导出的包根目录；源码运行未导出时返回 None。"""
     value = os.environ.get(BUNDLE_HOME_ENV)
     return Path(value).resolve() if value else None
 
@@ -31,6 +32,7 @@ def _module_file() -> Path | None:
     # A merged Cython bundle is registered as a built-in module. CPython gives
     # it the spec origin "built-in" as __file__, which is not a path and has no
     # parent directories to count.
+    """返回真实源码文件路径；合并模块的 built-in 来源不能当作文件处理。"""
     value = globals().get("__file__")
     if not value:
         return None
@@ -42,6 +44,7 @@ def _module_file() -> Path | None:
 
 
 def _project_root() -> Path | None:
+    """从源码布局定位应用根目录；内建模块或路径层级不足时返回 None。"""
     module = _module_file()
     if module is None:
         return None
@@ -54,6 +57,7 @@ def _project_root() -> Path | None:
 def resource_root() -> Path:
     # In development: app/src/utils -> app/resources.
     # In a package: site-packages/utils -> bundled-app/resources.
+    """优先采用 launcher 的资源根；源码模式按目录定位，最后回退到可执行文件邻近目录。"""
     home = bundle_home()
     if home is not None:
         return home / "resources"
@@ -66,12 +70,14 @@ def resource_root() -> Path:
 
 
 def app_name() -> str:
-    """The user-facing application name.
+    """读取 launcher 导出或应用配置中的展示名，与可执行文件改名无关。
+
+    The user-facing application name.
 
     The launcher exports it, so a renamed executable still reports the
     configured name. Running from a source tree (tests, `PYTHONPATH=src python
     src/main.py`) there is no launcher, so the name is read from the same
-    `[tool.py_upper.app].name` the packager uses instead of being written twice.
+    `[tool.appbuild.app].name` the packager uses instead of being written twice.
     """
     value = os.environ.get(APP_NAME_ENV, "").strip()
     if value:
@@ -84,6 +90,7 @@ def _declared_app_name() -> str | None:
     # path to count from; the launcher's export is the only source there. The
     # read stays hand-rolled because `tomllib` is Python 3.11+ and this
     # application supports 3.8.
+    """从源码项目的指定 TOML 节读取名称；这里只解析单行字符串，不是通用 TOML 解析器。"""
     root = _project_root()
     if root is None:
         return None
@@ -103,6 +110,7 @@ def _declared_app_name() -> str | None:
 
 
 def _toml_string(value: str) -> str | None:
+    """提取简单单行引号字符串；不解码转义序列，多行值不在支持范围内。"""
     quote = value[:1]
     if quote not in {'"', "'"}:
         return None

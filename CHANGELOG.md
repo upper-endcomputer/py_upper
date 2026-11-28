@@ -27,20 +27,25 @@
 
 ## 未发布
 
+- 构建器统一为 `tools/appbuild`、`[tool.appbuild]` 和 `APPBUILD_*`，测试统一到 `app/tests`。旧包名、配置、环境变量与旧归档格式不提供兼容；迁移配置后重新构建，仓库及示例产品名称仍为 py_upper。
+- 复用文件 SHA-256 和 Windows import library 查找逻辑，签名编排集中到 signing 模块，移除未使用的 keep 子树扫描；补充 Python 接口与原生函数中文说明。
+- 修复 Python 3.8 wheel 标签、PBS SDK include 目录识别、Windows 内存模块卸载链表及导出序号边界；无名称导出表仍支持按序号解析。
+
+
 - 修复声明依赖和 native 输入缓存失效、候选包验证后发布、macOS ZIP 公证与入 egg 前签名、发布清单范围和 plist 转义。
 - 修复并发异步关闭及清理错误隔离；新增工作区写锁、运行缓存应用分区和存活 lease。
-- 保留 launcher 增量构建树，优化 keep 子树遍历，增加构建 provenance 与阶段计时；工具测试迁到 tests/tools。验证与平台限制见 docs/OPTIMIZATION_IMPLEMENTATION.md。
+- 保留 launcher 增量构建树，优化 keep 子树遍历，增加构建 provenance 与阶段计时；工具测试迁到 app/tests。验证与平台限制见 docs/OPTIMIZATION_IMPLEMENTATION.md。
 
 - 优化打包应用的正常启动：故障报告、脚本旁路启动和异步命令按需加载；egg 导入器不再加载未用到的抽象基类，示例的「关于」对话框在首次打开时创建。
 - 静态校验对 staging 和成品的 egg 各读取并验签解密一次，复用同一份 ZIP 做成员、架构与依赖检查；GUI 集成 CI 不再重复完整打包。
-- 新增 `[tool.py_upper.cython].merge = "all"`，将应用扩展合为一个原生 bundle，减少冷启动时的加载次数；示例配置启用此模式，已有 `directory` 和 `none` 配置行为不变。
+- 新增 `[tool.appbuild.cython].merge = "all"`，将应用扩展合为一个原生 bundle，减少冷启动时的加载次数；示例配置启用此模式，已有 `directory` 和 `none` 配置行为不变。
 - 打包应用启动时只读取并认证解密 egg 一次，launcher 与 Python loader 在进程内复用结果。不改变归档格式、现有缓存键或完整性检查。
 - 修复 extract 缓存目录已存在但因权限或只读挂载无法创建 staging 时启动失败的问题；此时改用系统临时目录，其他写入和解压错误仍报错。
 
 ## 0.17.36
 
 ### Problem
-- `strip_native = true` 对**应用自己的扩展完全无效**。`bundle_native_dependencies` 在 `[4/6]` 才运行，而应用扩展在 `[2/6]` 就被打进 `bundle/py_upper.dat` 了——已经封进归档的文件它永远看不到。开启后 `dist/Upper.app` 只从 75 MB 降到 68 MB，而 egg 里那 977 KB 的 bundle 一个字节都没变。
+- `strip_native = true` 对**应用自己的扩展完全无效**。`bundle_native_dependencies` 在 `[4/6]` 才运行，而应用扩展在 `[2/6]` 就被打进 `bundle/appbuild.dat` 了——已经封进归档的文件它永远看不到。开启后 `dist/Upper.app` 只从 75 MB 降到 68 MB，而 egg 里那 977 KB 的 bundle 一个字节都没变。
 - egg 缓存的淘汰职责串了：`_prune_cache()` 把 `merged-*` 也纳入清理范围，但 `merged-*` 是 launcher 在 `Py_Initialize` 之前写入并正在使用的目录。多版本共存时会删掉活着的缓存，下次启动被迫重新解压。
 
 ### Root cause
@@ -53,7 +58,7 @@
 - 文档补上 `strip_native` 的真实收益表与启动 A/B 结果。
 
 ### Verification
-- `strip_native = true`：`dist/Upper.app` 75 MB → **68 MB（−9.3%）**；`bundle/py_upper.dat` 981 KB → **832 KB（−15.2%）**。
+- `strip_native = true`：`dist/Upper.app` 75 MB → **68 MB（−9.3%）**；`bundle/appbuild.dat` 981 KB → **832 KB（−15.2%）**。
 - 启动不受影响：交错 A/B 各 12 次，未 strip 301–326 ms，strip 300–314 ms。
 - 签名：`codesign -v --deep --strict` 通过；`--verify` 169 项 PASS，含 3 个 bundle 的 arm64 架构校验。
 - 缓存命名空间：新增回归测试确认 loader 不再删 `merged-*`。
@@ -94,11 +99,11 @@
 ## 0.17.35（应用目录解耦）
 
 ### Problem
-- 构建工具把应用目录硬编码成仓库内的 `app/`。fork 后想换一个应用，必须改 `tools/py_upper/config.py` 里的路径，或者把应用塞进示例目录；应用放在仓库外、甚至和仓库不在同一个 Windows 盘符时无法使用。
+- 构建工具把应用目录硬编码成仓库内的 `app/`。fork 后想换一个应用，必须改 `tools/appbuild/config.py` 里的路径，或者把应用塞进示例目录；应用放在仓库外、甚至和仓库不在同一个 Windows 盘符时无法使用。
 
 ### Changes
-- 新增 `tools/py_upper/appdir.py`：应用目录统一由 `--app DIR` 或 `PY_UPPER_APP_DIR` 选择，默认仍是 `<repo>/app`；`--app` 在导入 `py_upper.config` 之前解析。
-- 没有 `app/` 子目录时，如果仓库根 `pyproject.toml` 带 `[tool.py_upper]`，自动把仓库根目录当作应用，便于把 `tools/` 直接放进自己的应用仓库。
+- 新增 `tools/appbuild/appdir.py`：应用目录统一由 `--app DIR` 或 `APPBUILD_APP_DIR` 选择，默认仍是 `<repo>/app`；`--app` 在导入 `appbuild.config` 之前解析。
+- 没有 `app/` 子目录时，如果仓库根 `pyproject.toml` 带 `[tool.appbuild]`，自动把仓库根目录当作应用，便于把 `tools/` 直接放进自己的应用仓库。
 - `--doctor` 输出实际选中的 app 路径；锁文件、原生依赖、Qt 剪枝和 Cython 的相对路径错误信息改为读取当前应用的配置路径。
 - 修复应用与 `build/` 不在同一个 Windows 盘符时 Cython 生成 `.c` 的 `os.path.relpath` 抛 `ValueError`：跨盘时退回绝对输出路径。
 - 新增外部应用、根目录自动发现、`--app` 帮助文本和跨盘路径的回归测试；README / DEVELOPMENT_GUIDE 增加自有 app 契约和 fork 用法。
@@ -111,12 +116,12 @@
 ### Impact
 - 默认行为不变：继续使用 `app/` 的现有命令和产物路径完全兼容。
 - 自有应用只需提供 `pyproject.toml`、`src/`，可选 `resources/` 和开发 `.venv/`；构建产物、锁文件和缓存仍归属于构建工具仓库。
-- `--app` 与 `PY_UPPER_APP_DIR` 二选一即可；通过 `tools/build.py` 的 `main([...])` 传 `--app` 时会在子进程中按同一选择重新执行，避免与已导入的配置常量冲突。
+- `--app` 与 `APPBUILD_APP_DIR` 二选一即可；通过 `tools/build.py` 的 `main([...])` 传 `--app` 时会在子进程中按同一选择重新执行，避免与已导入的配置常量冲突。
 
 ## 0.17.34
 
 ### Problem
-- `bundle/py_upper.dat` 只做了 XOR 混淆，没有任何完整性校验：用自己的 zip 顶替它、改一个字节、或换掉 extract 缓存里的明文文件，应用都会照常加载。密钥还以明文十六进制字符串编进 launcher，`strings` 一秒就能拿到。用户明确要求加固，但**不能降低打包后的启动速度**。
+- `bundle/appbuild.dat` 只做了 XOR 混淆，没有任何完整性校验：用自己的 zip 顶替它、改一个字节、或换掉 extract 缓存里的明文文件，应用都会照常加载。密钥还以明文十六进制字符串编进 launcher，`strings` 一秒就能拿到。用户明确要求加固，但**不能降低打包后的启动速度**。
 
 ### Root cause
 - v1 格式是 `MAGIC + XOR(zip, SHAKE-256(key))`，没有 MAC，也没有成员摘要；loader 甚至把不带 MAGIC 的普通 zip 当作合法归档接受。缓存目录名来自明文哈希，`.complete` 标记一旦存在就直接复用，从不核对内容。
@@ -133,8 +138,8 @@
 - launcher 把已验签解密的 egg 明文直接交给 Python loader，避免启动时第二次 SHAKE-256；Windows 1.4 MB 产物上 Python 侧 `install()` 从 20.4 ms 降到 2.9 ms。
 
 ### Verification
-- 实测同一 1.4 MB 产物（macOS arm64，`PY_UPPER_SMOKE=1`，各 5 次）：egg 读取 13.1 ms → 10.1 ms；启动总耗时 308–328 ms → 286–294 ms。认证没有带来净开销，因为 TAG 取代了原本“解密后再对明文做一遍哈希”的遍历。
-- 缓存校验开销落在噪声内：开启 277–294 ms，`PY_UPPER_EGG_CACHE_VERIFY=0` 时 280–306 ms。
+- 实测同一 1.4 MB 产物（macOS arm64，`APPBUILD_SMOKE=1`，各 5 次）：egg 读取 13.1 ms → 10.1 ms；启动总耗时 308–328 ms → 286–294 ms。认证没有带来净开销，因为 TAG 取代了原本“解密后再对明文做一遍哈希”的遍历。
+- 缓存校验开销落在噪声内：开启 277–294 ms，`APPBUILD_EGG_CACHE_VERIFY=0` 时 280–306 ms。
 - 端到端：改一个字节 → `egg authentication failed`；换成攻击者自己的 zip → `egg is not authenticated`；篡改 extract 缓存里的 `.py` → 目录被重建，注入内容消失。
 - `strings` 检查编译后的 launcher：明文密钥命中数 0。
 - `python -m pytest app/tests -q`：381 passed, 15 skipped（Python 3.8 与 3.11）。
@@ -143,7 +148,7 @@
 ### Impact
 - 发布产物需要重新构建才会带认证（旧 v1 归档会被 launcher 与构建工具拒绝，报错信息指明要重新构建）。
 - 构建期工具也只接受 MAGIC2；v1 与普通 zip 一律拒绝，没有 `require_auth=False` 之类的诊断入口。
-- 启动性能不回退；`PY_UPPER_EGG_CACHE_VERIFY=0` 是留给极端性能敏感场景的开关，默认关闭篡改检测不是默认行为。
+- 启动性能不回退；`APPBUILD_EGG_CACHE_VERIFY=0` 是留给极端性能敏感场景的开关，默认关闭篡改检测不是默认行为。
 - 边界不变：这是提高逆向成本，不是现代密码学。密钥必须在本地可解密，调试器仍可取回。
 
 ## 0.17.33
@@ -201,7 +206,7 @@
 ### Changes
 - When a release publishes no `SHA256SUMS` and the metadata asset is a full build (not `install_only`, `debug` or `freethreaded`), py_upper uses that one asset as both runtime and SDK with `source="metadata-full"`. The SHA256 from uv metadata is still verified after download.
 - An install-only metadata asset in a checksum-less release now raises an actionable error instead of being mistaken for an SDK.
-- An explicitly configured pre-20210724 release reports that it predates the inventory and instructs the user to leave `[tool.py_upper.pbs].release` empty so the metadata index can select the full build.
+- An explicitly configured pre-20210724 release reports that it predates the inventory and instructs the user to leave `[tool.appbuild.pbs].release` empty so the metadata index can select the full build.
 - `ensure_pbs_runtime` descends into the `python/install` tree of a full build; install-only archive handling is unchanged.
 - `app/tests/test_pbs.py` adds four tests covering the metadata fallback, rejection of install-only assets, the explicit-release error and the full-build runtime layout.
 
@@ -219,7 +224,7 @@
 
 ### Changes
 - `.github/workflows/validate.yml` adds a second `windows-x86_64` matrix entry pinned to runtime Python 3.8.10 and installs `PySide2==5.15.2.1` (PySide6 has no cp38 wheel) so the job builds and runs a real GUI package.
-- The generated configuration now honours `PY_UPPER_CI_RUNTIME_PYTHON`; matrix entries without an override keep the template's 3.13.5.
+- The generated configuration now honours `APPBUILD_CI_RUNTIME_PYTHON`; matrix entries without an override keep the template's 3.13.5.
 - The compatibility artifact is named `py38-compat-windows-x86_64` and stays out of the seven-target release manifest, so release aggregation is unchanged.
 - `app/tests/test_build_tool_compat.py` pins the new matrix entry and configuration hook.
 - `app/pyproject.toml.example` now also lists the PySide2/shiboken2 native payload exclusions (ARM32 `vccorlib140.dll`, 32-bit `ucrtbase.dll`, optional SQL/DesignHelpers plugins) so the 3.8 job can build a real PySide2 GUI package without tripping the payload architecture guard.
@@ -240,13 +245,13 @@
 - CPython's `_msi` extension ships in those embeddable runtimes and imports the Windows Installer (`msi.dll`) and cabinet (`Cabinet.dll`) APIs from System32. `WINDOWS_HOST_LIBRARIES` listed neither DLL, so the closure counted OS-provided libraries as missing wheel payloads. Python 3.13's embeddable runtime no longer ships `_msi.pyd`, which is why the pinned 3.13.5 CI jobs never exercised the case.
 
 ### Changes
-- `tools/py_upper/native/deps.py` marks `msi.dll` and `cabinet.dll` as Windows host libraries. Both continue to load from the operating system and are never copied into the bundle.
+- `tools/appbuild/native/deps.py` marks `msi.dll` and `cabinet.dll` as Windows host libraries. Both continue to load from the operating system and are never copied into the bundle.
 - `app/tests/test_native_deployment.py` adds a closure test with a runtime `_msi.pyd` importing both DLLs; it fails with the old list and passes with the new one.
 - The version moves to 0.17.29; README and the configuration template are synchronized.
 
 ### Verification
 - `python tools/build.py --target windows-x86_64 --egg`: `[1/6]` through `[6/6]` pass, 55 native binaries checked, `READY: dist/Upper`.
-- Packaged headless launch prints `Hello from py_upper` and `GUI OK offscreen` and exits 0.
+- Packaged headless launch prints `Hello from appbuild` and `GUI OK offscreen` and exits 0.
 - Interactive launch creates a responsive top-level window titled `Upper`.
 - `python -m pytest app/tests -q`: 361 passed, 12 skipped; 3 environment-only errors remain because this host has no MSVC `cl.exe` for the launcher-probe fixtures. `git diff --check` passes.
 
@@ -323,14 +328,14 @@
 - Native-image discovery treated ELF/Mach-O object files as loadable images; the Linux local-runtime fixture omitted host Python dependencies.
 
 ### Changes
-- `tools/py_upper/pbs.py` selects exact runtime/SDK assets from the release's public `SHA256SUMS`, with SDK hashes checked before extraction. Automatic release selection still uses uv's public exact-version index; no GitHub API or login is involved in either mode.
-- `tools/py_upper/net.py` adds plain-text retrieval and removes implicit GitHub credential use. `runtime.py` reuses the common PBS resolver; CI removes the obsolete build token injection.
+- `tools/appbuild/pbs.py` selects exact runtime/SDK assets from the release's public `SHA256SUMS`, with SDK hashes checked before extraction. Automatic release selection still uses uv's public exact-version index; no GitHub API or login is involved in either mode.
+- `tools/appbuild/net.py` adds plain-text retrieval and removes implicit GitHub credential use. `runtime.py` reuses the common PBS resolver; CI removes the obsolete build token injection.
 - Regression tests cover absent/stale credentials with the API unavailable, all seven targets, explicit releases, old Windows shared SDK pairing, malformed checksums, version mismatch and corrupt downloads. Download errors remain visible.
 - README and development guide explain anonymous first builds and the old API 403 failure.
 - `launcher/src/PyUpper.cpp` derives all paths from the OS-reported executable, reads Windows environment paths through Unicode APIs, and leaves installed runtime files untouched.
-- `tools/py_upper/trim.py` preserves metadata under the default `safe` preset. Explicit `release`/`minimal` presets still remove it; keep rules remain authoritative.
-- `tools/py_upper/native/{inspect,deps,bundle}.py` share format-based discovery, scan runtime libraries, follow bundled dependencies, preserve SONAME aliases and reuse byte-identical external libraries without masking real basename collisions. Missing VC runtime DLLs now fail packaging.
-- `tools/py_upper/egg.py` keeps versioned and suffixless application native inputs visible to closure. `verify.py` inspects native entries inside the egg; unsupported custom links fail with a `--no-egg` remedy because cached extensions cannot rely on paths relative to site-packages.
+- `tools/appbuild/trim.py` preserves metadata under the default `safe` preset. Explicit `release`/`minimal` presets still remove it; keep rules remain authoritative.
+- `tools/appbuild/native/{inspect,deps,bundle}.py` share format-based discovery, scan runtime libraries, follow bundled dependencies, preserve SONAME aliases and reuse byte-identical external libraries without masking real basename collisions. Missing VC runtime DLLs now fail packaging.
+- `tools/appbuild/egg.py` keeps versioned and suffixless application native inputs visible to closure. `verify.py` inspects native entries inside the egg; unsupported custom links fail with a `--no-egg` remedy because cached extensions cannot rely on paths relative to site-packages.
 - Native closure CI follow-up: loadable-image discovery excludes ELF/Mach-O relocatable objects and checks universal slices, including LLVM bitcode in Python's `config/python.o`. Alias lookup and package verification share that classification. The Linux local-runtime E2E fixture copies its host interpreter's non-system dependencies and relocates RPATHs with `patchelf`; production missing-library checks remain strict.
 - `test_launcher_deployment.py`, `test_native_deployment.py`, `test_trim.py`, `test_verify.py` and `test_e2e_local.py` cover the failures and relocation with a new user cache, Unicode paths, an unrelated cwd, a hidden source checkout, a renamed executable and an unchanged installed bundle. POSIX also exercises read-only installation directories.
 - Updated README, development guide and configuration-template comments. Version is 0.17.25; application name and machine-specific settings are unchanged.
@@ -362,7 +367,7 @@
 - The Zig cross path does not use setuptools and never emitted that flag. Local macOS builds exercised Zig, while CI Windows hosts use native MSVC.
 
 ### Changes
-- `tools/py_upper/python_build.py` overrides `TargetBuildExt.get_export_symbols()` in the generated merged `setup.py` to return `py_upper_register_modules` instead of the implicit `PyInit_<bundle>`.
+- `tools/appbuild/python_build.py` overrides `TargetBuildExt.get_export_symbols()` in the generated merged `setup.py` to return `py_upper_register_modules` instead of the implicit `PyInit_<bundle>`.
 - `app/tests/test_merged_build.py` pins the generated setup script: the override must exist and must not reference `PyInit_py_upper`.
 - The version moves to 0.17.24.
 
@@ -379,11 +384,11 @@
 
 ### Root cause
 - A merged Cython bundle is registered as a built-in module, so CPython reports its spec origin, `built-in`, as `__file__`. `utils/paths.py` counted `Path(__file__).resolve().parents[2]`, which is not a source path and has no third parent. macOS never reached it because the launcher export was visible and the early return won.
-- On Windows the launcher exported `PY_UPPER_HOME` and `PY_UPPER_APP_NAME` with `SetEnvironmentVariableW`. That updates the process environment block but not the CRT environment snapshot Python copies into `os.environ`, so the application saw none of the exported values. POSIX `setenv` updates `environ` directly, which is why the same code worked on macOS and Linux.
+- On Windows the launcher exported `APPBUILD_HOME` and `APPBUILD_APP_NAME` with `SetEnvironmentVariableW`. That updates the process environment block but not the CRT environment snapshot Python copies into `os.environ`, so the application saw none of the exported values. POSIX `setenv` updates `environ` directly, which is why the same code worked on macOS and Linux.
 - The crash report used the launcher executable as the embedded entry's `__file__`. `traceback.print_exc` tried to decode the PE image as Python source, raising `SyntaxError` while reporting the original exception, so the useful traceback was lost.
 
 ### Changes
-- `launcher/src/PyUpper.cpp` collects every exported `PY_UPPER_*` value while calling `set_env`, embeds a `LAUNCHER_ENV` dictionary in the bootstrap and runs `os.environ.update(LAUNCHER_ENV)` before installing the egg or the entry. The native `SetEnvironmentVariableW` call stays for child processes and native consumers.
+- `launcher/src/PyUpper.cpp` collects every exported `APPBUILD_*` value while calling `set_env`, embeds a `LAUNCHER_ENV` dictionary in the bootstrap and runs `os.environ.update(LAUNCHER_ENV)` before installing the egg or the entry. The native `SetEnvironmentVariableW` call stays for child processes and native consumers.
 - The bootstrap caches the embedded entry source in `linecache` under `ENTRY_FILE`, so a crash report can show the entry line without reading the executable.
 - `app/src/utils/paths.py` adds `_module_file()` and `_project_root()`: parent directories are counted only when `__file__` names a real file. `app_name()` and `_declared_app_name()` fall back to the compiled default when there is no source tree, and `resource_root()` falls back to the executable directory.
 - `app/tests/test_app.py` covers the built-in `__file__` case; `app/tests/test_build_tool_compat.py` asserts the bootstrap republishes the launcher environment and caches the entry source.
@@ -392,7 +397,7 @@
 ### Verification
 1. `python -m pytest app/tests -q`: 287 passed, 7 skipped.
 2. `python tools/build.py --target windows-x86_64 --egg`: all static checks PASS, `SMOKE PASS launcher`, `READY: dist/Upper`.
-3. `PY_UPPER_HEADLESS=1 dist/Upper/Upper.exe` exits 0 with `Hello from py_upper` and `GUI OK offscreen`, and an empty stderr.
+3. `APPBUILD_HEADLESS=1 dist/Upper/Upper.exe` exits 0 with `Hello from appbuild` and `GUI OK offscreen`, and an empty stderr.
 4. Interactive launch stays alive with a real top-level window: `MainWindowHandle` is non-zero and the title is `Upper`.
 ## 0.17.22
 
@@ -404,19 +409,19 @@
 - `BuiltinImporter.find_spec()` on CPython 3.8-3.12 returns `None` whenever `path is not None`, even when `_imp.is_builtin(fullname)` is true. Package markers stay as `.py` files, so a bundled leaf is always imported through its parent package and always receives a non-`None` path. CPython 3.13 removed the check, which is why the macOS build hid the defect.
 
 ### Changes
-- `tools/py_upper/egg_loader.py` adds `BuiltinSubmoduleFinder`, which resolves only dotted built-in names and only when a parent path is present, delegating to `BuiltinImporter.find_spec(name)` with no path. `install()` inserts one instance immediately before `BuiltinImporter` for both the memory and extract backends and after the egg importer, so loose modules shipped in the egg still take precedence.
+- `tools/appbuild/egg_loader.py` adds `BuiltinSubmoduleFinder`, which resolves only dotted built-in names and only when a parent path is present, delegating to `BuiltinImporter.find_spec(name)` with no path. `install()` inserts one instance immediately before `BuiltinImporter` for both the memory and extract backends and after the egg importer, so loose modules shipped in the egg still take precedence.
 - `app/tests/test_egg.py` covers finder ordering and idempotence, dotted-only resolution, and removes the finder between tests.
 
 ### Verification
 1. `python -m pytest app/tests -q`: 286 passed, 7 skipped.
 2. `python tools/build.py --target windows-x86_64 --egg`: all static checks PASS, `SMOKE PASS launcher`, `READY: dist/Upper`.
-3. `py_upper.dat` contains the `_root`, `mvvm` and `utils` merged bundles; `dist/Upper/site-packages/py_upper_bundles` does not exist.
+3. `appbuild.dat` contains the `_root`, `mvvm` and `utils` merged bundles; `dist/Upper/site-packages/appbuild_bundles` does not exist.
 ## 0.17.21
 
 ### Problem
 - macOS validates every Mach-O image it maps into a process. The application was compiled one extension per source file, so cold-start cost grew with the module count: 24 independent `.so` files took 8.76-8.90 s, and a pure `dlopen` loop over 1001 extensions took 305.6 s. The 0.17.20 content-addressed egg cache removed repeated extraction, but it could not remove the per-image dyld and code-signing checks.
 - The cache only helped after the archive had been unpacked, and the archive still carried one Mach-O per module. A project with a thousand modules therefore paid a thousand first-seen validations on every fresh cache.
-- Putting merged bundles directly under `site-packages` would have fixed the image count but broken the packaging contract: the release would grow a loose `py_upper_bundles/` directory, and the application's native code would exist both inside and outside `bundle/py_upper.dat`.
+- Putting merged bundles directly under `site-packages` would have fixed the image count but broken the packaging contract: the release would grow a loose `appbuild_bundles/` directory, and the application's native code would exist both inside and outside `bundle/appbuild.dat`.
 
 ### Root cause
 - CPython's extension importer maps a module name to an extension file, so the historical layout had to emit one `PyInit_<module>` image per file. Multiple modules cannot share an image unless their entry points are renamed and registered through another mechanism.
@@ -424,22 +429,22 @@
 - A bundle stored with deflate or LZMA would require zlib/lzma in the launcher before CPython exists. The launcher deliberately links only the platform loader, so compressed bundle entries are not readable at that point.
 
 ### Changes
-- `[tool.py_upper.cython]` gains `merge = "none" | "directory"`. `none` keeps the historical one-extension-per-module layout; `directory` links every leaf module of a top-level package into one bundle. Root modules (`main.py`, `application.py`) share the `_root` group; `__init__.py` files never merge and stay as `.py` package markers. `tools/py_upper/config.py` exposes `MERGE_MODES`, `BUNDLE_DIR = "py_upper_bundles"` and `cython_merge_mode()`.
-- `tools/py_upper/python_build.py` renames each generated `PyInit_*` to a unique `PyInit_py_upper_<sanitized>_<sha256[:12]>` before compilation and rejects translation units with zero or more than one entry point. Each group gets a generated `register.c` with a static `_inittab` and an exported `py_upper_register_modules()` that calls `PyImport_ExtendInittab`. Translation units are materialized under `build/merged/<target>/<group>/`, so the shared Cython cache is never edited in place and stale units from deleted modules are removed.
+- `[tool.appbuild.cython]` gains `merge = "none" | "directory"`. `none` keeps the historical one-extension-per-module layout; `directory` links every leaf module of a top-level package into one bundle. Root modules (`main.py`, `application.py`) share the `_root` group; `__init__.py` files never merge and stay as `.py` package markers. `tools/appbuild/config.py` exposes `MERGE_MODES`, `BUNDLE_DIR = "appbuild_bundles"` and `cython_merge_mode()`.
+- `tools/appbuild/python_build.py` renames each generated `PyInit_*` to a unique `PyInit_py_upper_<sanitized>_<sha256[:12]>` before compilation and rejects translation units with zero or more than one entry point. Each group gets a generated `register.c` with a static `_inittab` and an exported `py_upper_register_modules()` that calls `PyImport_ExtendInittab`. Translation units are materialized under `build/merged/<target>/<group>/`, so the shared Cython cache is never edited in place and stale units from deleted modules are removed.
 - Merged linking has its own content-addressed cache (`py_upper-merged-native-1`) keyed by every translation unit, `register.c`, the full link command and the MSVC environment. A module edit invalidates its bundle even when the module name is unchanged.
-- `tools/py_upper/egg.py` forces every `py_upper_bundles/` entry to `ZIP_STORED`; all other entries keep the configured compression. The launcher can then read bundles from the decrypted archive without linking zlib or lzma.
+- `tools/appbuild/egg.py` forces every `appbuild_bundles/` entry to `ZIP_STORED`; all other entries keep the configured compression. The launcher can then read bundles from the decrypted archive without linking zlib or lzma.
 - `launcher/src/sha3.h` implements Keccak/SHAKE-256 in-tree, so the launcher derives the same cache key as the Python loader without depending on OpenSSL or libcrypto.
-- `launcher/src/egg_bundles.h` reads `bundle/py_upper.dat`, verifies the MAGIC prefix, decrypts with the embedded key, parses the ZIP central directory and returns only stored `py_upper_bundles/` members. The cache key is `shake256(payload)[:16]`.
+- `launcher/src/egg_bundles.h` reads `bundle/appbuild.dat`, verifies the MAGIC prefix, decrypts with the embedded key, parses the ZIP central directory and returns only stored `appbuild_bundles/` members. The cache key is `shake256(payload)[:16]`.
 - `launcher/src/PyUpper.cpp` publishes the extracted bundles into a content-addressed cache (`~/Library/Caches/py_upper/eggs/merged-<32hex>/` on macOS, `%LOCALAPPDATA%/py_upper/cache/eggs/` on Windows, `$XDG_CACHE_HOME/py_upper/eggs/` or `~/.cache/py_upper/eggs/` elsewhere), using a staging directory, a `.complete` marker and an atomic rename. `load_module_bundles()` runs before `Py_InitializeFromConfig`, `dlopen`s each bundle and calls `py_upper_register_modules()`; `RuntimeGuard` unloads the bundles in reverse order before libpython.
-- `tools/py_upper/egg_loader.py` skips the `py_upper_bundles/` prefix when it extracts the egg, so the Python loader does not duplicate what the launcher already published.
-- `tools/py_upper/verify.py` understands both layouts. In merged mode it checks that each bundle is present in the egg, that `site-packages` has no loose copy, that the entry is `ZIP_STORED`, that the architecture matches the target, that package markers remain `.py`, and that no per-module extension is produced. The plain-interpreter smoke test drops the application entry point in merged mode (a normal interpreter cannot extend the inittab); the launcher smoke test covers it.
+- `tools/appbuild/egg_loader.py` skips the `appbuild_bundles/` prefix when it extracts the egg, so the Python loader does not duplicate what the launcher already published.
+- `tools/appbuild/verify.py` understands both layouts. In merged mode it checks that each bundle is present in the egg, that `site-packages` has no loose copy, that the entry is `ZIP_STORED`, that the architecture matches the target, that package markers remain `.py`, and that no per-module extension is produced. The plain-interpreter smoke test drops the application entry point in merged mode (a normal interpreter cannot extend the inittab); the launcher smoke test covers it.
 - `app/tests/test_merged_build.py` covers grouping, root modules, package markers, entry-point renaming, rejection of ambiguous units, bundle storage, loader skipping, architecture checks and a C++/Python cross-check of the egg bundle reader.
 - `app/pyproject.toml.example`, `README.md`, `docs/DEVELOPMENT_GUIDE.md` and the working copy document the new mode; the version moves to 0.17.21.
 
 ### Verification
 1. `python -m pytest app/tests -q`: 286 passed, 5 skipped.
-2. macOS arm64 rebuild with `PY_UPPER_HEADLESS=1 python3 tools/build.py --target macos-arm64`: `READY: dist/Upper.app`. The current application has 17 leaf modules, grouped into `_root` (2), `mvvm` (13) and `utils` (2).
-3. `--verify` reports `PASS packaged egg merged bundle _root/mvvm/utils`, `PASS packaged merged bundle not loose ...`, `PASS merged bundle stored ...` and `PASS arch bundle ...=arm64`; `py_upper.dat` is 941 KB with 10 entries (3 bundles plus package markers), and `dist/Upper.app` contains no `py_upper_bundles` directory.
+2. macOS arm64 rebuild with `APPBUILD_HEADLESS=1 python3 tools/build.py --target macos-arm64`: `READY: dist/Upper.app`. The current application has 17 leaf modules, grouped into `_root` (2), `mvvm` (13) and `utils` (2).
+3. `--verify` reports `PASS packaged egg merged bundle _root/mvvm/utils`, `PASS packaged merged bundle not loose ...`, `PASS merged bundle stored ...` and `PASS arch bundle ...=arm64`; `appbuild.dat` is 941 KB with 10 entries (3 bundles plus package markers), and `dist/Upper.app` contains no `appbuild_bundles` directory.
 4. Headless cold start is 1.22 s and a warm start is 0.55 s, down from minutes with a thousand independent extensions and from about 6.6 s for the 24-extension 0.17.20 layout.
 5. `codesign --verify --deep --strict` passes and `git diff --check` is clean.
 
@@ -458,16 +463,16 @@
 - `MainWindow.show()` only called `QMainWindow.show()`. Qt creates and orders the window but does not force the application to become active, and macOS will not hand focus to a process that no longer holds a fresh launch activation.
 
 ### Changes
-- `tools/py_upper/python_build.py` now compiles `__init__.py` files. `module_name()` strips the marker for include/exclude matching, `extension_name()` keeps `pkg.__init__` for setuptools, and `windows_setup_script()` uses the latter. `app/tests/test_build_tool_compat.py` asserts both names and the presence of the marker.
-- `tools/py_upper/egg_loader.py` extracts into a content-addressed cache: `egg-<sha256 of the decrypted zip>`. A staging directory under the cache root is populated, marked with `.complete`, and published with `os.replace`; a marker hit reuses the directory without reading the zip. The cache root is `~/Library/Caches/py_upper/eggs` on macOS, `%LOCALAPPDATA%/py_upper/cache/eggs` on Windows, `$XDG_CACHE_HOME/py_upper/eggs` or `~/.cache/py_upper/eggs` elsewhere, and `PY_UPPER_EGG_CACHE` overrides it. An unwritable cache falls back to the old `py_upper_egg_*` temporary directory and `atexit` cleanup.
+- `tools/appbuild/python_build.py` now compiles `__init__.py` files. `module_name()` strips the marker for include/exclude matching, `extension_name()` keeps `pkg.__init__` for setuptools, and `windows_setup_script()` uses the latter. `app/tests/test_build_tool_compat.py` asserts both names and the presence of the marker.
+- `tools/appbuild/egg_loader.py` extracts into a content-addressed cache: `egg-<sha256 of the decrypted zip>`. A staging directory under the cache root is populated, marked with `.complete`, and published with `os.replace`; a marker hit reuses the directory without reading the zip. The cache root is `~/Library/Caches/py_upper/eggs` on macOS, `%LOCALAPPDATA%/py_upper/cache/eggs` on Windows, `$XDG_CACHE_HOME/py_upper/eggs` or `~/.cache/py_upper/eggs` elsewhere, and `APPBUILD_EGG_CACHE` overrides it. An unwritable cache falls back to the old `py_upper_egg_*` temporary directory and `atexit` cleanup.
 - `app/tests/test_egg.py` covers same-content reuse, different-content separation, marker hits without extraction, recovery from a partial cache, and rejection of `../escape.py` without leaving staging directories.
-- `tools/py_upper/vendor/memimporter/_memimporter.c` keeps the package context on Python < 3.13 and registers single-phase modules directly in `sys.modules` on 3.13+. `do_import()` returns the module object instead of re-importing it by name, and multi-phase initialization always checks `PyModule_ExecDef`.
+- `tools/appbuild/vendor/memimporter/_memimporter.c` keeps the package context on Python < 3.13 and registers single-phase modules directly in `sys.modules` on 3.13+. `do_import()` returns the module object instead of re-importing it by name, and multi-phase initialization always checks `PyModule_ExecDef`.
 - `app/src/mvvm/views/main_window.py` raises and activates the main window after showing it (`raise_()`, `activateWindow()`). The fake window in `app/tests/test_mvvm_example.py` records both calls, and the composition-root test asserts they happen.
-- `README.md` and `docs/DEVELOPMENT_GUIDE.md` document the cache layout and `PY_UPPER_EGG_CACHE`; the version moves to 0.17.20.
+- `README.md` and `docs/DEVELOPMENT_GUIDE.md` document the cache layout and `APPBUILD_EGG_CACHE`; the version moves to 0.17.20.
 
 ### Verification
 1. `python -m pytest app/tests -q`: 276 passed, 5 skipped. The new cases include the egg cache behavior and the package-marker assertions.
-2. macOS arm64 rebuild: `python3 tools/build.py --target macos-arm64` reports `READY: dist/Upper.app`, `native binaries checked=21`. Headless startup with `PY_UPPER_HEADLESS=1` takes 6.6-10.0 s with an empty cache and 0.58-0.64 s on cache hits (10-17x; the cold number varies with disk state and first-time dyld validation).
+2. macOS arm64 rebuild: `python3 tools/build.py --target macos-arm64` reports `READY: dist/Upper.app`, `native binaries checked=21`. Headless startup with `APPBUILD_HEADLESS=1` takes 6.6-10.0 s with an empty cache and 0.58-0.64 s on cache hits (10-17x; the cold number varies with disk state and first-time dyld validation).
 3. Windows x86_64 Zig cross-build: `READY: dist/Upper`, `native binaries checked=420`, no `_memimporter unavailable` warning. `dist/Upper/site-packages/_memimporter.pyd` exists and contains `PyInit__memimporter`.
 4. Real Finder launch of `dist/Upper.app`: the window reaches the front and the menu bar switches to Upper. Cold check-in was 1.13 s (1.70 s until observed from the polling loop); a warm launch checked in in 0.47 s and was frontmost in 0.69 s. The `关于 MVVM 架构` button opens the second window correctly.
 5. Limit: the Windows artifact was cross-compiled on macOS; compilation and layout are verified, but it was not executed on a Windows host.
@@ -479,7 +484,7 @@
 - The global trim rules only named Qt `examples/` and `include/`, so every preset kept the tooling directories.
 
 ### Root cause
-- `tools/py_upper/trim.py` matched whole Qt payload families but never named the binding tooling trees. A recursive `**/lib` rule would also delete `PySide6/Qt/lib`, which holds the runtime libraries, so the rule has to be anchored at the binding root.
+- `tools/appbuild/trim.py` matched whole Qt payload families but never named the binding tooling trees. A recursive `**/lib` rule would also delete `PySide6/Qt/lib`, which holds the runtime libraries, so the rule has to be anchored at the binding root.
 
 ### Changes
 - Global rules now remove `PySide*/scripts|support|doc|docs|lib` and `shiboken*/scripts|support|doc|docs|lib|include`. `PySide6/Qt/lib` is deliberately not matched.
@@ -498,14 +503,14 @@
 
 ### Problem
 - 0.17.17 still produced a ~90 MB `dist/Upper`: 71.9 MB of it was `site-packages` and 67.5 MB of that was PySide2. The Qt payload carried files a desktop build can never use -- `opengl32sw.dll` (~20 MB), every Qt translation, platform plugins for the other two operating systems, unused image formats, `docs`/`scripts`/`support`, import `.lib` files and the extra MSVC runtimes shiboken2 needs only for its tooling.
-- `[tool.py_upper.optimize]` exposed only `qt = "imports"`. There was no way to say which locales, image formats or platform plugins the application needs, and the translation filter matched a single coarse prefix.
+- `[tool.appbuild.optimize]` exposed only `qt = "imports"`. There was no way to say which locales, image formats or platform plugins the application needs, and the translation filter matched a single coarse prefix.
 
 ### Root cause
 - The Qt prune pass had no per-payload switches. It removed whole modules, libraries and plugins that the import closure proved unused, but kept everything inside a retained plugin directory or translation family, because wheel layout differs per platform and a wrong guess would break startup.
 - Static artifacts (`docs`, `scripts`, `support`, `*.lib`) and the MSVC runtimes that only shiboken2's build tooling loads are never imported at runtime, yet no rule named them.
 
 ### Changes
-- `tools/py_upper/qt_prune.py` gains four optional `[tool.py_upper.optimize]` keys:
+- `tools/appbuild/qt_prune.py` gains four optional `[tool.appbuild.optimize]` keys:
   - `qt_software_opengl` (bool, default `true`): `false` deletes `opengl32sw.dll`.
   - `qt_locales` (`"all"` or a list, default all): keeps translation families by locale. An exact locale keeps only that variant; a bare language also matches its regional variants; glob patterns are accepted.
   - `qt_image_formats` (`"all"` or a list, default all): keeps only the listed `imageformats` plugins. PNG is built into QtGui, and a list without `svg` also drops `qsvgicon`/`qsvg` plus `Qt5Svg`/`Qt6Svg` when nothing else references them.
@@ -513,17 +518,17 @@
 - When Qt pruning is enabled, binding packages now always lose `docs`, `scripts`, `support` and `*.lib`; shiboken packages also lose those directories/`.lib` files and `vcamp140.dll`, `concrt140.dll`, `vcomp140.dll`. Invalid values (wrong type, empty list, unsafe path segments) fail before anything is deleted.
 - The working `app/pyproject.toml` selects `qt_software_opengl = false`, `qt_locales = ["zh_CN"]` and `qt_image_formats = ["gif", "ico", "jpeg"]`; the tracked template keeps every payload and documents all four switches. `README.md` and `docs/DEVELOPMENT_GUIDE.md` describe the switches, the multi-platform name matching and the unconditional cuts. Version moves to 0.17.18.
 
-- `tools/py_upper/trim.py` now applies global rules before presets and project configuration: `**/*.dist-info`, `**/*.egg-info`, `**/*.pyi`, Qt `examples`/`include`, and runtime `idlelib`/`test`/`tests`/`include`/`pkgconfig`. The tracked template only lists project-specific cuts; Tk/Tcl stays opt-in because an application may use it. `release` is kept as a compatibility alias, and `site_packages_keep` / `runtime_keep` still win over every global rule.
+- `tools/appbuild/trim.py` now applies global rules before presets and project configuration: `**/*.dist-info`, `**/*.egg-info`, `**/*.pyi`, Qt `examples`/`include`, and runtime `idlelib`/`test`/`tests`/`include`/`pkgconfig`. The tracked template only lists project-specific cuts; Tk/Tcl stays opt-in because an application may use it. `release` is kept as a compatibility alias, and `site_packages_keep` / `runtime_keep` still win over every global rule.
 
-- `[tool.py_upper.egg]` now defaults to enabled: a project without the section still packs `bundle/py_upper.dat`, and the tracked template sets `enabled = true`. `--no-egg` remains the per-build escape hatch; `enabled = false` turns encryption off persistently. `README.md` and `docs/DEVELOPMENT_GUIDE.md` now describe encryption as the default instead of an opt-in.
+- `[tool.appbuild.egg]` now defaults to enabled: a project without the section still packs `bundle/appbuild.dat`, and the tracked template sets `enabled = true`. `--no-egg` remains the per-build escape hatch; `enabled = false` turns encryption off persistently. `README.md` and `docs/DEVELOPMENT_GUIDE.md` now describe encryption as the default instead of an opt-in.
 
 ### Verification
 1. `python -m pytest app/tests -q`: 272 passed, 5 skipped (0.17.17: 256 passed, 7 skipped). New cases cover docs/`.lib`/MSVC removal, platform allowlists, image-format allowlists together with the SVG engine, locale matching (`zh_CN`, `zh`, `de`), disabling software OpenGL, rejected values, the global trim rules (metadata/stubs/examples/include, keep override, release alias), and the egg default/`--no-egg` override.
 2. Full Windows x86_64 build (`python tools/build.py --target windows-x86_64 --egg`, PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]`; launcher and target-runtime smoke both pass. The log reports `Qt pruning: removed 432 file(s) and 32 director(ies), freed 299 MB`, then the trim pass removes another 66 files / 2 directories (4.9 MB).
 3. `dist/Upper` drops from 90.0 MB to 58.85 MB (-34.6%). `site-packages` 71.91 -> 40.73 MB, PySide2 67.5 -> 39.21 MB, shiboken2 4.22 -> 1.34 MB; `runtime` (15.3 MB) is unchanged. The bundle keeps only `Qt5Core/Gui/Widgets/Network/Qml`, `qwindows`/`qoffscreen`, `qico`/`qgif`/`qjpeg`, `qwindowsvistastyle`, `qtuiotouchplugin` and `qt_zh_CN.qm`.
-4. Manual launch with `PY_UPPER_HEADLESS=1` and `QT_QPA_PLATFORM=offscreen` exits 0.
+4. Manual launch with `APPBUILD_HEADLESS=1` and `QT_QPA_PLATFORM=offscreen` exits 0.
 5. macOS arm64 rebuild with the current defaults: `codesign --verify --deep --strict dist/Upper.app` exits 0; the headless launcher prints `GUI OK offscreen` and exits 0. `dist/Upper.app` is 74 MB (`site-packages` 44 MB, `runtime` 29 MB); `dist-info`/`egg-info`/`.pyi`/Qt `examples`/`include` counts are all 0.
-6. Windows x86_64 cross-build with the current defaults (PySide6 6.11.0, CPython 3.13.5, Zig): `[1/6]`...`[6/6]` PASS, 24 application files packed into `bundle/py_upper.dat`, and `dist/Upper` has 0 application `.py`, 0 `*.dist-info`, 0 `*.egg-info`, 0 `*.pyi`. Qt pruning is skipped on a macOS host because it cannot run the Windows Qt tooling, so the cross-build keeps the full Qt payload (656 MB); build on Windows to apply import-based Qt pruning. `_memimporter` cannot compile against CPython 3.13 (removed private C-API symbols), so the default `auto` backend falls back to `extract`; the egg is still encrypted at rest.
+6. Windows x86_64 cross-build with the current defaults (PySide6 6.11.0, CPython 3.13.5, Zig): `[1/6]`...`[6/6]` PASS, 24 application files packed into `bundle/appbuild.dat`, and `dist/Upper` has 0 application `.py`, 0 `*.dist-info`, 0 `*.egg-info`, 0 `*.pyi`. Qt pruning is skipped on a macOS host because it cannot run the Windows Qt tooling, so the cross-build keeps the full Qt payload (656 MB); build on Windows to apply import-based Qt pruning. `_memimporter` cannot compile against CPython 3.13 (removed private C-API symbols), so the default `auto` backend falls back to `extract`; the egg is still encrypted at rest.
 7. Limits: `qt_software_opengl = false` removes the software OpenGL fallback, so a machine without a usable GL driver may fail to start; the locale and image-format allowlists drop every translation/format not listed. `runtime` is still 15.3 MB and is not trimmed here.
 
 ## 0.17.17
@@ -537,7 +542,7 @@
 - The trim presets covered optional Qt payload but had no rule for distribution metadata, so the only way to remove it was a hand-written `--trim-site` pattern.
 
 ### Changes
-- New `EGG_DIR = "bundle"`; the archive is now `bundle/py_upper.dat` in the output. Windows/Linux place it beside the executable, macOS under `Contents/Resources/bundle/`. The stage mirrors the same layout, and `kEggDir` / `kEggFile` in the launcher resolve it.
+- New `EGG_DIR = "bundle"`; the archive is now `bundle/appbuild.dat` in the output. Windows/Linux place it beside the executable, macOS under `Contents/Resources/bundle/`. The stage mirrors the same layout, and `kEggDir` / `kEggFile` in the launcher resolve it.
 - New `release` trim preset: safe plus `**/*.dist-info` and `**/*.egg-info`. `minimal` now also includes those two patterns. `safe` is unchanged, so nothing is stripped unless the project opts in.
 - The working `app/pyproject.toml` selects `preset = "release"`; the tracked template stays on `safe` and documents all three presets.
 - `README.md`, `docs/DEVELOPMENT_GUIDE.md`, both project files and the version move to 0.17.17.
@@ -545,8 +550,8 @@
 - Tests: `EGG_DIR` / renamed archive assertions, a `release` preset case, and a manifest-ordering case; 256 passed, 7 skipped.
 
 ### Verification
-1. `python -m pytest app/tests -q`: 256 passed, 7 skipped (0.17.16: 254 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
-2. Full Windows x86_64 build (`python tools/build.py --target windows-x86_64 --egg`, PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]`. The output contains `bundle/py_upper.dat` (1,970,782 bytes) and no `app.egg`; `site-packages` contains no `*.dist-info` / `*.egg-info` (0.6 MB less than 0.17.16); launcher and target-runtime smoke both pass.
+1. `python -m pytest app/tests -q`: 256 passed, 7 skipped (0.17.16: 254 passed, 7 skipped). `python -m compileall -q tools/appbuild tools/build.py` and `git diff --check` are clean.
+2. Full Windows x86_64 build (`python tools/build.py --target windows-x86_64 --egg`, PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]`. The output contains `bundle/appbuild.dat` (1,970,782 bytes) and no `app.egg`; `site-packages` contains no `*.dist-info` / `*.egg-info` (0.6 MB less than 0.17.16); launcher and target-runtime smoke both pass.
 3. Limit: `importlib.metadata.version()` and `pkg_resources.require()` no longer see installed distributions under `release`/`minimal`. Projects that need them should stay on `safe` or keep the matching `*.dist-info` directory via `site_packages_keep`.
 
 ## 0.17.16
@@ -558,20 +563,20 @@
 - `python_build` copied `app/src` and the compiled extensions into the stage and stopped there. `package.py` embedded only the entry source, and the launcher had no import hook before the application entry ran. Nothing in the build described an archive format, a key or a loader.
 
 ### Changes
-- New `tools/py_upper/egg.py`: `[tool.py_upper.egg]` (`enabled`, `key_hex`, `backend`, `compression`), `EggConfig`, deterministic `pack_egg` (`MAGIC` + SHAKE-256 keystream XOR over a zip with sorted entries and a fixed timestamp), member listing, `application_files()` / `remove_packed_files()`, loader-source validation, the Windows `_memimporter` build (Zig only, cached under `build/cache/memimporter/<target>`), and `egg.json`, which records the key/backend/compression a stage was actually built with.
-- New `tools/py_upper/egg_loader.py`: a pure-ASCII `MetaPathFinder` / `Loader` with `memory`, `extract` and `auto` backends. Windows maps extension modules from memory through the vendored `_memimporter`; POSIX decrypts into a private temporary directory and inserts it into `sys.path`. Lookup order matches CPython: extension `__init__`, source `__init__`, extension, source, namespace package.
+- New `tools/appbuild/egg.py`: `[tool.appbuild.egg]` (`enabled`, `key_hex`, `backend`, `compression`), `EggConfig`, deterministic `pack_egg` (`MAGIC` + SHAKE-256 keystream XOR over a zip with sorted entries and a fixed timestamp), member listing, `application_files()` / `remove_packed_files()`, loader-source validation, the Windows `_memimporter` build (Zig only, cached under `build/cache/memimporter/<target>`), and `egg.json`, which records the key/backend/compression a stage was actually built with.
+- New `tools/appbuild/egg_loader.py`: a pure-ASCII `MetaPathFinder` / `Loader` with `memory`, `extract` and `auto` backends. Windows maps extension modules from memory through the vendored `_memimporter`; POSIX decrypts into a private temporary directory and inserts it into `sys.path`. Lookup order matches CPython: extension `__init__`, source `__init__`, extension, source, namespace package.
 - `python_build.build_python_package(..., egg=...)` packs the application files after `remove_compiled_source_py()`, deletes the packed originals from the stage, writes `egg.json`, and compiles `_memimporter.pyd` for Windows `auto` / `memory`. `auto` falls back to `extract` with a warning when Zig is absent; `memory` fails instead of silently shipping a backend it cannot run.
-- `package.py` embeds `kEggLoader` / `kEggKey` / `kEggBackend` in the launcher and copies `app.egg` to `out/app.egg` on Windows/Linux and `Contents/Resources/app.egg` on macOS. `launcher/src/PyUpper.cpp` exports `PY_UPPER_EGG` and installs the loader before the application entry, including in smoke mode.
+- `package.py` embeds `kEggLoader` / `kEggKey` / `kEggBackend` in the launcher and copies `app.egg` to `out/app.egg` on Windows/Linux and `Contents/Resources/app.egg` on macOS. `launcher/src/PyUpper.cpp` exports `APPBUILD_EGG` and installs the loader before the application entry, including in smoke mode.
 - `verify.py` checks the egg and its members, that packed application files are gone from `site-packages`, and that `memory` stages carry `_memimporter.pyd`; package verification only requires the egg when one is present, and a stage without an archive is treated as a `--no-egg` build even when the project enables the egg. The smoke script embeds the loader and calls `install()`.
 - `tools/build.py` gains `--egg` / `--no-egg`, `--egg-key`, `--egg-backend` and `--egg-compression`.
-- Vendored `_memimporter` sources under `tools/py_upper/vendor/memimporter/` (py2exe `_memimporter.c` / `MyLoadLibrary.c` under MIT, `MemoryModule.c` under MPL-2.0), together with their license texts.
+- Vendored `_memimporter` sources under `tools/appbuild/vendor/memimporter/` (py2exe `_memimporter.c` / `MyLoadLibrary.c` under MIT, `MemoryModule.c` under MPL-2.0), together with their license texts.
 - Tests: new `app/tests/test_egg.py` covers the archive round trip, a wrong key, unsafe members, all three backends and the packaged layout, CLI overrides, meta precedence and the loader-source guard.
 - Version 0.17.16 in both project files.
 
 ### Verification
-1. `python -m pytest app/tests -q`: 254 passed, 7 skipped (0.17.15: 223 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+1. `python -m pytest app/tests -q`: 254 passed, 7 skipped (0.17.15: 223 passed, 7 skipped). `python -m compileall -q tools/appbuild tools/build.py` and `git diff --check` are clean.
 2. Full Windows x86_64 build (`python tools/build.py --target windows-x86_64 --egg`, PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]`; launcher and target-runtime smoke both pass. `dist/Upper/app.egg` is 1,970,782 bytes / 24 application files; `_memimporter.pyd` is 198,144 bytes; `site-packages/main.py` and `main.pyd` are gone.
-3. Size is unchanged in practice: the egg replaces loose application files one-for-one and is compressed, while the runtime and third-party wheels dominate. This is obfuscation (it raises the cost of reading the shipped code), not strong cryptography; bundle size still comes from `[tool.py_upper.trim]` and Qt pruning.
+3. Size is unchanged in practice: the egg replaces loose application files one-for-one and is compressed, while the runtime and third-party wheels dominate. This is obfuscation (it raises the cost of reading the shipped code), not strong cryptography; bundle size still comes from `[tool.appbuild.trim]` and Qt pruning.
 4. Limits: `_memimporter` is Windows-only and needs Zig; `auto` falls back to `extract` there when Zig is missing. On macOS the `extract` backend writes unsigned `.so` files to a temporary directory, which a hardened-runtime app may refuse to load without `com.apple.security.cs.disable-library-validation`. POSIX hosts were not full-built on this Windows machine; the archive, key handling, member lookup and all backends are covered by unit tests.
 
 ## 0.17.15
@@ -586,13 +591,13 @@
 
 ### Changes
 - `PRESETS["minimal"]` now uses layout-independent patterns: `PySide*/**/examples`, `PySide*/**/include`, `PyQt*/**/examples`, `PyQt*/**/include`, `PySide*/**/opengl32sw.dll`, `PyQt*/**/opengl32sw.dll`, and `PySide*/**/` or `PyQt*/**/` prefixes for `plugins/platforms/*qdirect2d*`, `plugins/platforms/*qminimal*`, `translations/*.qm`, `plugins/imageformats/*qwebp*` and `plugins/imageformats/*qtiff*`. `**/` matches zero or more directories, so one rule covers the Windows flat layout, `PySide6/Qt`, `PyQt5/Qt5` and `PyQt6/Qt6`.
-- The tracked `[tool.py_upper.trim]` defaults in both project files now use the same layout-independent form: `PySide*/**/examples`, `PySide*/**/include`, `PyQt*/**/examples` and `PyQt*/**/include`, so the `safe` preset also prunes PySide6 POSIX and PyQt trees instead of relying on `qt_prune` to catch them.
+- The tracked `[tool.appbuild.trim]` defaults in both project files now use the same layout-independent form: `PySide*/**/examples`, `PySide*/**/include`, `PyQt*/**/examples` and `PyQt*/**/include`, so the `safe` preset also prunes PySide6 POSIX and PyQt trees instead of relying on `qt_prune` to catch them.
 - `_QtLayout` gains `root`, the directory holding the Qt payload. New `_qt_payload_root()` probes `Qt`, `Qt5` and `Qt6`; `_qt_layout()` reports that root and derives `libraries`, `plugins`, `qml`, `translations`, `metatypes` and `libexec` from it. `prune()` uses `layout.root` instead of re-deriving `pyside / "Qt"`.
 - Tests: the preset test asserts the new cross-layout patterns; a new trim case builds the four wheel layouts and verifies what the preset removes and what it must keep; four parametrized `_qt_layout` cases cover `PySide2/Qt`, `PySide6/Qt`, `PyQt5/Qt5` and `PyQt6/Qt6`, plus a flat-Windows fallback and a `prune()` case on a `PyQt6/Qt6` tree.
 - `README.md`, `docs/DEVELOPMENT_GUIDE.md` §9.4, both project files and the version move to 0.17.15.
 
 ### Verification
-1. `python -m pytest app/tests -q`: 223 passed, 7 skipped (0.17.14: 216 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+1. `python -m pytest app/tests -q`: 223 passed, 7 skipped (0.17.14: 216 passed, 7 skipped). `python -m compileall -q tools/appbuild tools/build.py` and `git diff --check` are clean.
 2. The new tests cover Windows flat PySide2, macOS/Linux `PySide6/Qt`, `PyQt5/Qt5` and `PyQt6/Qt6`; the prune test confirms the PyQt6 payload root is used for `examples`, `include`, translations and the reachability sweep.
 3. A full `python tools/build.py --trim-preset minimal` is re-run on Windows x86_64 to confirm the existing 64.6 MB / 221-file result is unchanged.
 4. Limit: macOS/Linux full builds were not run on this Windows host; the layouts are covered by unit tests, and each POSIX host still needs one `[1/6]`...`[6/6]` build.
@@ -606,12 +611,12 @@
 ### Changes
 - `TrimPolicy.from_config(config, preset=None)` expands a named `PRESETS` bundle. `safe` is empty (only explicit config patterns run); `minimal` adds `**/*.pyi`, PySide2/PySide6 `examples`/`include`, `*/opengl32sw.dll`, `*/plugins/platforms/*qdirect2d*`, `*/plugins/platforms/*qminimal*`, `*/translations/*.qm`, `*/plugins/imageformats/*qwebp*`, `*/plugins/imageformats/*qtiff*`, plus runtime `**/idlelib`, `**/tkinter`, `**/tcl`, `**/tests`, `**/test`.
 - Preset patterns are merged after explicit config patterns and deduplicated; `keep` still wins.
-- `[tool.py_upper.trim].preset` selects the bundle (`safe` by default), and `tools/build.py --trim-preset {safe,minimal}` overrides it for one build. `config.trim_policy(preset=None)` validates the name before any tree is touched.
+- `[tool.appbuild.trim].preset` selects the bundle (`safe` by default), and `tools/build.py --trim-preset {safe,minimal}` overrides it for one build. `config.trim_policy(preset=None)` validates the name before any tree is touched.
 - Both config files document `preset` and remain on `safe` by default; version 0.17.14.
 - Tests: 4 preset cases (bundle contents, dedupe, CLI override, unknown name) plus template and CLI assertions; 216 passed, 7 skipped.
 
 ### Verification
-1. `python -m pytest app/tests -q`: 216 passed, 7 skipped (0.17.13: 212 passed, 7 skipped). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+1. `python -m pytest app/tests -q`: 216 passed, 7 skipped (0.17.13: 212 passed, 7 skipped). `python -m compileall -q tools/appbuild tools/build.py` and `git diff --check` are clean.
 2. Full Windows x86_64 build with `python tools/build.py --trim-preset minimal` (PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`...`[6/6]` and reports `READY: dist/Upper`: 64.6 MB / 221 files (safe 0.17.13: 92.4 MB / 279 files); `site-packages` 48.4 MB, runtime 15.3 MB, launcher 0.92 MB. Trim removed 103 files / 33.4 MB from site-packages (safe: 45 files / 4.2 MB).
 3. `PySide2/opengl32sw.dll`, `plugins/platforms/qdirect2d.dll`, `qminimal.dll`, `plugins/imageformats/qwebp.dll` and `qtiff.dll` are absent; `qwindows.dll` and `qoffscreen.dll` remain; `translations` holds no files. Launcher and target-runtime smoke both pass.
 4. Risk: `minimal` removes the software OpenGL fallback and optional platform/image plugins. Machines without a usable OpenGL driver (VM/RDP) or applications depending on those plugins, Qt translations, WebP/TIFF may fail or lose functionality; the default remains `safe`.
@@ -628,11 +633,11 @@
 - A trimmer that deletes a matched directory wholesale cannot express "remove this subtree except one file", while one that merely descends loses the parent's removal decision for descendants that no longer match the original pattern. The keep rule had to be carried down the walk as a forced-removal prefix.
 
 ### Changes
-- New `tools/py_upper/trim.py`:
+- New `tools/appbuild/trim.py`:
   - `TrimPolicy` reads `site_packages`, `site_packages_keep`, `runtime` and `runtime_keep`; validates that every pattern is relative to the trim root (no absolute path, drive letter, empty/`.`/`..` segment); and merges one build's command-line patterns without mutating the configured policy.
   - `trim_tree()` implements relative globs (`*`, `?` and `[...]` within one segment; `**` across directories), removes a matched directory with its whole subtree, gives `keep` priority, and propagates a forced-removal prefix so a kept file under a removed parent preserves only itself and its ancestor chain.
   - `TrimReport` counts removed files, directories and bytes and prints a per-tree summary.
-- `[tool.py_upper.trim]` is read by `config.trim_policy()` and threaded through `third_party.install_wheels()` / `optimize_site()`, `runtime.optimize_runtime_tree()`, `python_build.build_python_package()` and `package.package()`.
+- `[tool.appbuild.trim]` is read by `config.trim_policy()` and threaded through `third_party.install_wheels()` / `optimize_site()`, `runtime.optimize_runtime_tree()`, `python_build.build_python_package()` and `package.package()`.
 - `tools/build.py` adds repeatable `--trim-site`, `--trim-site-keep`, `--trim-runtime` and `--trim-runtime-keep`; the patterns are merged onto the configured policy for that build only.
 - `qt_prune.prune()` drops `examples` and `include` beside the binding/Qt root, drops `resources` when `QtWebEngineCore` is not kept, and drops `qwebgl` while retaining `qoffscreen` and the rest of the platform category.
 - Both `app/pyproject.toml` and the tracked template declare the safe defaults (`**/*.pyi`, PySide2/PySide6 examples and include, `**/idlelib`, `**/tkinter`, `**/tcl`, `**/tests`, `**/test`), document `*_keep`, and move the project version to 0.17.13.
@@ -640,7 +645,7 @@
 - Docs: `README.md` and `docs/DEVELOPMENT_GUIDE.md` §9.4 document the interface, glob rules, keep semantics and CLI overrides.
 
 ### Verification
-1. `python -m pytest app/tests -q`: 212 passed, 7 skipped (at 0.17.12: 192 passed, 7 skipped; 20 cases were added). `python -m compileall -q tools/py_upper tools/build.py` and `git diff --check` are clean.
+1. `python -m pytest app/tests -q`: 212 passed, 7 skipped (at 0.17.12: 192 passed, 7 skipped; 20 cases were added). `python -m compileall -q tools/appbuild tools/build.py` and `git diff --check` are clean.
 2. Full Windows x86_64 build (PySide2 5.15.2.1, CPython 3.8.10) completes `[1/6]`…`[6/6]` and reports `READY: dist/Upper`: the bundle falls from 120.2 MB / 791 files to 92.4 MB / 279 files; `site-packages` falls from 104.0 MB to 77.4 MB and the runtime stays at 15.3 MB. Qt pruning removes 364 files and 29 directories (266 MB before compression), the trim pass removes 45 `.pyi` files (4.2 MB), and the launcher is 0.96 MB.
 3. In the packaged payload `PySide2/examples`, `PySide2/include`, `PySide2/resources` and `plugins/platforms/qwebgl.dll` are absent, while `plugins/platforms/qoffscreen.dll` remains; the launcher smoke and target runtime smoke both pass.
 4. The runtime trim prints nothing on this target because the Windows embeddable runtime keeps its stdlib inside `python38.zip`; the POSIX runtime tree, where `tkinter`/`idlelib`/`tests` are directories, exercises the same code path.
@@ -670,9 +675,9 @@
 - `qt_prune._runtime_closure()` inherits `os.environ` and overrides only the two variables the probe actually needs, the way every other subprocess in the build tool does; the comment states why a hand-built block is not a smaller host environment.
 - `toolchain.windows_gnu_cpython_defines(target)` holds the ABI correction in one place: `-DHAVE_SNPRINTF` always, plus `-DMS_WIN64` for `x86_64` and `arm64` (the 32-bit `pyconfig.h` already reaches the `MS_WIN32` branch, so adding it there would be a second, wrong story). `ensure_zig()` spells them into both the `CC`/`CXX` frontends and `Toolchain.compiler_args`, so the launcher's CMake build and the Cython extensions compile against one view of the headers instead of two.
 - `python_build.compile_windows_extensions_with_zig()` forwards `tc.compiler_args`; without it the defines reach the launcher but not the extensions.
-- `package._cmake_path()` spells every path a `-D` value carries for CMake (`CMAKE_RC_COMPILER`, `PYSTAND_PYTHON_INCLUDE`, `PY_UPPER_EMBEDDED_SOURCE`, `PY_UPPER_RESOURCE_RC`). `Path.as_posix()` is the identity on POSIX, so only Windows changes.
-- `app/pyproject.toml.example`'s `[tool.py_upper.native].exclude` drops `PySide6/ucrtbase.dll` and `shiboken6/ucrtbase.dll` beside the `vccorlib140.dll` entries, with the reason written above them and a test pinning both lines. The patterns match nothing on Linux or macOS: these are wheel defects, not platform requirements.
-- `native/inspect.py` appends `_ARCH_MISMATCH_REMEDY` to both architecture-mismatch messages. The guard is still the right answer for a foreign payload, but the reader has to be told that `[tool.py_upper.native].exclude` is the door out of it, or the tempting move is to weaken the guard.
+- `package._cmake_path()` spells every path a `-D` value carries for CMake (`CMAKE_RC_COMPILER`, `APPBUILD_PYTHON_INCLUDE`, `APPBUILD_EMBEDDED_SOURCE`, `APPBUILD_RESOURCE_RC`). `Path.as_posix()` is the identity on POSIX, so only Windows changes.
+- `app/pyproject.toml.example`'s `[tool.appbuild.native].exclude` drops `PySide6/ucrtbase.dll` and `shiboken6/ucrtbase.dll` beside the `vccorlib140.dll` entries, with the reason written above them and a test pinning both lines. The patterns match nothing on Linux or macOS: these are wheel defects, not platform requirements.
+- `native/inspect.py` appends `_ARCH_MISMATCH_REMEDY` to both architecture-mismatch messages. The guard is still the right answer for a foreign payload, but the reader has to be told that `[tool.appbuild.native].exclude` is the door out of it, or the tempting move is to weaken the guard.
 - `qt_prune.prune()` drops the binding-prefixed spelling beside the bare one, from the same `binding.lower()` prefix the rest of the module already derives.
 - `third_party._record_import_roots()` is the RECORD scan the old fallback already had, extracted and promoted to the deciding one: a declared name now counts only if RECORD installs it, and RECORD alone describes the distribution when nothing declared survives. The dist-name fallback stays for distributions with no RECORD at all, and the scan stays platform-neutral because RECORD entries are always `/`-separated.
 - `fs.retire_tree()` runs its three steps through `_housekeeping()`, which retries only `winerror` 5/32/33 (access denied, sharing violation, lock violation) up to 30 times at 0.25 s, re-raises anything else immediately, and fails with a message naming the processes that plausibly hold the tree. A POSIX `PermissionError` carries no `winerror`, so nothing is retried there and that behavior is unchanged.
@@ -680,7 +685,7 @@
 - `docs/DEVELOPMENT_GUIDE.md` §13 maps the retirement `WinError 5` failure to what holds the tree and to the wait that now precedes the failure.
 
 ### Verification
-1. `python -m pytest app/tests -q`: 192 passed, 7 skipped (at 0.17.11: 183 passed, 5 skipped; 11 cases were added). `pyflakes` over `app/src`, `app/tests` and `tools/py_upper`, `compileall` over `tools/py_upper` and `tools/build.py`, and `git diff --check` are clean.
+1. `python -m pytest app/tests -q`: 192 passed, 7 skipped (at 0.17.11: 183 passed, 5 skipped; 11 cases were added). `pyflakes` over `app/src`, `app/tests` and `tools/appbuild`, `compileall` over `tools/appbuild` and `tools/build.py`, and `git diff --check` are clean.
 2. The launch configuration that was failing now completes end to end: `python tools/build.py --run` on a Windows host with the PBS build SDK (CPython 3.8.10) and `PySide2==5.15.2.1` runs `[1/6]`…`[6/6]`, launches the packaged application, reports `Application exit code: 0`, and leaves `dist/Upper` behind.
 3. `python tools/build.py doctor` exits 0.
 4. Red before green, per fix: with the change reverted, the corresponding test fails on the unmodified source (the extension build reports `SIZEOF_VOID_P 4`, the generated configure command carries a backslash in a `-D` value, the arch guard rejects the wheel's `ucrtbase.dll`, the prefixed tool copy survives pruning and its Qt5Xml dependency is therefore swept, the smoke test dies on `QtCore`, and the retirement step raises on its first attempt).
@@ -690,7 +695,7 @@
 ### Problem
 - A packaged Windows application died the moment its window was built: `AttributeError: 'PySide2.QtWidgets.QApplication' object has no attribute 'exec'`, raised from `mvvm/mvvm_bootstrap.py:65` in `MVVMQtApplication.run`. The launcher started, the interpreter came up, Qt imported, `QApplication` was constructed — and then the process ended before anything was shown, with only a native crash dialog to explain it.
 - The Qt5 side of the desktop had a second silent defect behind that one: the high-DPI attributes were set on the `QApplication` instance after it existed, which Qt5 ignores once the application is built.
-- A packaged bundle carried three `.int` files next to the launcher: `<App>.int` (the entry), `_py_upper_static.int` (a byte-identical copy of the same entry under a name that survives renaming the executable) and `<App>.smoke.int` (the program the build runs under `PY_UPPER_SMOKE=1`). One of them was the application and two were copies of it, and the third was build-verification data that no user installs.
+- A packaged bundle carried three `.int` files next to the launcher: `<App>.int` (the entry), `_py_upper_static.int` (a byte-identical copy of the same entry under a name that survives renaming the executable) and `<App>.smoke.int` (the program the build runs under `APPBUILD_SMOKE=1`). One of them was the application and two were copies of it, and the third was build-verification data that no user installs.
 - `py_quote()` in `launcher/src/PyUpper.cpp` wrapped every value it handed to Python in a raw literal (`r'...'`) and then escaped the backslash as `\\`. A raw literal keeps both characters, so a Windows path reached Python with every separator written twice. Nothing depended on it being right — the launcher only passes UTF-8 paths and Python accepts the doubled form — so it sat there looking like correct escaping while doing the opposite.
 - The application name was the placeholder `MyApp` in the tracked template and in both fallback defaults, and `app/tests/test_e2e_local.py` spelled `dist/MyApp.app` by hand. The name is configuration, but the local end-to-end test carried a second copy of it, so renaming the application did not mean changing one line: it made that test point at a directory that no longer exists.
 
@@ -699,7 +704,7 @@
 - Nothing exercised that line. The build's smoke step, the unit tests and the manual runs all took the headless branch, which calls `processEvents()` and never opens a loop, and every real-Qt leg on this host had PySide6 installed — the binding where `exec` happens to be right. The first Qt5 runtime to run the interactive path was the user's packaged application, which is why a one-word difference reached `dist/`.
 - The high-DPI call had the same shape of bug: `app.setAttribute(...)` after `QApplication(...)` is a no-op on Qt5, which reads those attributes while the application object is constructed and logs `Attribute Qt::AA_EnableHighDpiScaling must be set before QCoreApplication is created`. The setting looked present, the warning was easy to read past, and the scaling never applied.
 - Entry resolution was inherited from PyStand, whose layout is "the entry is a file next to the executable". That makes renaming the executable a problem for the launcher, and the fix was to write the same program a second time under a name that does not follow the executable. The smoke program reused the same mechanism — write a script, let the launcher run it — which is why verification data ended up in `dist/`.
-- The three files were three copies of one program. Both reasons they existed (rename safety, and a smoke program the launcher can run) are answered by putting the programs *in* the launcher, which is where the entry effectively already lived: the packaged entry is generated from `[tool.py_upper].entry` and has no hand-written copy to keep in sync.
+- The three files were three copies of one program. Both reasons they existed (rename safety, and a smoke program the launcher can run) are answered by putting the programs *in* the launcher, which is where the entry effectively already lived: the packaged entry is generated from `[tool.appbuild].entry` and has no hand-written copy to keep in sync.
 - `py_quote` mixed two escaping schemes in one function. A raw literal means "no escapes at all", and the loop below it escaped anyway; only one of the two can own the job.
 
 ### Changes
@@ -709,37 +714,37 @@
 - `app/tests/test_qt_compat.py` covers `exec_loop` dispatching on the binding's spelling, argument/return-code pass-through, the missing-entry error, and a new AST invariant (`test_only_the_shim_names_the_event_loop_entry`) that fails on any `.exec(`/`.exec_(` call in `app/src` outside the shim — the same guard shape as the existing single-file binding rule.
 - `app/tests/test_mvvm_example.py` splits the fake into `FakeApplicationSurface` (the shared surface, with a class-level `setAttribute` that records into `CREATED["qt_attributes"]`) plus `FakeApplication` (Qt6, `exec`) and `FakeQt5Application` (Qt5, only `exec_`, whose constructor asserts the high-DPI attribute was already set). Two tests use them: `test_run_gui_enters_the_loop_the_binding_ships` drives the whole `run_gui()` path against a PySide2-shaped binding — the historical version reproduces the reported `AttributeError` there — and `test_the_qt5_high_dpi_attribute_is_set_before_the_window` pins the ordering.
 - `docs/DEVELOPMENT_GUIDE.md` §9.1 gained rule 6 (the loop is entered through `exec_loop`, enforced by the AST invariant), §9.4's `MVVMQtApplication` paragraph names `exec_loop`, and the §13 table maps the `AttributeError` to ≥0.17.11.
-- `package.write_embedded_source()` generates `py_upper_embedded.cpp`: `py_upper_embedded::kEntry` and `::kSmoke` as C++ raw string literals carrying the entry program and the smoke program. `build_launcher()` writes it into the build directory and passes `-DPY_UPPER_EMBEDDED_SOURCE=`, and `launcher/CMakeLists.txt` compiles it in and defines `PY_UPPER_HAS_EMBEDDED_SOURCE` so `PyUpper.cpp` knows the symbols exist. `write_entry_scripts()` and `_entry_script()` are gone and `package()` writes no `.int` file at all.
+- `package.write_embedded_source()` generates `py_upper_embedded.cpp`: `py_upper_embedded::kEntry` and `::kSmoke` as C++ raw string literals carrying the entry program and the smoke program. `build_launcher()` writes it into the build directory and passes `-DAPPBUILD_EMBEDDED_SOURCE=`, and `launcher/CMakeLists.txt` compiles it in and defines `APPBUILD_HAS_EMBEDDED_SOURCE` so `PyUpper.cpp` knows the symbols exist. `write_entry_scripts()` and `_entry_script()` are gone and `package()` writes no `.int` file at all.
 - `config.entry_source()` is the single source of the entry program, shared by `package.py` and `verify.py` (which cannot import the packager without a cycle). `STATIC_ENTRY` is removed from the Python side; the launcher keeps its own constant for hand-made bundles.
 - `_embedded_literal()` refuses a payload containing the raw-string delimiter's closing form or a triple double quote instead of quietly switching to another delimiter. The second is what the launcher's bootstrap wraps the same text in, so a payload carrying one would end that Python literal early; both are generator invariants, so they raise.
-- Resolution order is now embedded first, file chain second. A packaged launcher never looks next to itself, so a leftover sidecar from the old layout cannot shadow the entry the binary was built with. The file chain (`<stem>.int` → `.py` → `.pyw` → `_py_upper_static.int`) remains for a launcher built by hand, which has nothing embedded to prefer; `PY_UPPER_SMOKE=1` runs the embedded smoke program and falls back to `<stem>.smoke.int` on that same build.
+- Resolution order is now embedded first, file chain second. A packaged launcher never looks next to itself, so a leftover sidecar from the old layout cannot shadow the entry the binary was built with. The file chain (`<stem>.int` → `.py` → `.pyw` → `_py_upper_static.int`) remains for a launcher built by hand, which has nothing embedded to prefer; `APPBUILD_SMOKE=1` runs the embedded smoke program and falls back to `<stem>.smoke.int` on that same build.
 - The embedded entry runs through `exec(compile(source, ENTRY_FILE, "exec"))` with `ENTRY_FILE` set to the launcher; a file entry still goes through `runpy.run_path()`. One consequence is recorded in the guide: `runpy`'s `_ModifiedArgv0` temporarily rewrites `sys.argv[0]` to the script path, so an embedded entry now keeps `sys.argv[0]` as the launcher path.
-- `PY_UPPER_SCRIPT` is exported only when the entry really is a file. Naming a path that does not exist is worse than saying nothing, and a packaged launcher has no such file.
+- `APPBUILD_SCRIPT` is exported only when the entry really is a file. Naming a path that does not exist is worse than saying nothing, and a packaged launcher has no such file.
 - `py_quote()` is a normal single-quoted literal with real escapes now (`\\`, `\'`, `\n`, `\r`, `\t`, and `\xNN` for control bytes), so one function owns escaping again.
 - `verify.py` replaces the two file-existence checks with "no `.int` sidecar next to the launcher" and "the launcher's bytes contain `entry_source()`". The second is the check the first cannot do: it proves the binary that was built carries the entry the configuration names. `run_launcher_smoke()` no longer looks for `<stem>.smoke.int` before running — the run itself is what proves the embedded smoke program.
 - The generated declarations start at file scope in `PyUpper.cpp`, not inside its anonymous namespace: inside it they named a different, internal symbol and the launcher link failed with `variable '(anonymous namespace)::py_upper_embedded::kEntry' has internal linkage but is not defined`. The real build is what caught it; the unit tests only read the source text.
-- The tracked template, the working copy and both mirroring fallbacks ship `Upper` now: `app/pyproject.toml` / `app/pyproject.toml.example` (`[tool.py_upper.app].name`, annotated in place as the single source of truth), `app/src/utils/paths.py` (`_DEFAULT_APP_NAME`) and `tools/py_upper/config.py` (`or "Upper"`). The last two answer the same question — "the name, when neither a launcher nor a `pyproject.toml` is reachable" — from the two sides of the packaging boundary, which is why they move together.
-- `app/tests/test_e2e_local.py::_packaged_root()` reads the name out of the fixture's own `app/pyproject.toml` (through `py_upper.compat.tomllib`) instead of hardcoding `dist/MyApp.app`, and the package-verification test in `app/tests/test_build_tool_compat.py` pins `verify.app_name` to the name its fixture directories were built with, the way the bundle tests in the same file already do.
-- README「App 名称」is an operating procedure now: which single line to edit, that the tracked template has to move with it, what the name reaches (bundle / executable / `Info.plist` names / Windows version resource / `PY_UPPER_APP_NAME` / window title) and what it does not (renaming the executable, `identifier`, the project name), and that a rename leaves the old bundle in `dist/` because only `--clean` removes it. The guide's layout diagram, configuration example, pruned-size measurement and rename example follow, plus a troubleshooting row for "renamed it and the bundle still has the old name".
+- The tracked template, the working copy and both mirroring fallbacks ship `Upper` now: `app/pyproject.toml` / `app/pyproject.toml.example` (`[tool.appbuild.app].name`, annotated in place as the single source of truth), `app/src/utils/paths.py` (`_DEFAULT_APP_NAME`) and `tools/appbuild/config.py` (`or "Upper"`). The last two answer the same question — "the name, when neither a launcher nor a `pyproject.toml` is reachable" — from the two sides of the packaging boundary, which is why they move together.
+- `app/tests/test_e2e_local.py::_packaged_root()` reads the name out of the fixture's own `app/pyproject.toml` (through `appbuild.compat.tomllib`) instead of hardcoding `dist/MyApp.app`, and the package-verification test in `app/tests/test_build_tool_compat.py` pins `verify.app_name` to the name its fixture directories were built with, the way the bundle tests in the same file already do.
+- README「App 名称」is an operating procedure now: which single line to edit, that the tracked template has to move with it, what the name reaches (bundle / executable / `Info.plist` names / Windows version resource / `APPBUILD_APP_NAME` / window title) and what it does not (renaming the executable, `identifier`, the project name), and that a rename leaves the old bundle in `dist/` because only `--clean` removes it. The guide's layout diagram, configuration example, pruned-size measurement and rename example follow, plus a troubleshooting row for "renamed it and the bundle still has the old name".
 
 ### Verification
-1. Tests: `python3 -m pytest app/tests -q` is 183 passed, 5 skipped (at 0.17.9: 175 passed, 5 skipped; the Qt5 line added 6 — the 4 `exec_loop` cases plus the 2 example cases — and the embedded-entry line dropped one and added three: the generated translation unit, `_embedded_literal` refusing a payload, and the `py_quote` escaping pin). The matrix pair, `pytest app/tests/test_build_tool_compat.py app/tests/test_py_upper_config.py -q`, is 77 passed, 2 skipped. pyflakes over `app/src`, `app/tests` and `tools/py_upper`, `compileall` and `git diff --check` are clean. `PY_UPPER_E2E=1 python3 -m pytest app/tests/test_e2e_local.py -q` is 2 passed — the test that used to carry the application name itself.
+1. Tests: `python3 -m pytest app/tests -q` is 183 passed, 5 skipped (at 0.17.9: 175 passed, 5 skipped; the Qt5 line added 6 — the 4 `exec_loop` cases plus the 2 example cases — and the embedded-entry line dropped one and added three: the generated translation unit, `_embedded_literal` refusing a payload, and the `py_quote` escaping pin). The matrix pair, `pytest app/tests/test_build_tool_compat.py app/tests/test_py_upper_config.py -q`, is 77 passed, 2 skipped. pyflakes over `app/src`, `app/tests` and `tools/appbuild`, `compileall` and `git diff --check` are clean. `APPBUILD_E2E=1 python3 -m pytest app/tests/test_e2e_local.py -q` is 2 passed — the test that used to carry the application name itself.
 2. Red before green: the two new example tests reproduce `AttributeError: 'FakeQt5Application' object has no attribute 'exec'` from `mvvm_bootstrap.py:65` on the unmodified source and pass after it.
 3. Real Qt runtimes: a real Qt5 runtime ran the interactive path — PyQt5 5.15.11 (arm64 wheel, installed under `/tmp/qt5venv`) reports `binding: PyQt5 qt_major: 5` and `run() exit code: 0`, and the `AA_EnableHighDpiScaling must be set before` warning is gone with the attribute set statically. Real PySide6 (staged `site-packages`, offscreen, `QTimer.singleShot(0, app.quit)`) also exits 0 through `run()`.
-4. macOS arm64 full build, `python3 tools/build.py --target macos-arm64`: `[1/6]`…`[6/6]`, 100 PASS / 0 FAIL, `READY: dist/Upper.app` (`--verify` at 100 PASS / 0 FAIL), launcher smoke exit 0. `find dist -name '*.int'` is empty, `Resources/` holds `runtime` and `site-packages` only, `PY_UPPER_SMOKE=1 …/Upper.app/Contents/MacOS/Upper` prints `SMOKE PASS launcher` and exits 0, `codesign --verify --deep --strict` passes, and the interactive path is up (the process is still alive after 6 s, the window was built, `Metal API Validation Enabled` on stderr). `Info.plist` reports `CFBundleName` / `CFBundleDisplayName` / `CFBundleExecutable` = `Upper` while `CFBundleIdentifier` stays `com.example.pyupper`, the launcher bytes contain `Upper` and zero occurrences of `MyApp`, and the real window title is `Upper`: an offscreen probe against the packaged bundle prints `windowTitle()` as `Upper`, and as `Whatever` when run with `PY_UPPER_APP_NAME=Whatever`. The same build was also run before the rename and reported `READY: dist/MyApp.app`, which is why some figures below still name the old bundle.
-5. Windows cross build, `PY_UPPER_WINDOWS_TOOLCHAIN=zig python3 tools/build.py --target windows-x86_64`: `READY: dist/Upper` with `--verify` at 106 PASS / 0 FAIL, `launcher subsystem=gui`, no `.int` in the bundle, both programs found in the PE bytes (`b'from main import main'`, `b'SMOKE PASS launcher'`), and a generated `py_upper_resource.rc` naming `Upper` in FileDescription / InternalName / ProductName and `Upper.exe` in OriginalFilename. Both smokes print `SKIP … cross target` as before.
+4. macOS arm64 full build, `python3 tools/build.py --target macos-arm64`: `[1/6]`…`[6/6]`, 100 PASS / 0 FAIL, `READY: dist/Upper.app` (`--verify` at 100 PASS / 0 FAIL), launcher smoke exit 0. `find dist -name '*.int'` is empty, `Resources/` holds `runtime` and `site-packages` only, `APPBUILD_SMOKE=1 …/Upper.app/Contents/MacOS/Upper` prints `SMOKE PASS launcher` and exits 0, `codesign --verify --deep --strict` passes, and the interactive path is up (the process is still alive after 6 s, the window was built, `Metal API Validation Enabled` on stderr). `Info.plist` reports `CFBundleName` / `CFBundleDisplayName` / `CFBundleExecutable` = `Upper` while `CFBundleIdentifier` stays `com.example.pyupper`, the launcher bytes contain `Upper` and zero occurrences of `MyApp`, and the real window title is `Upper`: an offscreen probe against the packaged bundle prints `windowTitle()` as `Upper`, and as `Whatever` when run with `APPBUILD_APP_NAME=Whatever`. The same build was also run before the rename and reported `READY: dist/MyApp.app`, which is why some figures below still name the old bundle.
+5. Windows cross build, `APPBUILD_WINDOWS_TOOLCHAIN=zig python3 tools/build.py --target windows-x86_64`: `READY: dist/Upper` with `--verify` at 106 PASS / 0 FAIL, `launcher subsystem=gui`, no `.int` in the bundle, both programs found in the PE bytes (`b'from main import main'`, `b'SMOKE PASS launcher'`), and a generated `py_upper_resource.rc` naming `Upper` in FileDescription / InternalName / ProductName and `Upper.exe` in OriginalFilename. Both smokes print `SKIP … cross target` as before.
 6. Behaviour probes, all on copies under `/tmp` so `dist/` stays untouched:
-  - Rename plus poisoned sidecars: `Contents/MacOS/MyApp` renamed to `Renamed`, with `MyApp.int` and `_py_upper_static.int` planted in `Resources/` that print a marker and `raise SystemExit(99)`. The application starts normally (`Hello from py_upper`, `GUI OK offscreen`, exit 0) and neither sidecar runs, which is both halves of the claim in one run.
-  - Hand-made launcher: `cmake -S launcher -B …` without `PY_UPPER_EMBEDDED_SOURCE` builds an 85 KB launcher. Placed as `Contents/MacOS/Manual` with a `Manual.int` beside it in `Resources/`, it runs that file and reports `sys.argv[0]` as the sidecar path (exit 7); with no sidecar it fails with `Entry script missing in …/Resources` / `Expected Manual.int, Manual.py, Manual.pyw, _py_upper_static.int or an entry compiled into the launcher` and exit 3.
+  - Rename plus poisoned sidecars: `Contents/MacOS/MyApp` renamed to `Renamed`, with `MyApp.int` and `_py_upper_static.int` planted in `Resources/` that print a marker and `raise SystemExit(99)`. The application starts normally (`Hello from appbuild`, `GUI OK offscreen`, exit 0) and neither sidecar runs, which is both halves of the claim in one run.
+  - Hand-made launcher: `cmake -S launcher -B …` without `APPBUILD_EMBEDDED_SOURCE` builds an 85 KB launcher. Placed as `Contents/MacOS/Manual` with a `Manual.int` beside it in `Resources/`, it runs that file and reports `sys.argv[0]` as the sidecar path (exit 7); with no sidecar it fails with `Entry script missing in …/Resources` / `Expected Manual.int, Manual.py, Manual.pyw, _py_upper_static.int or an entry compiled into the launcher` and exit 3.
   - Embedded identity: deleting the packaged `main` extension makes the run fail, and the reported traceback's innermost frame is `File "./MyApp.app/Contents/MacOS/MyApp", line 1, in <module>` — `ENTRY_FILE` is the launcher itself, and the crash-report path still reports it.
-  - `PY_UPPER_SCRIPT`: a `sitecustomize.py` in the packaged `site-packages` prints the environment on startup. With an embedded entry `PY_UPPER_SCRIPT` is `None` while `PY_UPPER_HOME` and `PY_UPPER_APP_NAME` are unchanged.
+  - `APPBUILD_SCRIPT`: a `sitecustomize.py` in the packaged `site-packages` prints the environment on startup. With an embedded entry `APPBUILD_SCRIPT` is `None` while `APPBUILD_HOME` and `APPBUILD_APP_NAME` are unchanged.
 - Rename leftovers: both stale artifacts from the old name — `dist/MyApp.app` and `dist/MyApp` — survived the rename exactly as the new troubleshooting row says they would, and were deleted by hand.
 
 ### Limitations
 - The Windows bundle still needs a Windows machine to be started: the cross build proves the entry bytes are inside the PE and the subsystem is the GUI one, not that Explorer can double-click it. The Windows legs of CI remain the end-to-end evidence.
 - This host cannot run the binding that failed: PySide2 publishes no macOS arm64 wheel and Rosetta is unavailable, so the Qt5 leg rests on the PySide2-shaped fake-binding tests and on `exec_loop`'s probe against real PyQt5 (which ships both spellings). The end-to-end confirmation is a repackage on the Windows machine that hit this — `python tools/build.py --target windows-x86_64`, then double-click `dist\Upper\Upper.exe`.
 - The generator refuses a program text carrying the raw-string delimiter's closing form or a triple double quote. The entry is three lines and the smoke program two, so the fixed delimiter is enough today; an entry that needed to carry such text should move to a searched delimiter or a byte array rather than have this check relaxed.
-- `PY_UPPER_SCRIPT` is no longer exported by a packaged launcher. Anything deriving the entry script path from it now reads `None` instead of a path that does not exist; the guide and the environment table say so.
+- `APPBUILD_SCRIPT` is no longer exported by a packaged launcher. Anything deriving the entry script path from it now reads `None` instead of a path that does not exist; the guide and the environment table say so.
 
 ## 0.17.9
 
@@ -758,7 +763,7 @@
 - Qt names were imported at module level in `views/main_window.py` and `mvvm_bootstrap.py`. That made "import the application entry point" mean "install Qt", so the binding-free import the framework is supposed to guarantee was never actually exercised.
 
 ### Changes
-- `PY_UPPER_WINDOWS_TOOLCHAIN=zig` lets a macOS or Linux host build Windows targets. The host-native Zig release named by `PY_UPPER_ZIG_VERSION` (default `0.16.0`) is resolved from `ziglang.org/download/index.json`, verified against the SHA256 in that index, unpacked under `build/host-tools/zig/<version>-<host>` behind a `.verified` marker, and invoked as `zig cc`/`zig c++` with `-target <arch>-windows-gnu`. The MSVC triple is rewritten to the GNU one because Zig 0.16 bundles no MSVC cross CRT, and the packaging triple's `i686` is translated to the architecture name Zig actually knows (`x86`). Archive members are validated (no traversal, no absolute paths, no duplicates) before unpacking, and a checksum mismatch aborts the build.
+- `APPBUILD_WINDOWS_TOOLCHAIN=zig` lets a macOS or Linux host build Windows targets. The host-native Zig release named by `APPBUILD_ZIG_VERSION` (default `0.16.0`) is resolved from `ziglang.org/download/index.json`, verified against the SHA256 in that index, unpacked under `build/host-tools/zig/<version>-<host>` behind a `.verified` marker, and invoked as `zig cc`/`zig c++` with `-target <arch>-windows-gnu`. The MSVC triple is rewritten to the GNU one because Zig 0.16 bundles no MSVC cross CRT, and the packaging triple's `i686` is translated to the architecture name Zig actually knows (`x86`). Archive members are validated (no traversal, no absolute paths, no duplicates) before unpacking, and a checksum mismatch aborts the build.
 - `Toolchain.compiler_args` carries the arguments that turn a compiler path into a usable frontend, so a cross compiler is a first-class toolchain rather than a string baked into `CC`. Windows extension compilation gained an executable path that does not need the host setuptools driver: `zig cc -shared -I<include> -L<libs> -lpython3XX` against the SDK import library. The launcher's CMake configure receives generated `zig-cc`/`zig-cxx`/`zig-rc` wrappers plus `CMAKE_SYSTEM_NAME=Windows`, `CMAKE_RC_COMPILER`, `-municode` and `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY`.
 - Cross targets no longer pretend they ran the target: `run_launcher_smoke` prints `SKIP launcher smoke: cross target` when the target is not the host, matching the runtime smoke that already skipped.
 - The macOS architecture no longer appears twice in the toolchain environment: extensions pass `-arch <arch>` themselves and the launcher uses `CMAKE_OSX_ARCHITECTURES`, so `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`ARCHFLAGS` carry no second copy.
@@ -772,16 +777,16 @@
 - The desktop gains a working example: a `关于 MVVM 架构` button binds to `MainViewModel.show_about_command`, which flips the `about_visible` property; the main window opens the About window on that notification and the About window's close button binds to `hide_about_command`. One ViewModel serves both windows and `about_visible` is the single source of truth.
 - The Python 3.8 leg of the compatibility matrix failed while 3.9 through 3.13 stayed green: that job runs `app/tests/test_build_tool_compat.py` and `app/tests/test_py_upper_config.py`, which loads `app/tests/conftest.py`, and the new fake-binding helper annotated its parameter as `dict[str, dict[str, dict[str, object]]]` without `from __future__ import annotations`. A PEP 585 generic in a signature is evaluated when the module is defined, so 3.8 raised `TypeError: 'type' object is not subscriptable` while importing conftest, before a single test ran. The missing future imports are added, and a new guard test walks `app/src`, `app/tests` and `tools` and fails on any module that evaluates a PEP 585 generic or a PEP 604 union at definition time.
 - `app/src/models/` and `app/src/plugins/` are deleted (dead state object, empty package), and the service layer moves into the architecture it belongs to: `app/src/services/hello.py` becomes `mvvm/services/greeting.py` with a `GreetingService` the container registers and injects. `app/src/utils/` stays — `utils.paths.app_name()` is the launcher contract.
-- The Zig cross path produced a launcher that was not a GUI one. CMake spells `WIN32_EXECUTABLE` as `-mwindows`, and clang's driver — the one Zig goes through — reports it as an unused argument and drops it, so every cross-built launcher linked the console subsystem: an Explorer double-click opened a console window beside the application and the `AttachConsole(ATTACH_PARENT_PROCESS)` path was never reached. `launcher/CMakeLists.txt` now asks its non-MSVC linkers for `-Wl,--subsystem,windows` on the target itself (MSVC keeps using `WIN32_EXECUTABLE`, whose linker does not accept `-Wl,...`), and the console escape hatch is untouched because it is a different branch. `BinaryInfo` gained a `subsystem` field read from `IMAGE_OPTIONAL_HEADER.Subsystem` (PE32 and PE32+ agree on that offset), and `verify.py` fails a Windows package whose launcher is not the expected subsystem — GUI by default, console only under `PY_UPPER_LAUNCHER_CONSOLE=1` — so the defect can no longer pass silently.
+- The Zig cross path produced a launcher that was not a GUI one. CMake spells `WIN32_EXECUTABLE` as `-mwindows`, and clang's driver — the one Zig goes through — reports it as an unused argument and drops it, so every cross-built launcher linked the console subsystem: an Explorer double-click opened a console window beside the application and the `AttachConsole(ATTACH_PARENT_PROCESS)` path was never reached. `launcher/CMakeLists.txt` now asks its non-MSVC linkers for `-Wl,--subsystem,windows` on the target itself (MSVC keeps using `WIN32_EXECUTABLE`, whose linker does not accept `-Wl,...`), and the console escape hatch is untouched because it is a different branch. `BinaryInfo` gained a `subsystem` field read from `IMAGE_OPTIONAL_HEADER.Subsystem` (PE32 and PE32+ agree on that offset), and `verify.py` fails a Windows package whose launcher is not the expected subsystem — GUI by default, console only under `APPBUILD_LAUNCHER_CONSOLE=1` — so the defect can no longer pass silently.
 - Zig does cross-compile `windows-x86`; the guard claiming otherwise was wrong. `zig cc -target x86-windows-gnu` links the real launcher and a `python313.lib`-linked extension as PE32 (`machine 0x14c`, `subsystem 2`), the same command the MSVC path uses, so "Zig 0.16 ships no 32-bit Windows cross toolchain" only blocked a build that works. The guard is gone along with the test that pinned it, `CMAKE_SYSTEM_PROCESSOR` comes from the packaging target (`x86`/`AMD64`/`ARM64`) instead of an arm64/AMD64 ternary that reported every 32-bit configure as AMD64, and `ensure_zig` translates the triple's `i686` into the `x86` Zig names.
 - `app/src/core/` is gone, because it collided with the framework's own `app/src/mvvm/core/`. The composition root — the one file that imports all four MVVM layers — is now `app/src/application.py`, and the Qt shim joins the launcher contract in `app/src/utils/qt_compat.py`, where `utils` stays a leaf package that imports no application module. `main.py` is still the entry file and only hands control to the composition root.
 
 ### Verification
-- `python -m pytest app/tests -q`: 175 passed, 5 skipped (at the previous commit: 141 passed, 5 skipped; 30 new tests); the same suite is green on CPython 3.8.20, and `pytest app/tests/test_build_tool_compat.py app/tests/test_py_upper_config.py -q` — the exact pair the 3.8 matrix job runs — is 71 passed, 2 skipped; `PY_UPPER_E2E=1 python -m pytest app/tests/test_e2e_local.py -q`: 2 passed; pyflakes clean over `app/src`, `app/tests` and `tools/py_upper`, `compileall` and `git diff --check` clean.
+- `python -m pytest app/tests -q`: 175 passed, 5 skipped (at the previous commit: 141 passed, 5 skipped; 30 new tests); the same suite is green on CPython 3.8.20, and `pytest app/tests/test_build_tool_compat.py app/tests/test_py_upper_config.py -q` — the exact pair the 3.8 matrix job runs — is 71 passed, 2 skipped; `APPBUILD_E2E=1 python -m pytest app/tests/test_e2e_local.py -q`: 2 passed; pyflakes clean over `app/src`, `app/tests` and `tools/appbuild`, `compileall` and `git diff --check` clean.
 - macOS arm64 full build, `[1/6]`…`[6/6]`: 100 PASS, `Qt pruning: removed 315 file(s) and 158 director(ies), freed 1101 MB`; staging `site-packages` fell from 1.2 GB to 109 MB (PySide6 1.2 GB → 105 MB) and `dist/MyApp.app` is 100 MB with 58 MB of PySide6 inside it. The same build before the prune fix printed `keeping the full Qt payload`. `--run` exits 0 with `GUI OK offscreen` and `codesign --verify --deep --strict` passes. The staged `site-packages` now holds `application`, `main`, `mvvm`, `utils` and the wheels only — no `models/`, `plugins/` or top-level `services/`.
-- The example was exercised against a real PySide6 6.11.0 runtime on the offscreen platform: the window lists `Hello from py_upper` and the `关于 MVVM 架构` button, clicking it opens the About dialog (title `关于 MVVM 架构`, body describing the four layers), and the dialog's close button hides it again.
-- `PY_UPPER_WINDOWS_TOOLCHAIN=zig python tools/build.py --target windows-x86_64` finishes `[1/6]`…`[6/6]` on macOS arm64 and prints `READY: dist/MyApp` with 433 native binaries checked; both runtime smokes report `SKIP ... cross target`.
-- New tests cover the Qt proxy (module and attribute resolution, `Signal`/`Slot` spelling on both bindings, the single-file binding invariant), the prune pass reading the shim (including a parenthesised multi-line import) and refusing an unparseable source, the whole MVVM module graph importing against a fake binding, the container registries/`start`/`stop` and per-application service scoping, the binding rules (setter call vs. attribute assignment, the explicit getter a two-way binding needs), the example's whole chain — button click → command → `about_visible` → window shown/hidden — against fake Qt components, and the Zig archive/host guards. The subsystem work is covered by parsing the optional header of all three cross-built launchers, which report `subsystem=2 (gui)` for windows-x86_64, windows-arm64 and windows-x86 while the `PY_UPPER_LAUNCHER_CONSOLE=1` build reports `subsystem=3 (console)`; the dist launcher built before this fix fails the new check with `launcher subsystem: console, expected gui` and the freshly built one passes it. `compile_windows_extensions_with_zig` on windows-x86 emits `probe_module.cp313-win32.pyd` with `machine=0x14c` importing `python313.dll`.
+- The example was exercised against a real PySide6 6.11.0 runtime on the offscreen platform: the window lists `Hello from appbuild` and the `关于 MVVM 架构` button, clicking it opens the About dialog (title `关于 MVVM 架构`, body describing the four layers), and the dialog's close button hides it again.
+- `APPBUILD_WINDOWS_TOOLCHAIN=zig python tools/build.py --target windows-x86_64` finishes `[1/6]`…`[6/6]` on macOS arm64 and prints `READY: dist/MyApp` with 433 native binaries checked; both runtime smokes report `SKIP ... cross target`.
+- New tests cover the Qt proxy (module and attribute resolution, `Signal`/`Slot` spelling on both bindings, the single-file binding invariant), the prune pass reading the shim (including a parenthesised multi-line import) and refusing an unparseable source, the whole MVVM module graph importing against a fake binding, the container registries/`start`/`stop` and per-application service scoping, the binding rules (setter call vs. attribute assignment, the explicit getter a two-way binding needs), the example's whole chain — button click → command → `about_visible` → window shown/hidden — against fake Qt components, and the Zig archive/host guards. The subsystem work is covered by parsing the optional header of all three cross-built launchers, which report `subsystem=2 (gui)` for windows-x86_64, windows-arm64 and windows-x86 while the `APPBUILD_LAUNCHER_CONSOLE=1` build reports `subsystem=3 (console)`; the dist launcher built before this fix fails the new check with `launcher subsystem: console, expected gui` and the freshly built one passes it. `compile_windows_extensions_with_zig` on windows-x86 emits `probe_module.cp313-win32.pyd` with `machine=0x14c` importing `python313.dll`.
 
 ### Limitations
 - The Zig path emits MinGW-w64 (`*-windows-gnu`) binaries, which is not the ABI a Visual Studio build produces. Windows hosts keep the MSVC path unchanged, and the Windows CI legs remain the only end-to-end evidence for the PE bundle.
@@ -805,7 +810,7 @@
 ### Verification
 - `python -m pytest app/tests -q`: 141 passed, 5 skipped.
 - The import-library test now plants a `libs/python313.lib` in the *runtime* tree and leaves only the shim in the SDK: the build must fail there, and the successful case asserts the linker's search path is the SDK path and never the runtime path. On the old lookup this test passes silently instead.
-- `PY_UPPER_E2E=1 python -m pytest app/tests/test_e2e_local.py -q`: 2 passed.
+- `APPBUILD_E2E=1 python -m pytest app/tests/test_e2e_local.py -q`: 2 passed.
 - Full macOS arm64 PySide6 build on the same pin: `[1/6]`…`[6/6]` green, 40 PASS, `--run` exit 0, `codesign --verify --deep --strict` valid.
 
 ### Limitations
@@ -856,7 +861,7 @@
 - Cython output and compiled extensions are cached under `build/cache/`, keyed by content: a translation unit by the source text and the Cython version, an extension by the exact compiler command line (compiler, architecture, ABI suffix, SDK include directory, flags) and the content of the C it compiles. A module whose inputs did not change is taken from the cache instead of rebuilt. The two layers chain, so editing a `.py` invalidates its `.c` and its own extension and nothing else.
 - Only current sources are staged, so artifacts of removed or renamed modules can never be packaged, and the "wipe the intermediate tree first" step is gone.
 - Cython and compiler invocations run on a thread pool, one job per CPU by default, because each invocation is an independent CPU-bound process.
-- `[tool.py_upper.build]` adds `jobs` (0 = one per CPU) and `incremental` (default `true`; `false` forces a full recompile).
+- `[tool.appbuild.build]` adds `jobs` (0 = one per CPU) and `incremental` (default `true`; `false` forces a full recompile).
 - `--clean` still removes `build/`, and therefore the cache.
 
 ### Verification
@@ -878,13 +883,13 @@
 
 ### Changes
 - Entry resolution now tries `<stem>.int`, `<stem>.py`, `<stem>.pyw` and finally the rename-safe `_py_upper_static.int`; the packager writes both `<App>.int` and `_py_upper_static.int` with identical content, and `--verify` checks for the static entry.
-- The launcher exports `PY_UPPER_HOME`, `PY_UPPER_RUNTIME`, `PY_UPPER_SITE_PACKAGES`, `PY_UPPER_SCRIPT` and `PY_UPPER_EXECUTABLE`. `utils.paths.resource_root()` prefers `PY_UPPER_HOME/resources` and only falls back to counting parent directories when the variable is absent.
-- Fatal errors are reported through a native dialog (Windows `MessageBoxW`, macOS `CFUserNotification` with a 120 s timeout, Linux `zenity`/`xmessage`) unless stderr is already visible or `PY_UPPER_NO_DIALOG` is set.
+- The launcher exports `APPBUILD_HOME`, `APPBUILD_RUNTIME`, `APPBUILD_SITE_PACKAGES`, `APPBUILD_SCRIPT` and `APPBUILD_EXECUTABLE`. `utils.paths.resource_root()` prefers `APPBUILD_HOME/resources` and only falls back to counting parent directories when the variable is absent.
+- Fatal errors are reported through a native dialog (Windows `MessageBoxW`, macOS `CFUserNotification` with a 120 s timeout, Linux `zenity`/`xmessage`) unless stderr is already visible or `APPBUILD_NO_DIALOG` is set.
 - Unhandled application exceptions are captured by the bootstrap into `TMPDIR/py_upper-<pid>.log` and reported after `Py_FinalizeEx`, so a double-clicked bundle shows a traceback instead of exiting silently; the report file is deleted on the way out.
-- Windows: wide-character entry point (`wWinMain`, `wmain` in the console build), UTF-8 paths through `std::filesystem::u8path`, `LoadLibraryExW(LOAD_WITH_ALTERED_SEARCH_PATH)`, `AttachConsole(ATTACH_PARENT_PROCESS)` that never steals an existing redirection, static CRT (`/MT`), GUI subsystem by default with `PY_UPPER_LAUNCHER_CONSOLE=1` as the debug build, and a generated `VERSIONINFO` resource.
-- The launcher smoke test and the CI integration run now set `PY_UPPER_NO_DIALOG=1`, so a failure can never block a job on a dialog.
+- Windows: wide-character entry point (`wWinMain`, `wmain` in the console build), UTF-8 paths through `std::filesystem::u8path`, `LoadLibraryExW(LOAD_WITH_ALTERED_SEARCH_PATH)`, `AttachConsole(ATTACH_PARENT_PROCESS)` that never steals an existing redirection, static CRT (`/MT`), GUI subsystem by default with `APPBUILD_LAUNCHER_CONSOLE=1` as the debug build, and a generated `VERSIONINFO` resource.
+- The launcher smoke test and the CI integration run now set `APPBUILD_NO_DIALOG=1`, so a failure can never block a job on a dialog.
 - Removed the leftover `app/resources/config/app.toml` and the packaging-time writer that regenerated it: nothing ever read the file, and the application name already has one source of truth in `app/pyproject.toml`. `app/resources` is now an optional payload directory — a project without it packages normally, and the tree is copied only when it exists.
-- The application name is usable from the application itself: the packager passes it to CMake (`-DPY_UPPER_APP_NAME`), the launcher exports `PY_UPPER_APP_NAME` (falling back to its own filename stem only when built by hand), and `utils.paths.app_name()` reads it. Running from a source tree there is no launcher, so the helper reads the same `[tool.py_upper.app].name` instead of a second copy. The demo window title now comes from that helper rather than a hardcoded `"py_upper"`.
+- The application name is usable from the application itself: the packager passes it to CMake (`-DAPPBUILD_APP_NAME`), the launcher exports `APPBUILD_APP_NAME` (falling back to its own filename stem only when built by hand), and `utils.paths.app_name()` reads it. Running from a source tree there is no launcher, so the helper reads the same `[tool.appbuild.app].name` instead of a second copy. The demo window title now comes from that helper rather than a hardcoded `"py_upper"`.
 - The application configuration is a Git-ignored working copy now: `app/pyproject.toml.example` is the tracked template and `app/pyproject.toml` — application name, dependencies, runtime version — stays on the machine. A missing working copy is a hard error naming the exact `cp` command, not a silent fallback to the template, and CI creates the file before building.
 - The tracked template pins no dependencies: `app/pyproject.toml.example` declares `dependencies = []` and describes a real entry in a comment, so a fork cannot inherit the pins of whoever cloned first. The working copy still carries the real set, and the CI integration job materializes its copy with the repository's own dependencies because the repository's application needs PySide6 to run. The E2E fixture rewrites the same key and now anchors its pattern to the start of the line, so a commented-out example can never win over the declaration that is in effect.
 
@@ -892,10 +897,10 @@
 - macOS arm64 with PySide6 6.11.0: full build + `--run` exits 0 and prints `GUI OK offscreen`; `--verify` reports 40 PASS / 0 FAIL; `codesign --verify --deep --strict` passes.
 - Rename probe: the packaged launcher copied to `Renamed.app/Contents/MacOS/Renamed`, with no `Renamed.int` present, starts through `_py_upper_static.int` (exit 0).
 - Failure probes: an entry that raises prints the traceback, exits 1 and leaves no report file behind; a missing entry exits 3 and lists the candidate names.
-- App-name probe: a bundle whose entry prints `PY_UPPER_APP_NAME` reports `MyApp`; the same bundle with the executable renamed to `Renamed` and no `Renamed.int` still reports `MyApp` through `_py_upper_static.int`, and `utils.paths.app_name()` inside the packaged bundle resolves to the same value.
+- App-name probe: a bundle whose entry prints `APPBUILD_APP_NAME` reports `MyApp`; the same bundle with the executable renamed to `Renamed` and no `Renamed.int` still reports `MyApp` through `_py_upper_static.int`, and `utils.paths.app_name()` inside the packaged bundle resolves to the same value.
 - Missing-configuration probe: with `app/pyproject.toml` deleted, `--doctor` and the test suite both stop with `app/pyproject.toml is missing` plus the copy command; recreating it from the template restores a clean run. `git check-ignore -v app/pyproject.toml` reports the `.gitignore` rule.
 - Template probe: the CI step's script was run against the tracked template and produced an `app/pyproject.toml` that parses with the repository's dependency set; `test_tracked_pyproject_template_is_complete` fails if the template ever pins a dependency again.
-- `python -m pytest app/tests -q`: 70 passed, 2 skipped (the E2E pair, skipped without `PY_UPPER_E2E=1`); with `PY_UPPER_E2E=1` both pass as well.
+- `python -m pytest app/tests -q`: 70 passed, 2 skipped (the E2E pair, skipped without `APPBUILD_E2E=1`); with `APPBUILD_E2E=1` both pass as well.
 
 ### Limitations
 - The Windows launcher is exercised by CI only; the version resource deliberately carries no icon because the repository has no `.ico`/`.icns` asset yet.
@@ -921,7 +926,7 @@
 ### Verification
 - Module count 27 to 19, total lines 3597 to ~3550 with no behaviour change.
 - pyflakes reports no undefined names, unused imports or redefinitions.
-- Full suite on macOS arm64 with `PY_UPPER_E2E=1`: 62 passed.
+- Full suite on macOS arm64 with `APPBUILD_E2E=1`: 62 passed.
 - Full PySide6 6.11.0 build on macOS arm64 after the merge: `--run` exit 0, Qt pruning frees 1101 MB, `--verify` 39 PASS / 0 FAIL, `codesign --verify --deep --strict` passes, and the real cocoa window opens.
 
 ### Limitations
@@ -958,15 +963,15 @@
 - `[project].dependencies` installed whole wheels and the optimizer had no notion of which parts of a dependency an application actually uses.
 
 ### Changes
-- Add a Qt main window to the application entry point. `PY_UPPER_HEADLESS=1` builds the same window on the offscreen platform, so CI and the build smoke can prove Qt works without a window server.
-- Add import-driven Qt pruning, enabled with `[tool.py_upper.optimize].qt = "imports"`: read the `PySide6.Qt*` modules referenced by `app/src`, resolve the transitive closure with the target runtime, then drop unused wrapper modules, Qt libraries, plugin categories, the QML tree, shiboken's QML helper, Qt tooling binaries and tooling translations.
+- Add a Qt main window to the application entry point. `APPBUILD_HEADLESS=1` builds the same window on the offscreen platform, so CI and the build smoke can prove Qt works without a window server.
+- Add import-driven Qt pruning, enabled with `[tool.appbuild.optimize].qt = "imports"`: read the `PySide6.Qt*` modules referenced by `app/src`, resolve the transitive closure with the target runtime, then drop unused wrapper modules, Qt libraries, plugin categories, the QML tree, shiboken's QML helper, Qt tooling binaries and tooling translations.
 - Drop plugins whose Qt dependencies are not part of the kept module set. This removes the virtual-keyboard input context (which pulls QtQml/QtQuick) and the PDF image format (which pulls QtPdf), with an explicit exception so SVG icon support survives.
 - Accept an explicit module list instead of `"imports"`; the list is expanded through the same runtime closure so it cannot drop a wrapper that the imported modules need.
 - Keep `"all"` as the default, so projects that rely on Qt's dynamic loading keep the full payload.
 
 ### Verification
 - macOS arm64 with `PySide6==6.11.0`: the packaged application shrank from 1.2 GB to 153 MB (PySide6 1.1 GB to 104 MB) with the window still opening, `--verify` passing and `codesign --verify --deep --strict` accepting the bundle. `strip_native = true` reaches 141 MB.
-- Full suite on macOS arm64: 59 passed, 2 skipped, plus the hermetic local end-to-end build with `PY_UPPER_E2E=1`.
+- Full suite on macOS arm64: 59 passed, 2 skipped, plus the hermetic local end-to-end build with `APPBUILD_E2E=1`.
 
 ### Limitations
 - Qt pruning cannot see modules loaded dynamically (for example through `importlib` or a QML file). Use an explicit module list for those applications.
@@ -996,7 +1001,7 @@
 - Resolve target wheels with the target runtime's own interpreter when it is natively executable, so environment markers, tags and `Requires-Python` all match the target instead of the host.
 - Raise the pip socket timeout and retry budget, and download through a py_upper-owned pip cache so repeated builds and CI runs reuse wheels instead of refetching them.
 - Index the bundle search roots once and cache `LC_RPATH` lookups, turning the Qt-sized closure from a tree walk per dependency into a single pass.
-- Add `[tool.py_upper.native].exclude` for optional native payloads whose dependencies cannot exist in the bundle, and make the unresolved-dependency error point at it.
+- Add `[tool.appbuild.native].exclude` for optional native payloads whose dependencies cannot exist in the bundle, and make the unresolved-dependency error point at it.
 - Drop `*.dSYM` debug bundles during third-party optimization and skip them in the native scanner.
 - Derive a distribution's import roots from its own `RECORD` instead of scanning the surrounding site-packages.
 - Add the platform extension directory (`DLLs` on Windows, `lib-dynload` on Unix) to the launcher's module search path.
@@ -1006,7 +1011,7 @@
 
 ### Verification
 - macOS arm64 host: `python tools/build.py --run` with `PySide6==6.11.0`, `pyserial==3.5`, `bleak==3.0.2`, `qasync==0.28.0` - build, package, static verification (415 native binaries), target-runtime import smoke, launcher smoke and application run all pass; `codesign --verify --deep --strict` accepts the packaged bundle.
-- Full suite with `PY_UPPER_E2E=1` on macOS arm64: 54 passed in 74s, including the hermetic local end-to-end build, third-party wheel install, application-owned native library closure and the lock/`--locked` round trip.
+- Full suite with `APPBUILD_E2E=1` on macOS arm64: 54 passed in 74s, including the hermetic local end-to-end build, third-party wheel install, application-owned native library closure and the lock/`--locked` round trip.
 - The end-to-end gate caught three defects that unit tests could not: the missing platform extension directory, the site-packages-wide import scan and the lock round trip.
 
 ### Limitations
@@ -1071,7 +1076,7 @@
 - Allow projects to configure only the exact target Python version when using PBS.
 - Automatically select the newest PBS release containing both the matching `install_only_stripped` runtime and full SDK for the target triple.
 - Fix the macOS runtime asset matcher so exact PBS filenames using `cpython-X.Y.Z+release-...` are recognized.
-- Keep explicit `[tool.py_upper.pbs].release` support for pinned/reproducible builds.
+- Keep explicit `[tool.appbuild.pbs].release` support for pinned/reproducible builds.
 - Record the resolved PBS release in the lock file and avoid requiring a network release lookup for `--locked` verification.
 
 # py_upper Changelog
@@ -1144,7 +1149,7 @@
 - Projects using `src/config`, `src/plugins`, or another valid source layout were therefore reported as `FAIL core`.
 
 ### Root cause
-- `tools/py_upper/verify.py` hard-coded `stage/site-packages/core` as a mandatory package directory.
+- `tools/appbuild/verify.py` hard-coded `stage/site-packages/core` as a mandatory package directory.
 - The build system already derives actual application modules from `selected_sources()`, so the verification rule was inconsistent with the configurable source layout.
 
 ### Changes
@@ -1320,7 +1325,7 @@
 - The v0.16.2 PBS runtime resolver called `user_agent()` without importing it, so a normal PBS-backed build failed with `NameError` before downloading the runtime.
 
 ### Changes
-- Import `user_agent` explicitly in `tools/py_upper/runtime.py`.
+- Import `user_agent` explicitly in `tools/appbuild/runtime.py`.
 - Add a regression test covering the runtime module's User-Agent dependency.
 - Keep the v0.16.2 Python 3.8+ compatibility changes unchanged.
 
@@ -1338,7 +1343,7 @@
 - The boundary between the Build Tool Python and the bundled Target Python needed to be explicit for legacy-runtime work.
 
 ### Changes
-- Add `tools/py_upper/compat.py` with a vendored Tomli fallback for Python 3.8–3.10.
+- Add `tools/appbuild/compat.py` with a vendored Tomli fallback for Python 3.8–3.10.
 - Keep Python 3.11+ on standard-library `tomllib`.
 - Normalize build-tool modules around postponed annotations.
 - Declare Python 3.8 as the minimum Build Tool Python and provide a clear diagnostic below it.
@@ -1355,8 +1360,8 @@
 - Rename project identity to `py_upper`.
 - Flatten `app/src/myapp/` to `app/src/`.
 - Make `app/src/main.py` the direct development entrypoint.
-- Rename internal tooling namespace to `tools/py_upper` and native launcher implementation to PyUpper.
-- Add `[tool.py_upper.app]` for independently configurable packaged App name and bundle identifier.
+- Rename internal tooling namespace to `tools/appbuild` and native launcher implementation to PyUpper.
+- Add `[tool.appbuild.app]` for independently configurable packaged App name and bundle identifier.
 - Make packaging, verification, native dependency scanning and release manifests consume the configured App name.
 
 ## 0.16.0

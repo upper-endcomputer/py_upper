@@ -7,15 +7,19 @@ from mvvm.core.command import AsyncRelayCommand
 
 
 def test_tasks_cancel_before_services_close_and_reject_new_work():
+    """验证关闭时先取消任务，再逆序关闭服务，并拒绝新增任务。"""
     async def scenario():
+        """在单个事件循环中验证关闭顺序与重复关闭的幂等性。"""
         owner = AsyncLifecycle()
         events = []
         async def work():
+            """保持任务运行至取消，并记录 finally 清理事件。"""
             try:
                 await asyncio.Event().wait()
             finally:
                 events.append('cancelled')
         async def close():
+            """模拟让出事件循环后才能完成的异步服务关闭。"""
             await asyncio.sleep(0)
             events.append('service')
         owner.register_close(lambda: events.append('first'))
@@ -32,11 +36,14 @@ def test_tasks_cancel_before_services_close_and_reject_new_work():
 
 
 def test_service_failure_does_not_skip_other_services():
+    """验证单个服务关闭异常不会阻止其余服务清理。"""
     async def scenario():
+        """收集关闭事件并确认汇总异常保留失败信息。"""
         owner = AsyncLifecycle()
         events = []
         owner.register_close(lambda: events.append('closed'))
         def fail():
+            """注入服务关闭异常，覆盖异常后继续清理的路径。"""
             raise ValueError('device failed')
         owner.register_close(fail)
         with pytest.raises(RuntimeError, match='Service shutdown'):
@@ -46,10 +53,13 @@ def test_service_failure_does_not_skip_other_services():
 
 
 def test_owned_command_prevents_duplicate_scheduling_and_is_cancelled():
+    """验证受生命周期管理的命令不会重复启动且能随容器取消。"""
     async def scenario():
+        """连续触发同一命令，再关闭所有者检查执行状态恢复。"""
         owner = AsyncLifecycle()
         calls = []
         async def work(_):
+            """记录命令启动并等待取消，制造重复调度检查窗口。"""
             calls.append('started')
             await asyncio.Event().wait()
         command = AsyncRelayCommand(work, task_owner=owner)

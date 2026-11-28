@@ -1,0 +1,425 @@
+# 中文维护说明：验证wheel 解包、路径安全与导入发现；失败时先检查 fixture 与平台前提，不能通过删除断言掩盖回归。
+# 注释规范：docs/COMMENTING_GUIDE.md；修改行为时同步更新边界回归。
+from __future__ import annotations
+
+import hashlib
+import subprocess
+import sys
+import sysconfig
+import zipfile
+from pathlib import Path
+
+import pytest
+
+
+def make_wheel(root: Path, name="demo_pkg", version="1.0.0", payload="ok", requires_dist: str | None = None) -> Path:
+    """创建包含给定成员和元数据的最小测试 wheel。"""
+    root.mkdir(parents=True, exist_ok=True)
+    filename = f"{name}-{version}-py3-none-any.whl"
+    wheel = root / filename
+    dist = f"{name}-{version}.dist-info"
+    entries = {
+        f"{name}/__init__.py": f"VALUE={payload!r}\n".encode(),
+        f"{dist}/METADATA": (
+            f"Metadata-Version: 2.1\nName: {name.replace('_','-')}\nVersion: {version}\n"
+            + (f"Requires-Dist: {requires_dist}\n" if requires_dist else "")
+        ).encode(),
+        f"{dist}/WHEEL": b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{dist}/top_level.txt": f"{name}\n".encode(),
+    }
+    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+        records=[]
+        for path, data in entries.items():
+            archive.writestr(path, data)
+            digest=__import__('base64').urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b'=').decode()
+            records.append(f"{path},sha256={digest},{len(data)}")
+        records.append(f"{dist}/RECORD,,")
+        archive.writestr(f"{dist}/RECORD", "\n".join(records)+"\n")
+    return wheel
+
+
+def test_wheel_extraction_and_direct_import_discovery(tmp_path):
+    """验证 wheel 安装及直接依赖顶层导入名发现。"""
+    from appbuild.third_party import _extract_wheel
+
+    wheel = make_wheel(tmp_path)
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    _extract_wheel(wheel, site, staging)
+    assert (site / "demo_pkg" / "__init__.py").exists()
+    from appbuild.third_party import _top_level_imports
+    dist = site / "demo_pkg-1.0.0.dist-info"
+    assert _top_level_imports(dist) == ["demo_pkg"]
+
+
+def test_wheel_collision_with_different_content_fails(tmp_path):
+    """验证两个 wheel 写入同路径但内容不同会明确失败。"""
+    from appbuild.third_party import _extract_wheel
+
+    a = make_wheel(tmp_path / "a")
+    b = make_wheel(tmp_path / "b", payload="different")
+    site = tmp_path / "site"
+    site.mkdir()
+    staging = site.parent / "staging"
+    staging.mkdir()
+    _extract_wheel(a, site, staging)
+    try:
+        _extract_wheel(b, site, staging)
+    except RuntimeError as exc:
+        assert "collision" in str(exc).lower()
+    else:
+        raise AssertionError("expected wheel collision")
+
+
+def test_wheel_data_buckets_are_mapped_into_the_bundle(tmp_path):
+    """验证 wheel 数据桶映射到应用与运行时目录，且不复制开发头文件。"""
+    from appbuild.third_party import _extract_wheel
+
+    wheel = make_wheel(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("demo_pkg-1.0.0.data/purelib/extra.py", b"VALUE = 42\n")
+        archive.writestr("demo_pkg-1.0.0.data/platlib/extension.so", b"native")
+        archive.writestr("demo_pkg-1.0.0.data/data/share/config.json", b"{}")
+        archive.writestr("demo_pkg-1.0.0.data/scripts/demo", b"#!/bin/sh\n")
+        archive.writestr("demo_pkg-1.0.0.data/headers/demo.h", b"header")
+        # A nested directory with a .data suffix is an ordinary package path.
+        archive.writestr("demo_pkg/assets.data/file.txt", b"nested")
+    site = tmp_path / "site"
+    staging = tmp_path / "stage"
+    installed = _extract_wheel(wheel, site, staging)
+    assert (site / "extra.py").read_bytes() == b"VALUE = 42\n"
+    assert (site / "extension.so").read_bytes() == b"native"
+    assert (staging / "runtime-data" / "share" / "config.json").read_bytes() == b"{}"
+    assert (staging / "runtime-data" / "bin" / "demo").read_bytes() == b"#!/bin/sh\n"
+    assert (site / "demo_pkg" / "assets.data" / "file.txt").read_bytes() == b"nested"
+    assert not (site / "demo_pkg-1.0.0.data").exists()
+    assert not (staging / "runtime-data" / "demo.h").exists()
+    assert len(installed) == 10  # regular wheel files plus mapped payloads, not headers
+
+
+@pytest.mark.parametrize("member", [
+    "../escape.py", "/tmp/escape.py", "C:/escape.py", "C:escape.py",
+    r"..\escape.py", r"C:\escape.py", r"\\server\share\escape.py",
+    "pkg/../escape.py", "pkg//escape.py", "pkg/./escape.py",
+])
+def test_wheel_member_must_be_portable_and_relative(tmp_path, member):
+    """验证 wheel 成员路径必须是可移植相对路径且在写入前完成检查。"""
+    from appbuild.third_party import _extract_wheel, _wheel_records
+
+    wheel = make_wheel(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(member, b"malicious")
+    with pytest.raises(RuntimeError, match="Unsafe wheel member path"):
+        _wheel_records(wheel)
+    with pytest.raises(RuntimeError, match="Unsafe wheel member path"):
+        _extract_wheel(wheel, tmp_path / "site", tmp_path / "stage")
+    assert not (tmp_path / "site").exists()  # reject archive before any write
+
+
+@pytest.mark.parametrize("member", [
+    "demo_pkg-1.0.0.data/purelib", "demo_pkg-1.0.0.data/unknown/file.py",
+])
+def test_invalid_wheel_data_member_is_rejected(tmp_path, member):
+    """验证非法数据桶成员不会生成部分安装目录。"""
+    from appbuild.third_party import _extract_wheel
+
+    wheel = make_wheel(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(member, b"invalid")
+    with pytest.raises(RuntimeError, match="wheel .data|Unsupported wheel data"):
+        _extract_wheel(wheel, tmp_path / "site", tmp_path / "stage")
+    assert not (tmp_path / "site").exists()
+
+
+def test_pip_target_arguments_use_target_compatibility_set():
+    """验证 pip 收到目标平台全部兼容标签及 ABI 集合。"""
+    from appbuild.third_party import _pip_args
+    from appbuild.config import TARGETS
+
+    args = _pip_args(TARGETS["macos-arm64"])
+    platforms = [args[i + 1] for i, value in enumerate(args[:-1]) if value == "--platform"]
+    assert platforms == list(TARGETS["macos-arm64"].wheel_platforms)
+    assert args.count("--abi") == 3
+
+
+def test_pip_target_arguments_honor_offline_find_links(monkeypatch):
+    """验证离线依赖配置转为 no-index 与正确的本地 find-links 路径。"""
+    from appbuild.third_party import _pip_args
+    from appbuild.config import TARGETS
+    import appbuild.third_party as third_party
+
+    monkeypatch.setattr(third_party, "dependency_config", lambda: {"no_index": True, "find_links": ["wheelhouse"]})
+    args = _pip_args(TARGETS["linux-x86_64"])
+    assert "--no-index" in args
+    assert "--find-links" in args
+    assert str((third_party.ROOT / "wheelhouse").resolve()) in args
+
+
+def _host_wheel_tag() -> str:
+    """根据当前解释器和平台生成测试原生 wheel 标签。
+
+    Wheel tag describing the interpreter and platform running the tests."""
+    impl = "cp" + sysconfig.get_config_var("py_version_nodot")
+    platform = sysconfig.get_platform().replace("-", "_").replace(".", "_")
+    if platform.startswith("linux_"):
+        platform = "manylinux_2_17_" + platform.rsplit("_", 1)[-1]
+    return f"{impl}-{impl}-{platform}"
+
+
+def windows_import_lib_dir() -> Path:
+    """定位当前 Windows 解释器的版本化导入库目录。
+
+    The directory holding the host CPython import libraries.
+
+    A Windows CPython install keeps ``python3XX.lib`` under ``<base_prefix>/
+    libs`` next to the interpreter. The native wheel fixture links against it,
+    and the E2E runtime fixture copies it so the target extensions can be
+    linked against the runtime they are built for.
+    """
+    directory = Path(sys.base_prefix) / "libs"
+    if not directory.is_dir():
+        raise RuntimeError(f"the Python import library directory is missing: {directory}")
+    return directory
+
+
+def _windows_extension_compiler() -> tuple[str, Path, dict[str, str]]:
+    """解析 Windows C 编译器、Python 导入库及完整编译环境。
+
+    The MSVC compiler, its Python import library, and the environment it needs.
+
+    The mingw gcc shipped on the Windows images is an x86_64-hosted build
+    (mingw-builds publishes no arm64 host), so it cannot emit code for an arm64
+    runner. The MSVC toolchain appbuild resolves for the target is the only
+    compiler that always matches the interpreter running the tests.
+
+    The environment is handed back with the compiler because cl.exe finds the C
+    runtime headers through ``INCLUDE``. The test interpreter is not started
+    from a developer prompt, so its own environment has no ``INCLUDE`` at all,
+    and a compile that inherits it fails on the first standard header cl.exe
+    reaches: ``fatal error C1083: Cannot open include file: 'io.h'``.
+
+    Raises with the missing piece instead of returning ``None``: the caller is
+    the only place that can report it, and "no host C compiler on win32" hides
+    which half of the toolchain lookup failed.
+    """
+    import os
+    import shutil
+
+    from appbuild.config import host_target
+    from appbuild.toolchain import resolve_toolchain
+
+    env = {**os.environ, **resolve_toolchain(host_target()).env}
+    cl = shutil.which("cl", path=env.get("PATH"))
+    if not cl:
+        raise RuntimeError("cl.exe is not on the MSVC environment PATH")
+    import_lib = windows_import_lib_dir() / f"python{sysconfig.get_config_var('py_version_nodot')}.lib"
+    if not import_lib.is_file():
+        raise RuntimeError(f"the Python import library is missing: {import_lib}")
+    return cl, import_lib, env
+
+
+def has_native_fixture_compiler() -> bool:
+    """检测主机是否具备生成原生测试 wheel 的编译器。
+
+    Whether this host can compile the fixture extension for itself."""
+    import shutil
+
+    if sys.platform == "win32":
+        try:
+            _windows_extension_compiler()
+        except RuntimeError:
+            return False
+        return True
+    return bool(shutil.which("gcc") or shutil.which("cc"))
+
+
+def _extension_compile_command(source: Path, binary: Path) -> tuple[list[str], dict[str, str] | None] | None:
+    """按平台生成原生测试扩展的编译命令和必要环境。
+
+    Command, and the environment it needs, compiling a CPython extension for the host."""
+    import os
+    import shutil
+
+    include = sysconfig.get_path("include")
+    if sys.platform == "win32":
+        cl, import_lib, env = _windows_extension_compiler()
+        return (
+            [
+                cl, "/nologo", "/LD", "/O2", f"/I{include}", str(source),
+                f"/Fe:{binary}", f"/Fo:{binary.parent}{os.sep}",
+                "/link", f"/LIBPATH:{import_lib.parent}", import_lib.name,
+            ],
+            env,
+        )
+    cc = shutil.which("gcc") or shutil.which("cc")
+    if not cc:
+        return None
+    if sys.platform == "darwin":
+        # macOS CPython extensions are bundles that resolve the Python C-API
+        # from the host process, exactly like sysconfig's own LDSHARED.
+        link = [cc, "-bundle", "-undefined", "dynamic_lookup"]
+    else:
+        link = [cc, "-shared"]
+    return link + ["-fPIC", "-O2", "-DNDEBUG", f"-I{include}", str(source), "-o", str(binary)], None
+
+
+def make_native_wheel(root: Path, name="demo_native", version="1.0.0", platform_tag: str | None = None) -> Path:
+    """实际编译最小 C 扩展并封装为可安装的测试 wheel。"""
+    import base64
+
+    root.mkdir(parents=True, exist_ok=True)
+    import_name = name.replace('-', '_')
+    suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+    source = root / f"{import_name}.c"
+    binary = root / f"{import_name}{suffix}"
+    source.write_text(
+        '''#include <Python.h>\n\nstatic PyObject *value(PyObject *self, PyObject *args) {\n    (void)self; (void)args;\n    return PyLong_FromLong(42);\n}\n\nstatic PyMethodDef methods[] = {\n    {"value", value, METH_NOARGS, "return 42"},\n    {NULL, NULL, 0, NULL}\n};\n\nstatic struct PyModuleDef module = {PyModuleDef_HEAD_INIT, "demo_native", NULL, -1, methods};\nPyMODINIT_FUNC PyInit_demo_native(void) { return PyModule_Create(&module); }\n''',
+        encoding="utf-8",
+    )
+    compile_step = _extension_compile_command(source, binary)
+    if compile_step is None:
+        raise RuntimeError(f"no host C compiler for the native wheel fixture on {sys.platform}")
+    command, compile_env = compile_step
+    # MSVC writes .obj/.exp/.lib next to its working directory, so the fixture
+    # compiles inside the wheelhouse whose intermediates are cleaned up below.
+    subprocess.run(command, cwd=root, env=compile_env, check=True)
+    # A caller may pin the wheel tag to the target platform tags instead of the
+    # host's, so the fixture stays consumable by a cross-tagged resolver.
+    impl = "cp" + sysconfig.get_config_var("py_version_nodot")
+    tag = f"{impl}-{impl}-{platform_tag}" if platform_tag else _host_wheel_tag()
+    filename = f"{name}-{version}-{tag}.whl"
+    wheel = root / filename
+    dist = f"{name}-{version}.dist-info"
+    entries = {
+        binary.name: binary.read_bytes(),
+        f"{dist}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n".encode(),
+        f"{dist}/WHEEL": f"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: false\nTag: {tag}\n".encode(),
+        f"{dist}/top_level.txt": f"{import_name}\n".encode(),
+    }
+    import zipfile
+    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+        records=[]
+        for path, data in entries.items():
+            archive.writestr(path, data)
+            digest=base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            records.append(f"{path},sha256={digest},{len(data)}")
+        records.append(f"{dist}/RECORD,,")
+        archive.writestr(f"{dist}/RECORD", "\n".join(records)+"\n")
+    source.unlink()
+    binary.unlink()
+    for leftover in (*root.glob("*.obj"), *root.glob("*.exp"), *root.glob("*.lib")):
+        leftover.unlink()
+    return wheel
+
+
+def test_native_wheel_fixture_has_target_extension_and_import_metadata(tmp_path):
+    """验证测试原生 wheel 的标签、扩展后缀和导入元数据一致。"""
+    import zipfile
+
+    import pytest
+
+    if not has_native_fixture_compiler():
+        # The fixture is a real compiled extension, so it needs a compiler that
+        # targets the interpreter running the tests.
+        pytest.skip("a host C compiler is required to build the native wheel fixture")
+
+    wheel = make_native_wheel(tmp_path)
+    assert _host_wheel_tag() in wheel.name
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+    suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+    assert any(name.endswith(suffix) for name in names)
+    assert "demo_native-1.0.0.dist-info/top_level.txt" in names
+
+
+def test_direct_import_discovery_rejects_a_declared_module_the_wheel_does_not_install(tmp_path):
+    """验证声明导入名必须属于 wheel 实际安装的文件。
+
+    top_level.txt is a claim about the wheel, and wheels get it wrong.
+
+    PySide2's and shiboken2's both declare a bare ``QtCore`` that neither
+    installs: their modules live under ``PySide2/`` and ``shiboken2/``, and the
+    name is a leftover from the PySide1 layout. Trusting the claim makes the
+    build's own smoke test import a module no distribution provides, so an
+    intact PySide2 payload fails [6/6] with "No module named 'QtCore'". RECORD
+    is the record of what was installed, so a declared name has to appear there.
+    """
+    from appbuild.third_party import _top_level_imports
+
+    dist = tmp_path / "PySide2-5.15.2.1.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: PySide2\nVersion: 5.15.2.1\n", encoding="utf-8")
+    (dist / "top_level.txt").write_text("PySide2\nQtCore\n", encoding="utf-8")
+    (dist / "RECORD").write_text(
+        "PySide2/__init__.py,sha256=x,1\n"
+        "PySide2/QtCore.pyd,sha256=x,1\n"
+        "PySide2-5.15.2.1.dist-info/METADATA,,\n",
+        encoding="utf-8",
+    )
+    assert _top_level_imports(dist) == ["PySide2"]
+
+    # A declaration that names nothing the wheel installs leaves RECORD as the
+    # only description of the distribution, rather than yielding no import at
+    # all and silently skipping the smoke coverage.
+    (dist / "top_level.txt").write_text("QtCore\n", encoding="utf-8")
+    assert _top_level_imports(dist) == ["PySide2"]
+
+
+def test_direct_import_fallback_reads_record_instead_of_sibling_scan(tmp_path):
+    """验证无顶层声明时根据 RECORD 发现导入，避免混入相邻依赖。
+
+    Without top_level.txt only this distribution's own files count.
+
+    Scanning the surrounding site-packages would report every other
+    distribution's modules as imports of this one, and a packaged smoke test
+    would then try to import unrelated packages (pyobjc ships an empty
+    PyObjCTest directory that breaks exactly that way).
+    """
+    from appbuild.third_party import _top_level_imports
+
+    dist = tmp_path / "some-distribution-1.0.0.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: some-distribution\nVersion: 1.0.0\n", encoding="utf-8")
+    (dist / "RECORD").write_text(
+        "actual_pkg/__init__.py,sha256=x,1\n"
+        "actual_pkg/core.py,sha256=x,1\n"
+        "single_module.py,sha256=x,1\n"
+        "some-distribution-1.0.0.dist-info/METADATA,,\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "actual_pkg").mkdir()
+    (tmp_path / "sibling_pkg").mkdir()
+    (tmp_path / "sibling_module.py").write_text("x=1\n", encoding="utf-8")
+
+    assert _top_level_imports(dist) == ["actual_pkg", "single_module"]
+
+def test_manifest_records_imports_before_distribution_metadata_trim(tmp_path, monkeypatch):
+    """验证裁剪发行元数据之前将导入名保存到 manifest。
+
+    The release trim deletes dist-info, so imports must be recorded first."""
+    import json
+    import shutil
+
+    import appbuild.third_party as third_party
+    from appbuild.config import host_target
+
+    wheel = make_wheel(tmp_path / "wheelhouse")
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(third_party, "resolve_wheels", lambda target: wheel.parent)
+    monkeypatch.setattr(third_party, "dependency_specs", lambda: ["demo-pkg==1.0.0"])
+    monkeypatch.setattr(third_party, "_manifest_path", lambda target: tmp_path / "manifest.json")
+
+    def trim_entry_metadata(site, target=None, trim=None):
+        """删除测试发行元数据以模拟发布裁剪阶段。"""
+        for dist in site.glob("*.dist-info"):
+            shutil.rmtree(dist)
+        return {"removed_files": 0, "removed_dirs": 1}
+
+    monkeypatch.setattr(third_party, "optimize_site", trim_entry_metadata)
+    third_party.install_wheels(host_target(), staging)
+
+    data = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert data["imports"] == ["demo_pkg"]
+    assert not list((staging / "site-packages").glob("*.dist-info"))

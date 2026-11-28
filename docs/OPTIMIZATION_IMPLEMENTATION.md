@@ -17,10 +17,10 @@
 | 运行缓存 | 新 launcher 按应用 identifier 的 SHA256 前缀划分命名空间；Python/C++ 加载期间持有共享 lease，淘汰仅在取得独占 lease 后执行 | Python 保活/退出淘汰测试；编译真实 C++ helper 验证同样行为；缓存原有 63 个测试 |
 | launcher 增量 | 保留 CMake/Ninja 树，工具链签名改变时清理；内嵌源码和 Windows 资源内容不变则不改 mtime；工具链环境只落摘要 | 文件 mtime 回归、现有 launcher 配置测试、真实 E2E |
 | trim 遍历 | 一次遍历计算 keep 祖先集合，替代反复扫描每个候选子树 | 原有 trim 回归；深层 keep 实测删除集合相同 |
-| 启动与构建观测 | `build/timings/<target>.json` 记录阶段秒数；`PY_UPPER_STARTUP_TIMING=1` 启用 launcher 阶段毫秒输出 | C++ 编译与 E2E；不把 application-run 计时冒充窗口首帧 |
+| 启动与构建观测 | `build/timings/<target>.json` 记录阶段秒数；`APPBUILD_STARTUP_TIMING=1` 启用 launcher 阶段毫秒输出 | C++ 编译与 E2E；不把 application-run 计时冒充窗口首帧 |
 | 构建追溯 | 成品 `build-info.json`（macOS 位于 Contents/Resources） 记录 builder commit/dirty、源码与配置摘要、Python/target 和有效 egg/trim 选项 | 全套回归与最终 E2E；不保存原始配置密钥 |
 | 跨目标依赖 | 宿主解释器回退时明确打印 marker 语义风险 | 保留原生解析策略及回归；目标原生 lock/wheelhouse 是推荐发布输入 |
-| 测试归属 | 18 个原有构建测试文件原样迁到 `tests/tools`，共享 conftest 移到根；pytest 默认收集两棵树，CI/VS Code 同步 | 逐文件与 Git HEAD 内容对比相同；全套测试通过 |
+| 测试归属 | 18 个原有构建测试文件原样迁到 `app/tests`，共享 conftest 移到根；pytest 默认收集两棵树，CI/VS Code 同步 | 逐文件与 Git HEAD 内容对比相同；全套测试通过 |
 | 文档 | 修复 clean/build 操作、模板与配置默认差异、示例依赖准备、持久缓存注释、旧 HISTORY 当前版本文字、发布顺序和清理语义 | 文档核对、diff 空白检查 |
 
 ## 操作与兼容性
@@ -30,14 +30,14 @@
 python -m pytest -q
 
 # 本地 E2E 新位置
-PY_UPPER_E2E=1 python -m pytest tests/tools/test_e2e_local.py -q
+APPBUILD_E2E=1 python -m pytest app/tests/test_e2e_local.py -q
 
 # 改名后的全量重建，clean 本身不构建
 python tools/build.py --clean
 python tools/build.py
 
 # 打包 launcher 分段计时：正常启动无需设置
-PY_UPPER_STARTUP_TIMING=1 PY_UPPER_NO_DIALOG=1 dist/Upper/Upper
+APPBUILD_STARTUP_TIMING=1 APPBUILD_NO_DIALOG=1 dist/Upper/Upper
 ```
 
 应用 identifier 应在不同产品间唯一；相同 identifier 被视为同一个应用缓存空间。新命名空间不会主动删除旧版无命名空间的缓存。lease 文件必须保留以维持跨进程锁的 inode/句柄身份，少量空锁文件不随负载目录删除。活跃版本可能使负载缓存暂时超过“两版”，这是保护运行实例所需的行为。
@@ -63,7 +63,7 @@ PY_UPPER_STARTUP_TIMING=1 PY_UPPER_NO_DIALOG=1 dist/Upper/Upper
 - `db6154c` 将夹具使用的极端最小文件时间改为当前时间减一天，并直接输出子进程退出码、stdout 和 stderr，避免长 traceback 截断关键诊断。缓存保活与释放后淘汰的断言保持不变。
 - 修复后的 [CI 46151741375](https://github.com/upper-endcomputer/py_upper/actions/runs/46151741375) 对应完整提交 `db6154c5ff30da722dfd23d1904371500f6acc91`，**15/15 job 成功，无失败、无跳过 job**：Python 3.8–3.13 六个兼容 job、八个原生集成 job（七种目标加 Windows Python 3.8 兼容构建）、一个七目标产物汇总 job。
 - 八个原生 job 均通过单元测试、本地 wheel E2E、doctor 和完整集成构建。Linux x86_64、Windows x64/ARM64、macOS Intel/ARM64 以及 Windows Python 3.8 兼容构建执行 `--run` 并验证 `GUI OK`；Linux ARM64、Windows x86 不执行 GUI run。
-- CI 设置 `PY_UPPER_HEADLESS=1`，所以 `GUI OK` 是打包后应用的 readiness 证据，不等于交互桌面首帧验收。矩阵没有调用正式签名、公证或目标发行版安装流程。
+- CI 设置 `APPBUILD_HEADLESS=1`，所以 `GUI OK` 是打包后应用的 readiness 证据，不等于交互桌面首帧验收。矩阵没有调用正式签名、公证或目标发行版安装流程。
 
 上述本地 `.tmp/` 日志不随仓库提交；远端 job 的持久证据以链接所指的 GitHub Actions 运行记录为准。
 
@@ -80,3 +80,11 @@ PY_UPPER_STARTUP_TIMING=1 PY_UPPER_NO_DIALOG=1 dist/Upper/Upper
 | all/directory/none 与 Qt 输入的真实业务性能比较 | 观测接口已提供；未按一个示例的结果改变所有应用默认值 |
 
 官方契约参考：[Apple 公证流程](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)、[Cython 声明依赖](https://docs.cython.org/en/latest/src/userguide/sharing_declarations.html)。
+
+## appbuild 迁移续接验收
+
+- 构建器、配置和环境接口统一为 `appbuild`，测试统一到 `app/tests`；不保留旧接口兼容。SHA-256、Windows import library 与签名编排复用现有模块。
+- Python 源码 1,174 个函数具备中文 docstring 或紧邻说明（嵌入 egg loader 使用注释以免破坏生成字符串）；逐文件维护检查 132 项通过，文档本地链接无缺失，工具源码 Python 3.8 语法检查通过。
+- 全量回归：498 passed、6 skipped；显式真实 E2E：3 passed。Windows 内存加载器原生探针先复现无名称序号导出失败，修复后通过。
+- Linux ARM64 正式 CLI `tools/build.py --run` 完成编译、打包、52 个原生文件检查及 launcher smoke；Qt 输出 `GUI OK offscreen`，退出码 0。本结果不代表真实桌面首帧或其他平台实机验收。
+- 远端 CI 以本次提交对应 GitHub Actions 记录为准；历史基准 JSON 保留原始输出，不随接口重命名改写测量证据。

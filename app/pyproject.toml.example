@@ -1,5 +1,5 @@
 # 中文维护说明：应用配置模板；复制到本地配置后修改产品信息与依赖，不直接硬编码个人环境。
-# py_upper application configuration.
+# appbuild application configuration.
 #
 # This file is the tracked template for the bundled example application. Copy
 # it to app/pyproject.toml and edit the copy: the local file is Git-ignored, so
@@ -7,7 +7,7 @@
 # while this template keeps tracking the repository.
 #
 # Your own application can live anywhere with this same file at its root; run
-# `python tools/build.py --app /path/to/app` or set PY_UPPER_APP_DIR. The
+# `python tools/build.py --app /path/to/app` or set APPBUILD_APP_DIR. The
 # build tool reads this configuration and src/ without importing app code.
 
 [build-system]
@@ -27,7 +27,7 @@ requires-python = ">=3.8,<3.14"
 # Runtime dependencies of your application, as requirement strings, e.g.
 # "PySide6==6.11.0", "pyserial==3.5", "bleak==3.0.2", "qasync==0.28.0".
 # The template ships none: a fork must not inherit the pins of whoever cloned
-# first. Declare yours in the working copy; py_upper resolves the matching
+# first. Declare yours in the working copy; appbuild resolves the matching
 # wheels for every target and installs them into the bundle.
 dependencies = []
 
@@ -37,18 +37,18 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.py_upper]
+[tool.appbuild]
 entry = "main.py"
 
-[tool.py_upper.app]
+[tool.appbuild.app]
 # APP NAME, single source of truth: derives the .app / executable /
 # Info.plist / Windows version-resource names and is compiled into the
-# launcher as PY_UPPER_APP_NAME. Change this line and rebuild
+# launcher as APPBUILD_APP_NAME. Change this line and rebuild
 # (python tools/build.py --clean); see README "App 名称".
 name = "Upper"
 identifier = "com.example.pyupper"
 
-[tool.py_upper.runtime]
+[tool.appbuild.runtime]
 provider = "pbs"
 # Windows PBS builds use the official python.org embeddable ZIP as runtime
 # and the matching PBS full SDK only for compiling. This exact version is
@@ -56,13 +56,13 @@ provider = "pbs"
 # Python 3.11.13 is PBS-only: python.org has no 3.11.13 embeddable ZIP.
 python = "3.13.5"
 
-[tool.py_upper.dependencies]
+[tool.appbuild.dependencies]
 # PySide6 ships manylinux_2_34 (x86_64) and manylinux_2_39 (aarch64) wheels, so
 # the Linux targets must accept those baselines. This sets the minimum glibc of
 # the released Linux app; drop entries to target older distributions.
 manylinux = ["manylinux_2_39", "manylinux_2_34"]
 
-[tool.py_upper.native]
+[tool.appbuild.native]
 # PySide2/PySide6 payload the bundle cannot honour, dropped instead of failing
 # the closure:
 #   - the macOS wheel links the ODBC/Mimer/PostgreSQL Qt SQL drivers against
@@ -114,16 +114,16 @@ exclude = [
     "shiboken2/vccorlib140.dll",
 ]
 
-[tool.py_upper.egg]
+[tool.appbuild.egg]
 # Pack the application's own Python modules and the extensions this build
-# produced into one encrypted bundle/py_upper.dat. This raises the cost of reading the
+# produced into one encrypted bundle/appbuild.dat. This raises the cost of reading the
 # shipped code; it is obfuscation, not strong cryptography, and it barely
-# changes the bundle size. Use [tool.py_upper.trim] and Qt pruning for size.
+# changes the bundle size. Use [tool.appbuild.trim] and Qt pruning for size.
 # Encryption is the default; pass --no-egg for a loose-file build.
 #
 # The archive is authenticated: MAGIC2 + salt + SHAKE-256 tag + ciphertext,
 # plus a per-member digest manifest. A launcher or build tool refuses an archive
-# whose tag does not match, so replacing bundle/py_upper.dat with a rebuilt
+# whose tag does not match, so replacing bundle/appbuild.dat with a rebuilt
 # zip fails before any module is imported. The tag also keys the extract
 # cache, so authentication costs no extra pass over the payload.
 enabled = true
@@ -141,7 +141,7 @@ backend = "auto"
 # deflated | stored | lzma
 compression = "deflated"
 
-[tool.py_upper.cython]
+[tool.appbuild.cython]
 include = ["*"]
 exclude = []
 # none: one extension per module (historical layout).
@@ -152,13 +152,13 @@ exclude = []
 # archive and extracted into a cache, not shipped loose in site-packages.
 merge = "all"
 
-[tool.py_upper.build]
+[tool.appbuild.build]
 # 同时编译的模块数；0（默认）= 每 CPU 一个任务。
 jobs = 0
 # 复用内容未变化的模块的 Cython 产物与扩展；false = 每次全量重编译。
 incremental = true
 
-[tool.py_upper.optimize]
+[tool.appbuild.optimize]
 profile = "safe"
 # Keep only the Qt modules app/src imports (plus their transitive closure).
 # "all" ships every Qt module, including the ~450 MB QtWebEngine.
@@ -187,7 +187,7 @@ remove_tests = false
 remove_docs = false
 strip_native = false
 
-[tool.py_upper.trim]
+[tool.appbuild.trim]
 # 全局规则由代码内置，任何 preset 和配置都会生效：
 #   site-packages: **/*.pyi、
 #                  PySide*/PyQt* 的 examples/include，
@@ -221,11 +221,11 @@ runtime = [
 ]
 runtime_keep = []
 
-[tool.py_upper.windows]
+[tool.appbuild.windows]
 architectures = ["x86", "x86_64", "arm64"]
 
-[tool.py_upper.macos]
+[tool.appbuild.macos]
 architectures = ["arm64", "x86_64"]
 
-[tool.py_upper.linux]
+[tool.appbuild.linux]
 architectures = ["x86_64", "arm64"]

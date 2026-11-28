@@ -6,13 +6,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from py_upper import package, python_build
-from py_upper.config import TARGETS
+from appbuild import package, python_build
+from appbuild.config import TARGETS
 from mvvm.async_lifecycle import AsyncLifecycle
 from mvvm.mvvm_application import MVVMApplication
 
 
 def test_declaration_change_invalidates_cython(tmp_path, monkeypatch):
+    """验证 Cython 声明文件内容改变会使生成缓存失效。"""
     monkeypatch.setattr(python_build, 'APP', tmp_path)
     src = tmp_path / 'src/demo.py'
     src.parent.mkdir()
@@ -25,10 +26,12 @@ def test_declaration_change_invalidates_cython(tmp_path, monkeypatch):
 
 
 def test_plist_roundtrips_product_name():
+    """验证产品名含中文和 XML 保留字符时 plist 仍可往返解析。"""
     assert plistlib.loads(package._mac_info_plist('研发 R&D <工具>').encode())['CFBundleName'] == '研发 R&D <工具>'
 
 
 def test_default_manifest_excludes_old_products(tmp_path, monkeypatch):
+    """验证新 manifest 不会混入旧产品目录。"""
     monkeypatch.setattr(package, 'DIST', tmp_path)
     monkeypatch.setattr(package, 'app_name', lambda: 'Current')
     for name in ('Current', 'Old'):
@@ -40,11 +43,14 @@ def test_default_manifest_excludes_old_products(tmp_path, monkeypatch):
 
 
 def test_concurrent_close_and_cancelled_waiter():
+    """验证并发关闭和等待方取消不会重复关闭资源。"""
     async def scenario():
+        """协调两个关闭等待者并确认底层服务只清理一次。"""
         owner = AsyncLifecycle()
         entered, finish = asyncio.Event(), asyncio.Event()
         calls = []
         async def closer():
+            """通过异步屏障控制关闭完成时机，暴露等待者取消窗口。"""
             calls.append(1)
             entered.set()
             await finish.wait()
@@ -63,9 +69,11 @@ def test_concurrent_close_and_cancelled_waiter():
 
 
 def test_cleanup_continues_after_view_failure():
+    """验证视图清理失败后仍释放 ViewModel 并清空注册表。"""
     app = MVVMApplication()
     calls = []
     def fail():
+        """记录视图清理并注入异常，检查后续清理是否继续。"""
         raise ValueError('close failed')
     app.views['bad'] = SimpleNamespace(close=fail, dispose=lambda: calls.append('view'))
     app.viewmodels['vm'] = SimpleNamespace(dispose=lambda: calls.append('vm'))
@@ -77,7 +85,8 @@ def test_cleanup_continues_after_view_failure():
 
 
 def test_workspace_lock_rejects_second_writer(tmp_path):
-    from py_upper.workspace_lock import workspace_lock
+    """验证同一工作区不能同时启动两个写入构建。"""
+    from appbuild.workspace_lock import workspace_lock
     with workspace_lock(tmp_path):
         with pytest.raises(RuntimeError, match='Another build'):
             with workspace_lock(tmp_path):
@@ -88,6 +97,7 @@ def test_workspace_lock_rejects_second_writer(tmp_path):
 
 @pytest.mark.parametrize('failure', ['verify', 'runtime', 'launcher', 'sign'])
 def test_failed_candidate_never_publishes(tmp_path, monkeypatch, failure):
+    """验证候选发布检查失败时不会调用正式产物发布。"""
     import build
     target = TARGETS['macos-arm64']
     candidate = tmp_path / 'candidate/Upper.app'
@@ -100,6 +110,7 @@ def test_failed_candidate_never_publishes(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(build, 'package', lambda *a, **k: candidate)
     monkeypatch.setattr(build, '_publish', lambda *a: published.append(a))
     def fail(*a, **k):
+        """模拟候选产物检查失败。"""
         raise RuntimeError('injected failure')
     monkeypatch.setattr(build, 'verify', lambda *a: int(failure == 'verify'))
     monkeypatch.setattr(build, 'run_target_python_smoke', fail if failure == 'runtime' else lambda *a: None)
@@ -111,14 +122,16 @@ def test_failed_candidate_never_publishes(tmp_path, monkeypatch, failure):
 
 @pytest.mark.parametrize('status', ['Accepted', 'Invalid'])
 def test_notarization_submits_zip_and_checks_status(tmp_path, monkeypatch, status):
+    """验证公证提交使用 ZIP 且根据返回状态决定成功或失败。"""
     import build
-    from py_upper import signing
+    from appbuild import signing
     app = tmp_path / 'Product.app'
     app.mkdir()
     calls = []
     monkeypatch.setattr(build.shutil, 'which', lambda name: name)
     monkeypatch.setattr(signing, 'sign_macos_files', lambda *a: None)
     def run(cmd, **kwargs):
+        """记录签名工具调用，并返回指定公证状态。"""
         calls.append(cmd)
         return SimpleNamespace(stdout='{"status": "' + status + '"}')
     monkeypatch.setattr(build.subprocess, 'run', run)
@@ -135,6 +148,7 @@ def test_notarization_submits_zip_and_checks_status(tmp_path, monkeypatch, statu
 
 
 def test_embedded_source_does_not_rewrite_unchanged_file(tmp_path):
+    """验证相同嵌入源码不重写磁盘文件，变化后才更新。"""
     path = tmp_path / 'generated.cpp'
     package._write_changed(path, 'same')
     import os
@@ -146,6 +160,7 @@ def test_embedded_source_does_not_rewrite_unchanged_file(tmp_path):
 
 
 def test_native_header_content_invalidates_cache(tmp_path):
+    """验证原生头文件内容变化参与编译缓存键。"""
     include = tmp_path / 'include'
     include.mkdir()
     header = include / 'example.h'
@@ -161,7 +176,8 @@ def test_native_header_content_invalidates_cache(tmp_path):
 
 
 def test_signing_detects_extensionless_macho(tmp_path, monkeypatch):
-    from py_upper import signing
+    """验证没有扩展名的 Mach-O 文件也会参与签名。"""
+    from appbuild import signing
     import struct
     native = tmp_path / 'Python'
     native.write_bytes(struct.pack('<IIII', 0xfeedfacf, 0x0100000c, 0, 2) + bytes(64))
@@ -175,7 +191,8 @@ def test_signing_detects_extensionless_macho(tmp_path, monkeypatch):
 
 
 def test_cache_pruning_preserves_live_entry(tmp_path):
-    from py_upper import egg_loader as loader
+    """验证缓存清理保留仍被进程租约使用的条目。"""
+    from appbuild import egg_loader as loader
     cache = tmp_path / 'cache'
     cache.mkdir()
     for name in ('egg-old', 'egg-previous', 'egg-current'):
@@ -194,16 +211,18 @@ def test_cache_pruning_preserves_live_entry(tmp_path):
 
 
 def test_cache_namespace_isolates_applications(tmp_path, monkeypatch):
-    from py_upper import egg_loader as loader
-    monkeypatch.setenv('PY_UPPER_EGG_CACHE', str(tmp_path))
-    monkeypatch.setenv('PY_UPPER_CACHE_NAMESPACE', 'a' * 32)
+    """验证不同应用使用独立的运行时缓存命名空间。"""
+    from appbuild import egg_loader as loader
+    monkeypatch.setenv('APPBUILD_EGG_CACHE', str(tmp_path))
+    monkeypatch.setenv('APPBUILD_CACHE_NAMESPACE', 'a' * 32)
     first = loader._cache_root()
-    monkeypatch.setenv('PY_UPPER_CACHE_NAMESPACE', 'b' * 32)
+    monkeypatch.setenv('APPBUILD_CACHE_NAMESPACE', 'b' * 32)
     assert loader._cache_root() != first
 
 
 def test_macos_build_info_stays_inside_contents(tmp_path):
-    from py_upper.build_info import write_build_info
+    """验证 macOS 构建信息保存在应用包 Contents 内。"""
+    from appbuild.build_info import write_build_info
     write_build_info(tmp_path, TARGETS['macos-arm64'], {})
     assert (tmp_path / 'Contents/Resources/build-info.json').is_file()
     assert not (tmp_path / 'build-info.json').exists()

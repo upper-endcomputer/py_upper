@@ -1,4 +1,4 @@
-# py_upper 深度梳理与优化评估
+# appbuild 深度梳理与优化评估
 
 评估日期：2026-11-28。基线：`6676220`，文档与配置模板版本 `0.17.37`。
 
@@ -30,7 +30,7 @@
 
 ### P1-01：Cython 缓存漏掉声明依赖，可能悄悄交付旧代码
 
-- 证据：`tools/py_upper/python_build.py:235` 的 `_cython_key()` 仅包含 schema、Cython 版本、源文件名和源文件内容。
+- 证据：`tools/appbuild/python_build.py:235` 的 `_cython_key()` 仅包含 schema、Cython 版本、源文件名和源文件内容。
 - 实测：`demo.py` 不变，把 `demo.pxd` 的 `cpdef int f(int x)` 改成 `cpdef double f(double x)`；第二次构建显示 `1 module(s) up to date`，生成 C 与旧版本完全一致；关闭增量后重新生成的 C 发生变化。
 - 影响：增量构建成功不等于实现与输入一致；切换外部应用时，共用缓存目录也会放大这类相同源码、不同声明依赖的风险。
 - 最小修复方向：跟踪实际读取的 `.pxd/.pxi` 依赖及内容，纳入转换键；同时记录工具版本、编译指令和模块身份。可以先用保守失效策略保证正确性，再优化依赖粒度。
@@ -119,7 +119,7 @@ Python `_prune_cache()` 和 C++ `prune_bundle_cache()` 都按全局根目录中�
 1. README 收敛为定位、最小上手、输出物、支持矩阵和文档入口；配置全集、历史测量、原理与排错集中在专题文档，减少多处同步。
 2. 修正可执行命令：README 改名说明要求执行 `--clean` 后“重新构建”，但 CLI 的 clean 分支只删除并返回。应明确先 clean，再 build；不能把 clean 当成重建。
 3. 新克隆模板 dependencies 为空，而示例 GUI 需要 Qt。保留通用空模板，但给示例明确依赖准备步骤，或提供单独示例配置；避免把 CI 注入依赖的知识藏起来。
-4. 拆出工具自身测试到根 tests/tools 等稳定位置，示例测试留在 app/tests。否则“可整体替换 app”会连构建器回归一起删掉。可分阶段迁移，不必改变框架。
+4. 拆出工具自身测试到根 app/tests 等稳定位置，示例测试留在 app/tests。否则“可整体替换 app”会连构建器回归一起删掉。可分阶段迁移，不必改变框架。
 5. 修正文档细节：README 的 qt 默认描述与配置缺省/模板默认混杂；模板 egg 注释还写 temporary directory，实际默认是持久内容缓存；HISTORY 后半部残留“current v0.16.16”声明。
 6. 发布验证矩阵显式区分：静态、目标 import、launcher smoke、offscreen 窗口、真实桌面、正式签名/公证、安装升级卸载。当前 CI 构建 smoke 不能替代正式 release；Linux ARM64 的 GUI run 被关闭，Windows x86 也不跑 GUI。
 7. 工具版本与应用版本现在在示例工程中混用。自有应用应有自己的产品版本；构建 provenance 单独记录构建器 commit，先解决追溯，不急着增加一套版本框架。
@@ -156,4 +156,4 @@ PYTHONDONTWRITEBYTECODE=1 TMPDIR="$PWD/.tmp/review" \
   --basetemp="$PWD/.tmp/review/pytest"
 ```
 
-历史记忆来源校验：Hindsight 的「py_upper 发布与异步生命周期」提供了此前 Linux 发布与异步生命周期工作的线索，当前代码确认两者存在；该共享记忆同时混入 ai_upper 重命名与 QML 信息，与本工作树不符，已记录项目范围纠正。本报告代码结论均以当前工作树和本轮证据为准。
+历史记忆来源校验：Hindsight 的「appbuild 发布与异步生命周期」提供了此前 Linux 发布与异步生命周期工作的线索，当前代码确认两者存在；该共享记忆同时混入 ai_upper 重命名与 QML 信息，与本工作树不符，已记录项目范围纠正。本报告代码结论均以当前工作树和本轮证据为准。

@@ -11,4 +11,5 @@ class GreetingService:
     """
 
     def message(self) -> str:
+        """返回示例问候文案，不访问外部服务。"""
         return "Hello from py_upper"

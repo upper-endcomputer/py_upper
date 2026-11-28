@@ -1,4 +1,4 @@
-# py_upper 框架总览
+# appbuild 框架总览
 
 这份文档把构建工具、原生启动器和示例应用放在同一张职责图上。配置细节与命令参数仍以 [开发使用指南](DEVELOPMENT_GUIDE.md) 为准，模板在 `app/pyproject.toml.example`。
 
@@ -22,7 +22,7 @@ MVVMQtApplication → MVVMApplication → Model / Service / ViewModel / View
 
 | 层次 | 所有者与职责 | 边界 |
 | --- | --- | --- |
-| 构建与打包 | `tools/build.py` 编排，`tools/py_upper/` 实现 | 读取应用输入；宿主 Python 运行构建工具，Target 决定运行时 ABI 和 wheel |
+| 构建与打包 | `tools/build.py` 编排，`tools/appbuild/` 实现 | 读取应用输入；宿主 Python 运行构建工具，Target 决定运行时 ABI 和 wheel |
 | 原生启动 | `launcher/src/PyUpper.cpp` | 定位自身与 bundle、装载 libpython、配置隔离解释器、注册 Cython 合并模块、执行内嵌入口 |
 | 应用骨架 | `app/src/application.py` 装配对象图 | 示例可替换；业务代码不反向导入构建工具；MVVM 不是打包器的强制依赖 |
 
@@ -71,17 +71,17 @@ finally：stop() → close/dispose 所有 View → dispose ViewModel → 清空�
 
 ```bash
 python tools/build.py --doctor --target linux-arm64
-python -m pytest tests/tools app/tests -q
-PY_UPPER_E2E=1 python -m pytest tests/tools app/tests -q
-PY_UPPER_HEADLESS=1 PY_UPPER_NO_DIALOG=1 python tools/build.py --target linux-arm64 --run
+python -m pytest app/tests -q
+APPBUILD_E2E=1 python -m pytest app/tests -q
+APPBUILD_HEADLESS=1 APPBUILD_NO_DIALOG=1 python tools/build.py --target linux-arm64 --run
 python tools/build.py --target linux-arm64 --verify
 ```
 
-目标应换成实际宿主目标；`--run` 不支持跨架构运行。正常桌面运行去掉 `PY_UPPER_HEADLESS=1`。
+目标应换成实际宿主目标；`--run` 不支持跨架构运行。正常桌面运行去掉 `APPBUILD_HEADLESS=1`。
 
-| 接合点 | 主要回归文件（构建测试在 `tests/tools/`，应用测试在 `app/tests/`） |
+| 接合点 | 主要回归文件（统一位于 `app/tests/`） |
 | --- | --- |
-| 配置、目标、宿主兼容 | `test_py_upper_config.py`、`test_build_tool_compat.py`、`test_doctor.py` |
+| 配置、目标、宿主兼容 | `test_config.py`、`test_build_tool_compat.py`、`test_doctor.py` |
 | runtime / wheel / 裁剪 | `test_pbs.py`、`test_third_party.py`、`test_qt_prune.py`、`test_trim.py` |
 | Cython / egg / 增量缓存 | `test_incremental_build.py`、`test_merged_build.py`、`test_egg.py` |
 | 打包 / ABI / 原生闭包 | `test_package.py`、`test_verify.py`、`test_native_deployment.py`、`test_manifest.py` |
@@ -89,7 +89,7 @@ python tools/build.py --target linux-arm64 --verify
 | MVVM / Qt 适配 / 生命周期 | `test_mvvm.py`、`test_mvvm_example.py`、`test_qt_compat.py` |
 | 前轮修复回归 | `test_audit_regressions.py`（通知、订阅、发布回滚、安全解包、重试） |
 
-`tests/tools` 承载独立构建工具测试，`app/tests` 保留应用与接合点测试；替换示例时更新后者。fake Qt 用例验证对象图与生命周期；真实 Qt 构建冒烟验证动态库与插件可加载。offscreen 成功不能替代真实桌面首帧、硬件通信或其他操作系统实测。
+`app/tests` 统一承载构建工具、应用与接合点测试；替换示例 app 时应保留构建器回归文件。fake Qt 用例验证对象图与生命周期；真实 Qt 构建冒烟验证动态库与插件可加载。offscreen 成功不能替代真实桌面首帧、硬件通信或其他操作系统实测。
 
 ## 已有能力与待完善边界
 
