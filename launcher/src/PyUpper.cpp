@@ -11,6 +11,7 @@
 #define Py_NO_ENABLE_SHARED 1
 #include <Python.h>
 #include <algorithm>
+#include <chrono>
 #include <codecvt>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <fstream>
 #include <iostream>
 #include <locale>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -28,6 +30,8 @@
 #else
 #include <dlfcn.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #endif
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
@@ -556,7 +560,7 @@ struct RuntimeGuard {
 // Bundles shipped in the egg are extracted here, before CPython exists. The
 // cache is content-addressed by the decrypted archive, so a rebuilt egg gets a
 // fresh directory and a warm start reuses the old one without rewriting it.
-fs::path bundle_cache_root() {
+fs::path unscoped_bundle_cache_root() {
     const fs::path override = environment_path("PY_UPPER_EGG_CACHE");
     if (!override.empty()) return override;
 #ifdef _WIN32
@@ -580,6 +584,40 @@ fs::path bundle_cache_root() {
     if (ec) fallback = fs::path(".");
     return fallback / "py_upper" / "eggs";
 }
+
+fs::path bundle_cache_root() {
+#ifdef PY_UPPER_CACHE_NAMESPACE
+    return unscoped_bundle_cache_root() / PY_UPPER_CACHE_NAMESPACE;
+#else
+    return unscoped_bundle_cache_root();
+#endif
+}
+
+// Lock files live outside entries and are never unlinked: replacing a lock
+// inode would allow a reader and cleaner to lock different objects.
+struct CacheLease {
+#ifdef _WIN32
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    CacheLease(const fs::path& path, bool exclusive) {
+        handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+            exclusive ? 0 : FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    bool valid() const { return handle != INVALID_HANDLE_VALUE; }
+    ~CacheLease() { if (valid()) CloseHandle(handle); }
+#else
+    int handle = -1;
+    CacheLease(const fs::path& path, bool exclusive) {
+        handle = open(path.c_str(), O_CREAT | O_RDWR, 0600);
+        if (handle >= 0 && flock(handle, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0) {
+            close(handle); handle = -1;
+        }
+    }
+    bool valid() const { return handle >= 0; }
+    ~CacheLease() { if (valid()) close(handle); }
+#endif
+};
+std::vector<std::unique_ptr<CacheLease>> active_cache_leases;
 
 // Whether a cache root can actually be written to.
 //
@@ -647,7 +685,8 @@ void prune_bundle_cache(const fs::path& base, const std::string& keep) {
     std::sort(entries.begin(), entries.end(),
               [](const auto& left, const auto& right) { return left.first > right.first; });
     for (std::size_t i = kKeep; i < entries.size(); ++i) {
-        fs::remove_all(entries[i].second, ec);
+        CacheLease lease(base / (".lease-" + path_to_utf8(entries[i].second.filename())), true);
+        if (lease.valid()) fs::remove_all(entries[i].second, ec);
     }
 }
 
@@ -660,6 +699,9 @@ std::string publish_bundle_cache(const std::vector<pyupper::EggBundleFile>& file
         return "Could not create the bundle cache at " + path_to_utf8(base) + ": " + ec.message();
     }
 
+    auto lease = std::make_unique<CacheLease>(base / (".lease-merged-" + cache_key), false);
+    if (!lease->valid()) return "Bundle cache is being cleaned; retry startup";
+    active_cache_leases.push_back(std::move(lease));
     const fs::path final = base / ("merged-" + cache_key);
     const fs::path marker = final / ".complete";
     if (fs::is_regular_file(marker, ec)) {
@@ -915,6 +957,14 @@ RuntimeLoad load_python(const fs::path& home) {
 }  // namespace
 
 int PyUpper::run(const std::vector<std::string>& argv) {
+    auto previous_phase = std::chrono::steady_clock::now();
+    const bool timing = std::getenv("PY_UPPER_STARTUP_TIMING") != nullptr;
+    auto phase = [&](const char* name) {
+        const auto now = std::chrono::steady_clock::now();
+        if (timing) std::cerr << "PY_UPPER_TIMING " << name << " "
+            << std::chrono::duration<double, std::milli>(now - previous_phase).count() << " ms\n";
+        previous_phase = now;
+    };
     RuntimeGuard runtime;
     FinalizeEx finalize = nullptr;
     IsInitialized initialized = nullptr;
@@ -1012,6 +1062,9 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         }
         launcher_env += "}\n";
 
+#ifdef PY_UPPER_CACHE_NAMESPACE
+        launcher_env += "__import__('os').environ['PY_UPPER_CACHE_NAMESPACE'] = '" PY_UPPER_CACHE_NAMESPACE "'\n";
+#endif
         RuntimeLoad loaded = load_python(home);
         runtime.handle = loaded.handle;
         if (!loaded.handle) {
@@ -1020,6 +1073,7 @@ int PyUpper::run(const std::vector<std::string>& argv) {
             return 4;
         }
 
+        phase("runtime-load");
         pyupper::EggContents egg_contents;
         if (egg_loader) {
             egg_contents = pyupper::read_egg(egg, embedded_egg_key());
@@ -1028,12 +1082,14 @@ int PyUpper::run(const std::vector<std::string>& argv) {
                 return 10;
             }
         }
+        phase("egg-authenticate-decrypt");
         const std::string bundle_error = load_module_bundles(site, egg_contents, runtime);
         if (!bundle_error.empty()) {
             report_fatal(bundle_error);
             return 10;
         }
 
+        phase("bundle-cache-register");
         auto init_preconfig = (PreConfigInit)symbol(loaded.handle, "PyPreConfig_InitIsolatedConfig");
         auto preinit = (PreInitialize)symbol(loaded.handle, "Py_PreInitialize");
         auto init_config = (ConfigInit)symbol(loaded.handle, kRuntimeEntrySymbol);
@@ -1113,6 +1169,7 @@ int PyUpper::run(const std::vector<std::string>& argv) {
             return 7;
         }
 
+        phase("python-initialize");
         auto run_simple = (RunSimpleString)symbol(loaded.handle, "PyRun_SimpleString");
         if (!run_simple) {
             finalize();
@@ -1133,7 +1190,9 @@ int PyUpper::run(const std::vector<std::string>& argv) {
         const std::string source = bootstrap(
             script, entry_file, embedded, egg, egg_loader, egg_contents.cache_key,
             embedded_egg_backend(), crash_report, launcher_env);
+        phase("bootstrap-prepare");
         int rc = run_simple(source.c_str());
+        phase("application-run");
         int frc = finalize();
         finalize = nullptr;
 

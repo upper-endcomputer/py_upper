@@ -233,21 +233,44 @@ def _mark_current(artifact: Path, key: str) -> None:
 
 
 def _cython_key(source: Path, cython_version: str) -> str:
-    """Identity of one generated translation unit.
-
-    Cython's output is a pure function of the source text and the Cython
-    version that translated it, so those two are the whole key. The module name
-    is part of the key because it is embedded in the generated unit.
-    """
+    """Conservative key including application declaration dependencies."""
     digest = hashlib.sha256()
     digest.update(CYTHON_CACHE_SCHEMA.encode())
     digest.update(b"\0")
     digest.update(cython_version.encode())
     digest.update(b"\0")
-    digest.update(source.name.encode())
+    digest.update(str(source.resolve()).encode())
     digest.update(b"\0")
     digest.update(source.read_bytes())
+    # Include declarations conservatively: additions and removals also matter.
+    # External declarations are not supported as cache-stable inputs.
+    for dependency in sorted((APP / "src").rglob("*")):
+        if dependency.is_file() and dependency.suffix in {".pxd", ".pxi", ".h", ".hpp"}:
+            digest.update(str(dependency.relative_to(APP)).encode())
+            digest.update(dependency.read_bytes())
     return digest.hexdigest()
+
+
+def _command_inputs(cmd):
+    """Content identity of compiler, include trees and explicit link inputs."""
+    digest = hashlib.sha256()
+    paths = []
+    compiler = shutil.which(str(cmd[0])) if cmd else None
+    if compiler:
+        paths.append(Path(compiler))
+    for token in cmd:
+        value = str(token)
+        if value.startswith(("-I", "-L")):
+            paths.append(Path(value[2:]))
+        elif Path(value).suffix.lower() in {".h", ".hpp", ".a", ".lib", ".so", ".dylib"}:
+            paths.append(Path(value))
+    for path in paths:
+        candidates = sorted(path.rglob("*")) if path.is_dir() else [path]
+        for item in candidates:
+            if item.is_file():
+                digest.update(str(item).encode())
+                digest.update(_sha256_file(item).encode())
+    return digest.digest()
 
 
 def _native_key(cmd: list[str], c_source: Path, artifact: Path) -> str:
@@ -261,6 +284,7 @@ def _native_key(cmd: list[str], c_source: Path, artifact: Path) -> str:
     """
     digest = hashlib.sha256()
     digest.update(NATIVE_CACHE_SCHEMA.encode())
+    digest.update(_command_inputs([token for token in cmd if str(token) != str(artifact)]))
     digest.update(b"\0")
     digest.update(str(artifact).encode())
     digest.update(b"\0")
@@ -294,6 +318,7 @@ def _windows_native_key(
     """
     digest = hashlib.sha256()
     digest.update(NATIVE_CACHE_SCHEMA.encode())
+    digest.update(_command_inputs(["cl", "-I" + str(include), "-L" + str(libdir)]))
     digest.update(b"\0windows\0")
     digest.update(str(artifact).encode())
     digest.update(b"\0")
@@ -379,6 +404,7 @@ def _merged_native_key(
     """
     digest = hashlib.sha256()
     digest.update(MERGED_CACHE_SCHEMA.encode())
+    digest.update(_command_inputs([token for token in cmd if str(token) != str(artifact)]))
     digest.update(b"\0")
     digest.update(str(artifact).encode())
     digest.update(b"\0")
@@ -684,7 +710,7 @@ def _compile_merged_windows_extensions_msvc(
         inputs, register = prepare_merged_group(target, group, sources, generated)
         all_inputs = inputs + [register]
         artifact = bundle_root / merged_bundle_name(group, suffix)
-        key = _merged_native_key(all_inputs, artifact, [], env)
+        key = _merged_native_key(all_inputs, artifact, [tc.compiler, "-I" + str(include), "-L" + str(libdir), suffix, python_lib], env)
         outputs.append(artifact)
         if incremental and _is_current(artifact, key):
             continue
@@ -1009,7 +1035,7 @@ def strip_packed_extensions(site: Path, files, target: Target) -> None:
             ad_hoc_sign(path)
 
 
-def build_python_package(target: Target, trim=None, egg=None) -> Path:
+def build_python_package(target: Target, trim=None, egg=None, signing_identity=None) -> Path:
     stage = staging_dir(target)
     if stage.exists():
         shutil.rmtree(stage)
@@ -1055,6 +1081,9 @@ def build_python_package(target: Target, trim=None, egg=None) -> Path:
         # the archive's authentication tag correct, because the bytes are final
         # before the tag is computed.
         strip_packed_extensions(site, files, target)
+        if signing_identity and target.os == "macos":
+            from .signing import sign_macos_files
+            sign_macos_files([site / name for name in files], signing_identity)
         pack_egg(site, stage / EGG_DIR / EGG_NAME, files, egg)
         remove_packed_files(site, files)
         write_egg_meta(stage, egg)

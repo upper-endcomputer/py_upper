@@ -44,7 +44,7 @@ jobs:
           # >= 3.12 no longer ships setuptools with the interpreter, so it has
           # to be installed explicitly.
           python -m pip install -U 'pip<25.1' 'setuptools' 'pytest<8'
-          python -m pytest app/tests/test_build_tool_compat.py app/tests/test_py_upper_config.py -q
+          python -m pytest tests/tools/test_build_tool_compat.py tests/tools/test_py_upper_config.py -q
 
   native-integration:
     strategy:
@@ -177,7 +177,7 @@ jobs:
           ninja --version
 
       - name: Unit tests
-        run: python -m pytest app/tests -q --junitxml=unit-results.xml
+        run: python -m pytest tests/tools app/tests -q --junitxml=unit-results.xml
 
       - name: Report failing tests
         if: failure()
@@ -198,7 +198,7 @@ jobs:
       - name: Local end-to-end build with third-party wheel
         env:
           PY_UPPER_E2E: '1'
-        run: python -m pytest app/tests/test_e2e_local.py -q
+        run: python -m pytest tests/tools/test_e2e_local.py -q
 
       - name: Doctor
         run: python tools/build.py --doctor --target ${{ matrix.target }}

@@ -16,7 +16,7 @@ def _literal(value):
     return '[=[' + value + ']=]'
 
 
-def linux_release(target, formats=('TGZ', 'DEB'), deb_depends=None):
+def linux_release(target, formats=('TGZ', 'DEB'), deb_depends=None, *, source=None):
     if target.os != 'linux':
         raise ValueError('Linux packages require a Linux target')
     formats = tuple(dict.fromkeys(formats))
@@ -31,7 +31,7 @@ def linux_release(target, formats=('TGZ', 'DEB'), deb_depends=None):
         raise ValueError('Linux package name must contain only letters, digits, +, . or -')
     if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', version):
         raise ValueError('Linux release version must be numeric dotted version')
-    source = DIST / name
+    source = source or (DIST / name)
     if not (source / name).is_file():
         raise RuntimeError('Verified bundle missing: ' + str(source))
     work_root = BUILD / 'publish'

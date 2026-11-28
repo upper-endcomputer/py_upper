@@ -10,6 +10,7 @@ class AsyncLifecycle:
         self._closers = []
         self._closing = False
         self._closed = False
+        self._close_task = None
 
     def create_task(self, coroutine):
         if self._closing:
@@ -33,8 +34,14 @@ class AsyncLifecycle:
     async def aclose(self):
         if self._closed:
             return
-        self._closing = True
-        tasks = tuple(self._tasks)
+        if self._close_task is None:
+            self._closing = True
+            caller = asyncio.current_task()
+            self._close_task = asyncio.create_task(self._close(caller))
+        await asyncio.shield(self._close_task)
+
+    async def _close(self, caller):
+        tasks = tuple(task for task in self._tasks if task is not caller)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

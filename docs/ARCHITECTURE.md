@@ -11,7 +11,7 @@
 tools/build.py → Target Contract → runtime / wheels / Cython / launcher
                     │
                     ▼
-staging → 原生依赖闭包 / 裁剪 → dist → 静态验证 / import smoke
+staging → 原生依赖闭包 / 裁剪 → 候选包验证 / import smoke → dist
                     │
                     ▼
 原生 launcher → bundled CPython → main.py → application.main()
@@ -37,7 +37,7 @@ MVVMQtApplication → MVVMApplication → Model / Service / ViewModel / View
 5. Linux 本机构建在发布前预编译标准库 checked-hash 字节码。launcher 禁止在安装目录写字节码；跨架构构建不运行目标解释器。
 6. `verify.py` 检查布局、架构和依赖，再执行目标 Python 与 launcher import smoke。`--run` 继续调用实际应用入口。
 
-发布替换采用“旧包暂存 → 新包 rename → 删除旧包”，新包 rename 失败恢复旧包。两次 rename 有间隙，进程被强制终止的恢复不在当前保证内；这也不代表后续 smoke 失败会自动回滚。
+发布替换采用“旧包暂存 → 新包 rename → 删除旧包”，新包 rename 失败恢复旧包。两次 rename 有间隙，进程被强制终止的恢复不在当前保证内；CLI 先在候选目录完成静态与 smoke 检查，非 Linux 正式发布还先完成签名与签名后 smoke；失败不会替换旧应用。
 
 ## 应用状态与资源归属
 
@@ -61,7 +61,7 @@ prepare()：建容器 → 注册 ViewModel → 注册 View → start()
 finally：stop() → close/dispose 所有 View → dispose ViewModel → 清空注册表
 ```
 
-正常返回、初始化中断、事件处理异常都经过同一清理出口。`quit()` 可主动结束运行，随后再次 stop 不重复清理已清空的注册表。具体资源的清理方法应可重复调用；当前框架不提供“某个自定义 dispose 抛异常后继续清理全部对象”的保障。
+正常返回、初始化中断、事件处理异常都经过同一清理出口。`quit()` 可主动结束运行，随后再次 stop 不重复清理已清空的注册表。具体资源的清理方法应可重复调用；清理会逐项尝试所有 close/dispose，清空注册表后汇总报告错误；某个对象失败不再跳过其他对象。
 
 扩展示例时把业务状态放入 Model/ViewModel、能力通过 Service 注入、控件操作留在 View。Qt 类型通过 `utils.qt_compat` 访问；在实际创建控件时导入，保持入口导入无需 Qt。About 控件仍在首次显示时创建，原生关闭通过 `finished` 信号接到 `hide_about` 命令，保持可见状态同步并允许重新打开。
 
@@ -71,15 +71,15 @@ finally：stop() → close/dispose 所有 View → dispose ViewModel → 清空�
 
 ```bash
 python tools/build.py --doctor --target linux-arm64
-python -m pytest app/tests -q
-PY_UPPER_E2E=1 python -m pytest app/tests -q
+python -m pytest tests/tools app/tests -q
+PY_UPPER_E2E=1 python -m pytest tests/tools app/tests -q
 PY_UPPER_HEADLESS=1 PY_UPPER_NO_DIALOG=1 python tools/build.py --target linux-arm64 --run
 python tools/build.py --target linux-arm64 --verify
 ```
 
 目标应换成实际宿主目标；`--run` 不支持跨架构运行。正常桌面运行去掉 `PY_UPPER_HEADLESS=1`。
 
-| 接合点 | 主要回归文件（`app/tests/`） |
+| 接合点 | 主要回归文件（构建测试在 `tests/tools/`，应用测试在 `app/tests/`） |
 | --- | --- |
 | 配置、目标、宿主兼容 | `test_py_upper_config.py`、`test_build_tool_compat.py`、`test_doctor.py` |
 | runtime / wheel / 裁剪 | `test_pbs.py`、`test_third_party.py`、`test_qt_prune.py`、`test_trim.py` |
@@ -89,7 +89,7 @@ python tools/build.py --target linux-arm64 --verify
 | MVVM / Qt 适配 / 生命周期 | `test_mvvm.py`、`test_mvvm_example.py`、`test_qt_compat.py` |
 | 前轮修复回归 | `test_audit_regressions.py`（通知、订阅、发布回滚、安全解包、重试） |
 
-`app/tests` 同时承载构建工具和示例应用测试，替换示例时不能整体删除。fake Qt 用例验证对象图与生命周期；真实 Qt 构建冒烟验证动态库与插件可加载。offscreen 成功不能替代真实桌面首帧、硬件通信或其他操作系统实测。
+`tests/tools` 承载独立构建工具测试，`app/tests` 保留应用与接合点测试；替换示例时更新后者。fake Qt 用例验证对象图与生命周期；真实 Qt 构建冒烟验证动态库与插件可加载。offscreen 成功不能替代真实桌面首帧、硬件通信或其他操作系统实测。
 
 ## 已有能力与待完善边界
 

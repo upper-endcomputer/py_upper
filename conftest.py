@@ -4,7 +4,7 @@ import sys
 import types
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 from py_upper.config import APP  # noqa: E402 - tools/ must be importable first
 

@@ -122,6 +122,7 @@ def resolution_python(target: Target) -> tuple[Path, list[str]]:
             runtime = None
         if runtime is not None and _has_pip(runtime):
             return runtime, _resolver_args()
+    print("Dependency resolution: host fallback; target environment markers are not guaranteed. Prefer a target-native lock and wheelhouse.")
     return require_local_python(), _pip_args(target)
 
 

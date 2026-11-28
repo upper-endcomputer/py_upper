@@ -741,7 +741,7 @@ Fixes a macOS build failure where Cython exited successfully but the expected ge
 
 This repository preserves the complete release evolution from v0.9.1 through v0.16.16.
 
-Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.16 is the current PBS-version diagnostics and runtime-cache release.
+Every release has a dedicated commit and tag. The commit body records the problem, root cause, implementation changes, verification, and impact for that release. Earlier tags are immutable historical snapshots; v0.16.16 was the PBS-version diagnostics and runtime-cache release at that point in history.
 
 
 ## v0.16.2

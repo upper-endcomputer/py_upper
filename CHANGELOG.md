@@ -27,6 +27,10 @@
 
 ## 未发布
 
+- 修复声明依赖和 native 输入缓存失效、候选包验证后发布、macOS ZIP 公证与入 egg 前签名、发布清单范围和 plist 转义。
+- 修复并发异步关闭及清理错误隔离；新增工作区写锁、运行缓存应用分区和存活 lease。
+- 保留 launcher 增量构建树，优化 keep 子树遍历，增加构建 provenance 与阶段计时；工具测试迁到 tests/tools。验证与平台限制见 docs/OPTIMIZATION_IMPLEMENTATION.md。
+
 - 优化打包应用的正常启动：故障报告、脚本旁路启动和异步命令按需加载；egg 导入器不再加载未用到的抽象基类，示例的「关于」对话框在首次打开时创建。
 - 静态校验对 staging 和成品的 egg 各读取并验签解密一次，复用同一份 ZIP 做成员、架构与依赖检查；GUI 集成 CI 不再重复完整打包。
 - 新增 `[tool.py_upper.cython].merge = "all"`，将应用扩展合为一个原生 bundle，减少冷启动时的加载次数；示例配置启用此模式，已有 `directory` 和 `none` 配置行为不变。

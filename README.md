@@ -4,6 +4,8 @@
 
 当前稳定开发线：**0.17.37**。
 
+本轮整改与验证状态见 [优化实施记录](docs/OPTIMIZATION_IMPLEMENTATION.md)。
+
 ## 构建模型
 
 Build Tool 不再把 Runtime、Cython、第三方 wheel、native 依赖和打包逻辑各自孤立处理，而是围绕统一的 Target Contract 组织完整流水线：
@@ -111,7 +113,7 @@ PY_UPPER_APP_DIR=../myapp python tools/build.py --doctor
 
 `--app` 可以和其他命令组合，例如 `python tools/build.py --app ../myapp --run`。如果仓库根目录本身就是应用（根 `pyproject.toml` 带 `[tool.py_upper]`），删掉 `app/` 后也会自动识别根目录，不必额外传参。
 
-`build/`、`dist/` 和 `py_upper.lock.json` 仍属于构建工具所在的仓库；应用目录只提供源码、配置、可选资源和开发 `.venv`。`app/tests` 同时包含示例应用和构建链测试；替换示例时更新应用测试，保留 runtime、wheel、launcher、打包与部署回归用例，见框架总览中的验证矩阵。
+`build/`、`dist/` 和 `py_upper.lock.json` 仍属于构建工具所在的仓库；应用目录只提供源码、配置、可选资源和开发 `.venv`。构建工具测试位于 `tests/tools`，应用与接合点测试位于 `app/tests`；替换示例时只调整应用测试，完整验证用 `python -m pytest`。
 
 ## 首次使用
 
@@ -122,6 +124,8 @@ cp app/pyproject.toml.example app/pyproject.toml
 ```
 
 `app/pyproject.toml` 被 `.gitignore` 忽略：应用名、依赖、runtime 版本这些跟着你机器走的东西写在里面，不会进 Git；`app/pyproject.toml.example` 是入库模板，跟着仓库走。忘了复制的话，构建工具会直接报错并把上面这条命令打出来。使用 `--app` 指向自己的应用时，只需要该目录里有 `pyproject.toml`，不要求有 `.example`。
+
+示例 GUI 需要在本地配置的 `[project].dependencies` 中加入 Qt，例如 `PySide6`（具体版本按目标平台选择）。模板保持空依赖，适合接入自有应用；构建器会安装声明的依赖，源码开发还需在自己的开发环境安装这些依赖。可选异步入口另需 `qasync`。只有使用串口/BLE 的业务才需要相应驱动依赖。
 
 ## App 名称
 
@@ -138,7 +142,7 @@ identifier = "com.example.pyupper"   # macOS bundle id，与名字无关
 ### 改名怎么操作
 
 1. 改上面那一行 `name = "..."`——默认示例的 `app/pyproject.toml`（工作副本）和 `app/pyproject.toml.example`（入库模板）各有一份，两边都改，否则新克隆的人得到的还是旧名；自有应用只改自己的 `pyproject.toml`；
-2. 重新构建：`python tools/build.py --clean`。
+2. 先清理 `python tools/build.py --clean`，再执行 `python tools/build.py` 重新构建。
 
 **旧产物不会自动删除**：构建只写当前名字的产物，`dist/` 里从 `MyApp` 时代的 `MyApp.app`（或 `MyApp/`）会留着，双击旧的那个跑的还是旧包。`--clean` 是唯一会替你清理的开关，它把 `build/` 和 `dist/` 整个删掉；不想全量重建就手工删 `dist/` 下的旧 bundle。
 
@@ -294,7 +298,7 @@ app/src/
 
 ## Qt 裁剪
 
-PySide6 的 wheel 会带上整个 Qt，`QtWebEngineCore` 一个就约 450 MB。默认策略是按 **import 裁剪**：读取应用 `src` 里引用的 `PySide6.Qt*` 模块，用目标 runtime 解析出传递闭包，然后删掉没用到的 wrapper 模块、Qt 库、插件类别、QML 树、shiboken 的 QML 辅助库、Qt 工具二进制和工具翻译。
+PySide6 的 wheel 会带上整个 Qt，`QtWebEngineCore` 一个就约 450 MB。模板策略是按 **import 裁剪**：读取应用 `src` 里引用的 `PySide6.Qt*` 模块，用目标 runtime 解析出传递闭包，然后删掉没用到的 wrapper 模块、Qt 库、插件类别、QML 树、shiboken 的 QML 辅助库、Qt 工具二进制和工具翻译。
 
 ```toml
 [tool.py_upper.optimize]

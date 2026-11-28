@@ -285,8 +285,8 @@ PYTHONPATH=src python src/main.py
 ### 6.2 测试
 
 ```bash
-python -m pytest app/tests -q                 # 单元 + 兼容性测试
-PY_UPPER_E2E=1 python -m pytest app/tests -q  # 额外跑真实端到端（较慢，需 C 编译器）
+python -m pytest tests/tools app/tests -q                 # 单元 + 兼容性测试
+PY_UPPER_E2E=1 python -m pytest tests/tools app/tests -q  # 额外跑真实端到端（较慢，需 C 编译器）
 ```
 
 单元测试用 Build Tool 的解释器跑；`test_e2e_local.py` 默认跳过。
@@ -308,7 +308,7 @@ PY_UPPER_E2E=1 python -m pytest app/tests -q  # 额外跑真实端到端（较�
 2. resolve 会**真的执行**那个解释器（`python -c "import json, sys; ..."`），解释器启动时把 bytecode 写进自己所在的 runtime。
 3. 构建随后清理这棵树，就撞上这些新写入：`FileNotFoundError: .../utf_8.cpython-311.pyc.<随机数>` 或 `OSError: [Errno 66] Directory not empty: .../__pycache__`。
 
-`runtimes/` 同理：它是目标 runtime 缓存，构建会执行其中的解释器。`files.watcherExclude` 是唯一能挡住这条链路的东西（`search.exclude` 只影响搜索与扩展的 `findFiles` 扫描），`app/tests/test_build_tool_compat.py` 有用例锁住这三项。
+`runtimes/` 同理：它是目标 runtime 缓存，构建会执行其中的解释器。`files.watcherExclude` 是唯一能挡住这条链路的东西（`search.exclude` 只影响搜索与扩展的 `findFiles` 扫描），`tests/tools/test_build_tool_compat.py` 有用例锁住这三项。
 
 调试建议：
 
@@ -320,10 +320,10 @@ PY_UPPER_E2E=1 python -m pytest app/tests -q  # 额外跑真实端到端（较�
 
 构建工具把每个应用模块的 Cython 产物与目标扩展缓存在 `build/cache/`，并按内容判定是否需要重建：
 
-- 生成的 `.c` 由**源码文本 + Cython 版本**决定；
+- 生成的 `.c` 由源码、模块路径、Cython 版本与应用内 `.pxd/.pxi/.h/.hpp` 内容决定；当前声明文件采用保守全体失效策略；
 - 目标扩展由**完整的编译命令行**（编译器、架构、ABI 后缀、SDK include 目录、优化开关）与**被编译的 `.c` 内容**决定。
 
-所以只有真正变化的模块会重新 Cython 化并编译，其余直接从缓存复制。两层是链式的：改一个 `.py` 只会让它的 `.c` 和它自己的扩展失效，删掉或改名的模块不会留下会被打包的旧产物（staging 只处理当前源码）。
+所以只有真正变化的模块会重新 Cython 化并编译，其余直接从缓存复制。编译缓存还校验显式编译器、include 和 library 输入内容。两层是链式的：改一个 `.py` 只会让它的 `.c` 和它自己的扩展失效，删掉或改名的模块不会留下会被打包的旧产物（staging 只处理当前源码）。
 
 合并模式仍按模块缓存生成的 `.c`，然后把组内的 `.c` 与生成的 `register.c` 一起构建为一个 bundle。缓存 key（`py_upper-merged-native-1`）包含翻译单元内容、链接命令和 MSVC 环境。`directory` 只重建改动所在的组；`all` 则需重建这个唯一的 bundle，但没改过的模块不必重新生成 `.c`。频繁迭代的大型项目可按需保留 `directory`。
 
@@ -873,7 +873,7 @@ CI（`.github/workflows/validate.yml`）在**每个原生平台**都跑：
 新用户缓存和无关工作目录分别运行真实入口与 launcher smoke，并比较包内文件摘要。
 POSIX 测试把复制的安装目录设为只读；Windows 测试保留 `_pth` 并验证启动未改名或删除它。
 迁移启动还设置 `LC_ALL=C`、`PYTHONUTF8=0`，确认隔离解释器不依赖宿主的 UTF-8 配置。
-用 `PY_UPPER_E2E=1 python -m pytest app/tests/test_e2e_local.py -q` 运行这组验证。
+用 `PY_UPPER_E2E=1 python -m pytest tests/tools/test_e2e_local.py -q` 运行这组验证。
 
 触发范围只有 develop：`push` 与 `pull_request` 都带 `branches: [develop]`（`pull_request` 过滤的是 base 分支），`workflow_dispatch` 保留给失败重跑。`feature_*` / `fix_*` 临时分支上的中间提交不跑矩阵——它们的验证由合并后的 develop 承担，一次功能开发不会在临时分支上白烧十几轮全平台 job。确实要单独验证某个分支时用 `gh workflow run validate.yml --ref <branch>` 手动触发。
 
@@ -889,7 +889,7 @@ python tools/build.py --release --identity "Developer ID Application: ..." --not
 - **Windows**：需要 `signtool` 与 `PY_UPPER_SIGN_CERT`。
 - **Linux**：CPack 生成 TGZ/DEB，可用 `--linux-format RPM` 选择 RPM；依赖、目标输出和验证边界见 [发布与异步说明](RELEASE_AND_ASYNC.md)。
 
-签名顺序由工具保证：嵌套代码由内向外，launcher 最后（否则 bundle 封签会失效）。
+macOS 正式发布会在入 egg 前签名应用扩展，散落的可加载 Mach-O 按路径深度签名，应用本体最后封签。公证先用 ditto 创建 ZIP，检查 Accepted 后再 staple；发布清单位于应用包外，避免修改签名后的 bundle。
 
 ---
 

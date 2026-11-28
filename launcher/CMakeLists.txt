@@ -75,3 +75,7 @@ if(APPLE)
   # terminal to report to.
   target_link_libraries(PyUpper PRIVATE "-framework CoreFoundation")
 endif()
+
+if(DEFINED PY_UPPER_CACHE_NAMESPACE)
+  target_compile_definitions(PyUpper PRIVATE PY_UPPER_CACHE_NAMESPACE="${PY_UPPER_CACHE_NAMESPACE}")
+endif()

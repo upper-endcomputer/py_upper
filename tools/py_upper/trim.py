@@ -395,6 +395,15 @@ def trim_tree(root: Path, patterns: Sequence[str], keep: Sequence[str] = ()) -> 
     # pattern itself: the removal applies to the subtree, not just the directory
     # entry. ``forced`` carries that decision down the walk.
     forced: set[str] = set()
+    protected_ancestors = set()
+    if keeps:
+        for current, directories, files in os.walk(root_path):
+            for name in directories + files:
+                relative = (Path(current) / name).relative_to(root_path).as_posix()
+                if _matches(relative, keeps):
+                    while "/" in relative:
+                        relative = relative.rsplit("/", 1)[0]
+                        protected_ancestors.add(relative)
 
     for current, directories, files in os.walk(root_path, topdown=True):
         current_path = Path(current)
@@ -409,7 +418,7 @@ def trim_tree(root: Path, patterns: Sequence[str], keep: Sequence[str] = ()) -> 
                 # The whole subtree is protected, so it is not worth walking.
                 continue
             if forced_here or _matches(relative, removals):
-                if keeps and _subtree_has_keep(path, root_path, keeps):
+                if relative in protected_ancestors:
                     # Descend instead of deleting: an inner path is kept, so
                     # this directory stays but its subtree is still trimmed.
                     forced.add(relative)

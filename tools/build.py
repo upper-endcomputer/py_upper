@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import tempfile
+import time
 import os
 import shutil
 import subprocess
@@ -14,13 +17,13 @@ from py_upper.appdir import APP_DIR_ENV, resolve_app_dir, select_from_argv
 select_from_argv(sys.argv[1:])
 
 from py_upper.config import (
-    APP, BUILD, DIST, TARGETS, app_name, host_description, host_target, pbs_release,
+    APP, ROOT, BUILD, DIST, TARGETS, app_name, host_description, host_target, pbs_release,
     pbs_sdk_dir, python_version, runtime_provider, target_runtime_dir,
     trim_policy, validate_build_python_version, validate_target, require_local_python,
 )
 from py_upper.egg import COMPRESSIONS, egg_config
 from py_upper.lock import verify_lock, write_lock
-from py_upper.package import build_launcher, package, write_release_manifest
+from py_upper.package import _publish, build_launcher, package, write_release_manifest
 from py_upper.python_build import build_python_package
 from py_upper.runtime import ensure_runtime, ensure_sdk
 from py_upper.fs import retire_tree
@@ -100,6 +103,16 @@ def main(argv=None) -> int:
                 [sys.executable, str(Path(__file__).resolve()), *argv],
                 env=env,
             ).returncode
+    from py_upper.workspace_lock import workspace_lock
+    try:
+        with workspace_lock(ROOT):
+            return _main(argv)
+    except RuntimeError as exc:
+        print("ERROR:", exc)
+        return 1
+
+
+def _main(argv=None) -> int:
     validate_build_python_version()
     parser = argparse.ArgumentParser(description="py_upper - standalone Python application builder")
     parser.add_argument("command", nargs="?", choices=["doctor", "build", "run", "verify", "lock", "release", "clean"])
@@ -189,30 +202,58 @@ def main(argv=None) -> int:
 
         egg = egg_config(args.egg, args.egg_key, args.egg_backend, args.egg_compression)
 
+        started = time.perf_counter()
+        timings = {}
+        def phase(name):
+            nonlocal started
+            now = time.perf_counter()
+            timings[name] = round(now - started, 6)
+            started = now
         print("[1/6] Runtime + SDK")
         ensure_sdk(target)
         ensure_runtime(target)
+        phase("runtime-sdk")
         print("[2/6] Third-party dependencies")
-        build_python_package(target, trim, egg)
+        signing_identity = None
+        if action == "release" and target.os == "macos":
+            signing_identity = args.identity or os.environ.get("PY_UPPER_CODESIGN_IDENTITY") or os.environ.get("PYSTAND_CODESIGN_IDENTITY")
+            if not signing_identity:
+                raise RuntimeError("macOS release requires --identity")
+        build_python_package(target, trim, egg, signing_identity=signing_identity)
+        phase("dependencies-cython")
         print("[3/6] Target launcher")
         launcher = build_launcher(target, egg)
+        phase("launcher-build")
         print("[4/6] Package + native dependency closure")
-        out = package(target, launcher, trim)
+        out = package(target, launcher, trim, publish=False)
+        phase("assembly")
         print("[5/6] Static verification")
-        if verify(target):
+        if verify(target, out):
             return 1
+        phase("static-verify")
         print("[6/6] Target runtime smoke")
         run_target_python_smoke(target)
         run_launcher_smoke(target, out / ("Contents/MacOS/" + app_name() if target.os == "macos" else (app_name() + ".exe" if target.os == "windows" else app_name())))
 
+        phase("smoke")
+        from py_upper.build_info import write_build_info
+        write_build_info(out, target, {"egg": egg.enabled, "backend": egg.backend,
+                                      "compression": egg.compression, "trim": vars(trim)})
+        timing_path = BUILD / "timings" / (target.key + ".json")
+        timing_path.parent.mkdir(parents=True, exist_ok=True)
+        timing_path.write_text(json.dumps(timings, indent=2) + "\n", encoding="utf-8")
+        if action == "release" and target.os != "linux":
+            release(target, args.identity, args.notary_profile, output=out)
+            run_launcher_smoke(target, out / ("Contents/MacOS/" + app_name() if target.os == "macos" else app_name() + ".exe"))
+
+        if action == "release" and target.os == "linux":
+            from py_upper.linux_release import linux_release
+            print("Linux release:", linux_release(target, args.linux_format or ("TGZ", "DEB"), args.linux_deb_depends, source=out))
+        out = _publish(out.parent, out, DIST / out.name)
         if action == "run":
             return _run_app(out, target)
         if action == "release":
-            if target.os == "linux":
-                from py_upper.linux_release import linux_release
-                print("Linux release:", linux_release(target, args.linux_format or ("TGZ", "DEB"), args.linux_deb_depends))
-            else:
-                release(target, args.identity, args.notary_profile)
+            if target.os != "linux":
                 print("Release manifest:", write_release_manifest(target))
         else:
             print("READY:", out)
@@ -227,7 +268,7 @@ def main(argv=None) -> int:
         return 1
 
 
-def release(target, identity=None, notary_profile=None) -> int:
+def release(target, identity=None, notary_profile=None, *, output=None) -> int:
     if target.os == "linux":
         print("Linux release: use your distribution signing/package system.")
         return 0
@@ -236,24 +277,29 @@ def release(target, identity=None, notary_profile=None) -> int:
         cert = os.environ.get("PY_UPPER_SIGN_CERT") or os.environ.get("PYSTAND_SIGN_CERT")
         if not tool or not cert:
             raise RuntimeError("Windows release requires signtool and PY_UPPER_SIGN_CERT")
-        for path in (DIST / app_name()).rglob("*"):
+        for path in (output or (DIST / app_name())).rglob("*"):
             if path.is_file() and path.suffix.lower() in {".exe", ".dll", ".pyd"}:
                 subprocess.run([tool, "sign", "/fd", "SHA256", "/a", "/f", cert, str(path)], check=True)
         return 0
-    app = DIST / f"{app_name()}.app"
+    app = output or (DIST / f"{app_name()}.app")
     codesign = shutil.which("codesign")
     xcrun = shutil.which("xcrun")
     ident = identity or os.environ.get("PY_UPPER_CODESIGN_IDENTITY") or os.environ.get("PYSTAND_CODESIGN_IDENTITY")
     if not codesign or not xcrun or not ident:
         raise RuntimeError("macOS release requires codesign/xcrun and --identity")
-    nested = [p for p in app.rglob("*") if p.is_file() and p.suffix.lower() in {".dylib", ".so"}]
-    nested.append(app / "Contents" / "MacOS" / app_name())
-    for path in nested:
-        subprocess.run([codesign, "--force", "--timestamp", "--options", "runtime", "--sign", ident, str(path)], check=True)
+    from py_upper.signing import sign_macos_files
+    sign_macos_files(app.rglob("*"), ident)
     subprocess.run([codesign, "--force", "--timestamp", "--options", "runtime", "--sign", ident, str(app)], check=True)
     subprocess.run([codesign, "--verify", "--deep", "--strict", "--verbose=2", str(app)], check=True)
     if notary_profile:
-        subprocess.run([xcrun, "notarytool", "submit", str(app), "--keychain-profile", notary_profile, "--wait"], check=True)
+        temporary_root = ROOT / ".tmp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="notary-", dir=str(temporary_root)) as work:
+            archive = Path(work) / (app.name + ".zip")
+            subprocess.run(["ditto", "-c", "-k", "--keepParent", str(app), str(archive)], check=True)
+            result = subprocess.run([xcrun, "notarytool", "submit", str(archive), "--keychain-profile", notary_profile, "--wait", "--output-format", "json"], check=True, capture_output=True, text=True)
+            if json.loads(result.stdout).get("status") != "Accepted":
+                raise RuntimeError("Notarization was not accepted: " + result.stdout)
         subprocess.run([xcrun, "stapler", "staple", str(app)], check=True)
         subprocess.run([xcrun, "stapler", "validate", str(app)], check=True)
     return 0

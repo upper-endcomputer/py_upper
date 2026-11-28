@@ -92,13 +92,19 @@ class MVVMApplication:
         self._cleanup()
 
     def _cleanup(self) -> None:
-        for view in self.views.values():
-            view.close()
-            view.dispose()
-        for viewmodel in self.viewmodels.values():
-            viewmodel.dispose()
+        views, viewmodels = list(self.views.values()), list(self.viewmodels.values())
         self.views.clear()
         self.viewmodels.clear()
+        errors = []
+        callbacks = [callback for view in views for callback in (view.close, view.dispose)]
+        callbacks.extend(viewmodel.dispose for viewmodel in viewmodels)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise RuntimeError("Application cleanup failed") from errors[0]
 
     @property
     def is_running(self) -> bool:

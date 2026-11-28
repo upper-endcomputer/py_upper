@@ -1,0 +1,70 @@
+# 优化整改实施记录
+
+日期：2026-11-28；基于 `6676220` 工作树，未提交、未发布新版本。
+对应评估：[OPTIMIZATION_REVIEW.md](OPTIMIZATION_REVIEW.md)。该评估是整改前的快照，当前状态以本记录为准。
+
+## 按原顺序完成的代码整改
+
+| 项目 | 实现 | 验证 |
+| --- | --- | --- |
+| P1-01 Cython 缓存 | 模块绝对路径、应用内声明和头文件内容进入转换键；原生编译键补充编译器、显式 include/library 输入摘要 | 实际 Cython 3.2.9：仅改 pxd 会重新转换，增量输出与强制重建一致；头文件变更回归 |
+| P1-02 候选包验证 | CLI 在 assembly 检查 static、runtime smoke、launcher smoke，通过后才调用发布替换；非 Linux release 先签名、公证和签名后 smoke；Linux 安装包生成也先于应用替换 | 静态、runtime、launcher、签名四种故障注入都不调用发布；真实本地 E2E |
+| P1-03 macOS 公证 | 入 egg 前用正式 identity 签扩展；包内按 Mach-O 文件头发现无后缀镜像，嵌套 framework/app/xpc 与应用封签；ditto ZIP 提交、检查 Accepted、staple/validate | 命令契约、Rejected 状态、无后缀镜像测试；正式身份和 macOS 真机验证仍待执行 |
+| P2-04 清单范围 | 非 Linux 默认只扫描当前应用；清单写在应用包外，避免破坏签名；Linux 保持目标归档目录 | 旧应用混入回归；清单现有测试 |
+| P2-05 生命周期 | 并发 aclose 共享单个关闭任务，shield 防止一个等待者取消关闭；容器逐项尝试所有 close/dispose 后汇总错误 | 并发关闭、取消等待者、清理失败、重复停止 |
+| P2-06 plist | 使用 plistlib 序列化 | 中文、空格、&、尖括号往返 |
+| 工作区写入冲突 | CLI 持有 OS 文件锁，锁放在 `.tmp/build.lock`；退出或崩溃由 OS 释放；--app 子进程选择发生在加锁前 | 第二写入者被拒绝，释放后可重入；E2E build/lock/locked |
+| 运行缓存 | 新 launcher 按应用 identifier 的 SHA256 前缀划分命名空间；Python/C++ 加载期间持有共享 lease，淘汰仅在取得独占 lease 后执行 | Python 保活/退出淘汰测试；编译真实 C++ helper 验证同样行为；缓存原有 63 个测试 |
+| launcher 增量 | 保留 CMake/Ninja 树，工具链签名改变时清理；内嵌源码和 Windows 资源内容不变则不改 mtime；工具链环境只落摘要 | 文件 mtime 回归、现有 launcher 配置测试、真实 E2E |
+| trim 遍历 | 一次遍历计算 keep 祖先集合，替代反复扫描每个候选子树 | 原有 trim 回归；深层 keep 实测删除集合相同 |
+| 启动与构建观测 | `build/timings/<target>.json` 记录阶段秒数；`PY_UPPER_STARTUP_TIMING=1` 启用 launcher 阶段毫秒输出 | C++ 编译与 E2E；不把 application-run 计时冒充窗口首帧 |
+| 构建追溯 | 成品 `build-info.json`（macOS 位于 Contents/Resources） 记录 builder commit/dirty、源码与配置摘要、Python/target 和有效 egg/trim 选项 | 全套回归与最终 E2E；不保存原始配置密钥 |
+| 跨目标依赖 | 宿主解释器回退时明确打印 marker 语义风险 | 保留原生解析策略及回归；目标原生 lock/wheelhouse 是推荐发布输入 |
+| 测试归属 | 18 个原有构建测试文件原样迁到 `tests/tools`，共享 conftest 移到根；pytest 默认收集两棵树，CI/VS Code 同步 | 逐文件与 Git HEAD 内容对比相同；全套测试通过 |
+| 文档 | 修复 clean/build 操作、模板与配置默认差异、示例依赖准备、持久缓存注释、旧 HISTORY 当前版本文字、发布顺序和清理语义 | 文档核对、diff 空白检查 |
+
+## 操作与兼容性
+
+```bash
+# 全部测试（默认仍跳过需要显式打开的本地 E2E）
+python -m pytest -q
+
+# 本地 E2E 新位置
+PY_UPPER_E2E=1 python -m pytest tests/tools/test_e2e_local.py -q
+
+# 改名后的全量重建，clean 本身不构建
+python tools/build.py --clean
+python tools/build.py
+
+# 打包 launcher 分段计时：正常启动无需设置
+PY_UPPER_STARTUP_TIMING=1 PY_UPPER_NO_DIALOG=1 dist/Upper/Upper
+```
+
+应用 identifier 应在不同产品间唯一；相同 identifier 被视为同一个应用缓存空间。新命名空间不会主动删除旧版无命名空间的缓存。lease 文件必须保留以维持跨进程锁的 inode/句柄身份，少量空锁文件不随负载目录删除。活跃版本可能使负载缓存暂时超过“两版”，这是保护运行实例所需的行为。
+
+打包模式 `all/directory/none` 和 Qt Essentials/full 的选择仍由应用决定；没有把建议硬编码成通用默认值。已有安全默认、归档摘要验证和元数据保留策略不变。Cython 声明目前采用保守失效：应用内任一声明文件变化可能让多个模块重新转换；没有声称已实现最精细的依赖图。应用根外 cimport 声明不是已证明的缓存稳定输入，修改此类外部声明时使用 `incremental=false`。
+
+`build-info.json` 用于追溯，不等于所有构建工具已完全锁定或产物字节级可复现。工作区互斥是短期并发策略，同一工程不会并行构建多个应用；独立工作区可并行。库级函数调用者负责自己的同步。
+
+发布仍有两次 rename 的短暂空窗，不保证断电事务恢复。Linux 归档目录与应用目录是两个发布路径，各自保留原有 rename 恢复逻辑，并非跨目录原子事务。Windows/macOS 清单位于 dist 下的 `<应用目录名>-release-manifest.json`。
+
+## 实测
+
+- 完整回归：**487 passed、6 skipped**；见 `.tmp/review/verified-suite.log`。随后调整 macOS build-info 位于 Contents/Resources，并通过最终边界回归 **18 passed**（`.tmp/review/final-boundaries.log`）。
+- 最终真实本地 E2E：**3 passed，105.70 秒**，覆盖构建、目标/launcher smoke、native 输入、lock/locked 和迁移启动；日志 `.tmp/review/e2e-final.log`。
+- 实际 PXD 验证：`incremental_changed=true`、`matches_clean_rebuild=true`，日志 `.tmp/review/pxd-fixed.log`。
+- keep 子树基准：45 层目录，1,350 个待删除文件和一个最深层 keep 文件，复制时间不计入；旧实现三次约 0.987 秒，新实现 0.256/0.224/0.218 秒，删除数与保留集合一致。日志 `.tmp/review/trim-benchmark.json`。该结果只说明这个深层 keep 场景，不能外推为整体打包提速。
+- C++ 缓存 lease 专项编译运行：**1 passed**，日志 `.tmp/review/lease-native.log`。
+
+## 平台验收边界
+
+| 验收项 | 本轮状态 |
+| --- | --- |
+| 本机单元、真实 C++ helper、实际 Cython、Linux 本地 E2E | 已执行 |
+| Windows 原生构建、共享句柄缓存 lease、GUI | 有跨平台测试代码，当前 Linux 环境未执行 |
+| macOS Developer ID、notarytool 服务、staple 后新机启动 | 代码与命令契约已修正；缺 macOS 与签名身份，未宣称通过 |
+| X11/Wayland/Windows/macOS 真实桌面首帧 | 本轮没有显示会话实测；原 desktop_probe 仍测 source exposure |
+| 目标发行版安装/升级/卸载 | 本轮未执行，原 CI 仍不能代替这些验收 |
+| all/directory/none 与 Qt 输入的真实业务性能比较 | 观测接口已提供；未按一个示例的结果改变所有应用默认值 |
+
+官方契约参考：[Apple 公证流程](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)、[Cython 声明依赖](https://docs.cython.org/en/latest/src/userguide/sharing_declarations.html)。

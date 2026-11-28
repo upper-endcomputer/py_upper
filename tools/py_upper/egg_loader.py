@@ -147,6 +147,9 @@ def _cache_root():
         base = os.environ.get('XDG_CACHE_HOME') or os.path.join(
             os.path.expanduser('~'), '.cache')
         root = os.path.join(base, 'py_upper', 'eggs')
+    namespace = os.environ.get('PY_UPPER_CACHE_NAMESPACE', '')
+    if namespace and len(namespace) == 32 and all(c in '0123456789abcdef' for c in namespace):
+        root = os.path.join(root, namespace)
     try:
         os.makedirs(root, mode=0o700, exist_ok=True)
     except OSError:
@@ -184,6 +187,37 @@ def _cache_verify_enabled():
 # reuses one: they would accumulate one per release. Deletion is best effort and
 # never fails a start; another process may be using an entry, and a leftover
 # directory only costs disk space.
+def _cache_lease_path(root, name):
+    directory = root + '.leases'
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    return os.path.join(directory, name)
+
+
+def _cache_lease(path, exclusive=False):
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        create = kernel.CreateFileW
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                           wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create.restype = wintypes.HANDLE
+        handle = create(path, 0xc0000000, 0 if exclusive else 3, None, 4, 0x80, None)
+        if handle == ctypes.c_void_p(-1).value:
+            return None
+        close = kernel.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        return lambda: close(handle)
+    import fcntl
+    handle = open(path, 'a+b')
+    try:
+        fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle.close
+
+
 def _prune_cache(cache_root, keep_name):
     # Only entries this loader owns. `merged-*` belongs to the launcher, which
     # extracts the extension bundles before Py_Initialize and is using that
@@ -203,7 +237,15 @@ def _prune_cache(cache_root, keep_name):
             return 0.0
     entries.sort(key=age, reverse=True)
     for name in entries[CACHE_KEEP - 1:]:
-        shutil.rmtree(os.path.join(cache_root, name), ignore_errors=True)
+        try:
+            close = _cache_lease(_cache_lease_path(cache_root, name), True)
+        except OSError:
+            continue
+        if close is not None:
+            try:
+                shutil.rmtree(os.path.join(cache_root, name), ignore_errors=True)
+            finally:
+                close()
 
 
 def _memimporter_module():
@@ -385,6 +427,15 @@ class EncryptedEggImporter:
         cache_root = _cache_root()
         if cache_root is None:
             return self._extract_temporary()
+        try:
+            close = _cache_lease(_cache_lease_path(cache_root, CACHE_PREFIX + self.digest))
+        except OSError as exc:
+            if not isinstance(exc, PermissionError) and exc.errno != errno.EROFS:
+                raise
+            return self._extract_temporary()
+        if close is None:
+            return self._extract_temporary()
+        atexit.register(close)
         final = os.path.join(cache_root, CACHE_PREFIX + self.digest)
         marker = os.path.join(final, CACHE_MARKER)
         if os.path.isfile(marker):

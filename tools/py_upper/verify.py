@@ -327,8 +327,8 @@ def _launcher_subsystem_check(executable: Path) -> tuple[bool, str]:
     return False, f"launcher subsystem: {actual}, expected {PE_SUBSYSTEM[expected]}"
 
 
-def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
-    root = _package_root(target)
+def _checks_for_package(target: Target, root: Path | None = None) -> list[tuple[bool, str]]:
+    root = root or _package_root(target)
     name = app_name()
     if target.os == "macos":
         executable = root / "Contents" / "MacOS" / name
@@ -427,8 +427,8 @@ def _checks_for_package(target: Target) -> list[tuple[bool, str]]:
     return checks
 
 
-def verify(target: Target) -> int:
-    checks = _checks_for_stage(target) + _checks_for_package(target)
+def verify(target: Target, root: Path | None = None) -> int:
+    checks = _checks_for_stage(target) + (_checks_for_package(target, root) if root is not None else _checks_for_package(target))
     failures = 0
     for ok, label in checks:
         print("PASS" if ok else "FAIL", label)

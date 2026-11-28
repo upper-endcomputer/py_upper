@@ -133,9 +133,9 @@ enabled = true
 # Changing it requires rebuilding everything that reads the archive.
 key_hex = "047636cf3ddbaae2346f597256416e858ee0b7c8b7448221e5babfbb4f74c20d"
 # auto: map extensions from memory on Windows when _memimporter is available,
-#       otherwise decrypt into a private temporary directory.
+#       otherwise decrypt into a persistent content-addressed cache.
 # memory: force the Windows in-memory path (needs the Zig toolchain).
-# extract: decrypt into a temporary directory and add it to sys.path.
+# extract: decrypt into a persistent cache; temporary fallback when unwritable.
 backend = "auto"
 # deflated | stored | lzma
 compression = "deflated"
