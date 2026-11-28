@@ -1,6 +1,6 @@
 # 优化整改实施记录
 
-日期：2026-11-28；基于 `6676220` 工作树，未提交、未发布新版本。
+日期：2026-11-28；基于 `6676220` 工作树整改，代码已提交并推送 `develop`（`5332250`、`db6154c`），未发布新版本。
 对应评估：[OPTIMIZATION_REVIEW.md](OPTIMIZATION_REVIEW.md)。该评估是整改前的快照，当前状态以本记录为准。
 
 ## 按原顺序完成的代码整改
@@ -51,17 +51,29 @@ PY_UPPER_STARTUP_TIMING=1 PY_UPPER_NO_DIALOG=1 dist/Upper/Upper
 ## 实测
 
 - 完整回归：**487 passed、6 skipped**；见 `.tmp/review/verified-suite.log`。随后调整 macOS build-info 位于 Contents/Resources，并通过最终边界回归 **18 passed**（`.tmp/review/final-boundaries.log`）。
+- 推送前最终完整回归：**488 passed、6 skipped**；见 `.tmp/ci/prepush.log`。
 - 最终真实本地 E2E：**3 passed，105.70 秒**，覆盖构建、目标/launcher smoke、native 输入、lock/locked 和迁移启动；日志 `.tmp/review/e2e-final.log`。
 - 实际 PXD 验证：`incremental_changed=true`、`matches_clean_rebuild=true`，日志 `.tmp/review/pxd-fixed.log`。
 - keep 子树基准：45 层目录，1,350 个待删除文件和一个最深层 keep 文件，复制时间不计入；旧实现三次约 0.987 秒，新实现 0.256/0.224/0.218 秒，删除数与保留集合一致。日志 `.tmp/review/trim-benchmark.json`。该结果只说明这个深层 keep 场景，不能外推为整体打包提速。
 - C++ 缓存 lease 专项编译运行：**1 passed**，日志 `.tmp/review/lease-native.log`。
+
+## CI 验收
+
+- 首次提交 `5332250` 的 [CI 46151161484](https://github.com/upper-endcomputer/py_upper/actions/runs/46151161484) 暴露了 C++ 缓存 lease 测试夹具的跨平台问题：Windows 在编译探针时失败，macOS 在运行探针时失败；两个 Linux 原生 job 和六个 Python 兼容 job 通过。
+- `db6154c` 将夹具使用的极端最小文件时间改为当前时间减一天，并直接输出子进程退出码、stdout 和 stderr，避免长 traceback 截断关键诊断。缓存保活与释放后淘汰的断言保持不变。
+- 修复后的 [CI 46151741375](https://github.com/upper-endcomputer/py_upper/actions/runs/46151741375) 对应完整提交 `db6154c5ff30da722dfd23d1904371500f6acc91`，**15/15 job 成功，无失败、无跳过 job**：Python 3.8–3.13 六个兼容 job、八个原生集成 job（七种目标加 Windows Python 3.8 兼容构建）、一个七目标产物汇总 job。
+- 八个原生 job 均通过单元测试、本地 wheel E2E、doctor 和完整集成构建。Linux x86_64、Windows x64/ARM64、macOS Intel/ARM64 以及 Windows Python 3.8 兼容构建执行 `--run` 并验证 `GUI OK`；Linux ARM64、Windows x86 不执行 GUI run。
+- CI 设置 `PY_UPPER_HEADLESS=1`，所以 `GUI OK` 是打包后应用的 readiness 证据，不等于交互桌面首帧验收。矩阵没有调用正式签名、公证或目标发行版安装流程。
+
+上述本地 `.tmp/` 日志不随仓库提交；远端 job 的持久证据以链接所指的 GitHub Actions 运行记录为准。
 
 ## 平台验收边界
 
 | 验收项 | 本轮状态 |
 | --- | --- |
 | 本机单元、真实 C++ helper、实际 Cython、Linux 本地 E2E | 已执行 |
-| Windows 原生构建、共享句柄缓存 lease、GUI | 有跨平台测试代码，当前 Linux 环境未执行 |
+| Windows 原生构建、共享句柄缓存 lease、GUI | CI x86/x64/ARM64 原生 job 通过；x64/ARM64 和 Python 3.8 兼容构建通过 headless GUI readiness |
+| macOS Intel/ARM64 与 Linux x86_64/ARM64 原生构建 | CI 均通过；macOS 双架构与 Linux x86_64 通过 headless GUI readiness |
 | macOS Developer ID、notarytool 服务、staple 后新机启动 | 代码与命令契约已修正；缺 macOS 与签名身份，未宣称通过 |
 | X11/Wayland/Windows/macOS 真实桌面首帧 | 本轮没有显示会话实测；原 desktop_probe 仍测 source exposure |
 | 目标发行版安装/升级/卸载 | 本轮未执行，原 CI 仍不能代替这些验收 |
