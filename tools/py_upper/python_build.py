@@ -24,7 +24,7 @@ CYTHON_REQUIREMENT = "Cython>=3.1,<3.3"
 # Cache schemas. Each names the exact recipe that produced an artifact, so
 # bumping one discards every output it describes. Without that, a cache written
 # by an older tool would keep answering a question the tool no longer asks.
-CYTHON_CACHE_SCHEMA = "py_upper-cython-1"
+CYTHON_CACHE_SCHEMA = "py_upper-cython-2"
 NATIVE_CACHE_SCHEMA = "py_upper-native-1"
 MERGED_CACHE_SCHEMA = "py_upper-merged-native-1"
 
@@ -232,7 +232,7 @@ def _mark_current(artifact: Path, key: str) -> None:
     _stamp_path(artifact).write_text(key + "\n", encoding="utf-8")
 
 
-def _cython_key(source: Path, cython_version: str) -> str:
+def _cython_key(source: Path, cython_version: str, destination: Path | None = None) -> str:
     """Conservative key including application declaration dependencies."""
     digest = hashlib.sha256()
     digest.update(CYTHON_CACHE_SCHEMA.encode())
@@ -242,12 +242,26 @@ def _cython_key(source: Path, cython_version: str) -> str:
     digest.update(str(source.resolve()).encode())
     digest.update(b"\0")
     digest.update(source.read_bytes())
-    # Include declarations conservatively: additions and removals also matter.
-    # External declarations are not supported as cache-stable inputs.
+    # Declaration names detect additions/removals that can shadow prior imports.
+    # Existing declaration contents are tracked through the compiler depfile.
+    has_depfile = destination is not None and Path(str(destination) + ".dep").is_file()
     for dependency in sorted((APP / "src").rglob("*")):
         if dependency.is_file() and dependency.suffix in {".pxd", ".pxi", ".h", ".hpp"}:
             digest.update(str(dependency.relative_to(APP)).encode())
-            digest.update(dependency.read_bytes())
+            if not has_depfile:
+                digest.update(dependency.read_bytes())
+    if destination is not None:
+        depfile = Path(str(destination) + ".dep")
+        if depfile.exists():
+            # Cython writes one dependency per continuation line, escaping spaces.
+            for line in depfile.read_text(encoding="utf-8").splitlines()[1:]:
+                value = line.strip()
+                if value.endswith("\\"):
+                    value = value[:-1].rstrip()
+                value = value.replace("\\ ", " ")
+                dependency = (source.parent / value).resolve()
+                digest.update(str(dependency).encode())
+                digest.update(dependency.read_bytes() if dependency.is_file() else b"missing")
     return digest.hexdigest()
 
 
@@ -341,10 +355,8 @@ def _windows_native_key(
 def cythonize_to_c(sources: list[Path], host_python: Path) -> dict[Path, Path]:
     """Generate the C translation unit for every selected source.
 
-    A module whose source text and Cython version did not change reuses the
-    unit a previous build already produced. Regenerating every module on every
-    build was the dominant cost of a rebuild, and the artifact is a pure
-    function of those two inputs, so it can be cached by content.
+    Reuse requires matching source, Cython version, declaration inventory and
+    the contents of dependencies emitted by Cython, including external includes.
     """
     root = cython_output_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -358,7 +370,7 @@ def cythonize_to_c(sources: list[Path], host_python: Path) -> dict[Path, Path]:
         rel = source.relative_to(APP / "src")
         destination = root / rel.with_suffix(".c")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        key = _cython_key(source, version)
+        key = _cython_key(source, version, destination)
         outputs[source] = destination
         if incremental and _is_current(destination, key):
             continue
@@ -379,12 +391,12 @@ def cythonize_to_c(sources: list[Path], host_python: Path) -> dict[Path, Path]:
             output = os.path.relpath(destination, source.parent)
         except ValueError:
             output = str(destination)
-        tasks.append(([str(host_python), "-m", "cython", "--force", "-3", "-o", output, source.name], source.parent, env))
+        tasks.append(([str(host_python), "-m", "cython", "--force", "--depfile", "-3", "-o", output, source.name], source.parent, env))
     _run_parallel(tasks)
     for source, destination, key in pending:
         if not destination.exists():
             raise RuntimeError(f"Cython completed but did not generate {destination}")
-        _mark_current(destination, key)
+        _mark_current(destination, _cython_key(source, version, destination))
     return outputs
 
 

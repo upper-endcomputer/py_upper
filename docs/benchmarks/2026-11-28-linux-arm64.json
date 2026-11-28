@@ -1,0 +1,170 @@
+[
+  {
+    "mode": "all",
+    "builds": [
+      {
+        "phase": "initial",
+        "seconds": 72.12946587998886,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 1 of 1 merged bundle(s) changed",
+          "+ merged _all (18 module(s)) -> py_upper_bundles/py_upper__all.cpython-313-aarch64-linux-gnu.so"
+        ]
+      },
+      {
+        "phase": "unchanged",
+        "seconds": 17.943218200001866,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 1 merged bundle(s) up to date"
+        ]
+      },
+      {
+        "phase": "edited",
+        "seconds": 54.55512631998863,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 1 of 1 merged bundle(s) changed",
+          "+ merged _all (18 module(s)) -> py_upper_bundles/py_upper__all.cpython-313-aarch64-linux-gnu.so"
+        ]
+      }
+    ],
+    "startup": {
+      "cold": {
+        "seconds": [
+          0.31322044000262395,
+          0.2297937599942088,
+          0.22985440003685653,
+          0.22735852003097534,
+          0.22836763999657705
+        ],
+        "median": 0.2297937599942088,
+        "p95": 0.31322044000262395
+      },
+      "warm": {
+        "seconds": [
+          0.2248373999609612,
+          0.22883271996397525,
+          0.22668675996828824,
+          0.22968451998895034,
+          0.23966672003734857
+        ],
+        "median": 0.22883271996397525,
+        "p95": 0.23966672003734857
+      }
+    },
+    "installed_bytes": 272460531
+  },
+  {
+    "mode": "directory",
+    "builds": [
+      {
+        "phase": "initial",
+        "seconds": 49.4195424800273,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 3 of 3 merged bundle(s) changed",
+          "+ merged _root (2 module(s)) -> py_upper_bundles/py_upper__root.cpython-313-aarch64-linux-gnu.so",
+          "+ merged mvvm (14 module(s)) -> py_upper_bundles/py_upper_mvvm.cpython-313-aarch64-linux-gnu.so",
+          "+ merged utils (2 module(s)) -> py_upper_bundles/py_upper_utils.cpython-313-aarch64-linux-gnu.so"
+        ]
+      },
+      {
+        "phase": "unchanged",
+        "seconds": 16.960680719988886,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 3 merged bundle(s) up to date"
+        ]
+      },
+      {
+        "phase": "edited",
+        "seconds": 25.640838960011024,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 1 of 3 merged bundle(s) changed",
+          "+ merged _root (2 module(s)) -> py_upper_bundles/py_upper__root.cpython-313-aarch64-linux-gnu.so"
+        ]
+      }
+    ],
+    "startup": {
+      "cold": {
+        "seconds": [
+          0.3952564400387928,
+          0.24966855999082327,
+          0.25421024003298953,
+          0.22540703997947276,
+          0.38654976000543684
+        ],
+        "median": 0.25421024003298953,
+        "p95": 0.3952564400387928
+      },
+      "warm": {
+        "seconds": [
+          0.21614052000222728,
+          0.21823828003834933,
+          0.21921827999176458,
+          0.2294798800139688,
+          0.30375888000708073
+        ],
+        "median": 0.21921827999176458,
+        "p95": 0.30375888000708073
+      }
+    },
+    "installed_bytes": 272551556
+  },
+  {
+    "mode": "none",
+    "builds": [
+      {
+        "phase": "initial",
+        "seconds": 37.43553607998183,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 25 of 25 extension(s) changed"
+        ]
+      },
+      {
+        "phase": "unchanged",
+        "seconds": 17.771657560020685,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 25 extension(s) up to date"
+        ]
+      },
+      {
+        "phase": "edited",
+        "seconds": 19.950946680037305,
+        "exit": 0,
+        "native_build_reports": [
+          "Compile: 1 of 25 extension(s) changed"
+        ]
+      }
+    ],
+    "startup": {
+      "cold": {
+        "seconds": [
+          0.32596816000295803,
+          0.243951520009432,
+          0.24355508002918214,
+          0.2522074800217524,
+          0.2480477600474842
+        ],
+        "median": 0.2480477600474842,
+        "p95": 0.32596816000295803
+      },
+      "warm": {
+        "seconds": [
+          0.21560659998795018,
+          0.21789011999499053,
+          0.2158039200003259,
+          0.2177095200167969,
+          0.21927315997891128
+        ],
+        "median": 0.2177095200167969,
+        "p95": 0.21927315997891128
+      }
+    },
+    "installed_bytes": 271990733
+  }
+]
